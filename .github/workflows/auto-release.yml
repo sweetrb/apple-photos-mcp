@@ -1,0 +1,88 @@
+name: Auto release
+
+# Runs after CI succeeds on main. If the version in package.json hasn't been
+# bumped manually, bump the patch version, commit it back to main, and publish
+# to npm. If the version was already bumped manually (e.g. minor/major), just
+# publish.
+#
+# This replaces the old publish.yml which only handled the "manual bump"
+# half — every push to main now produces an npm release.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  release:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout main with push token
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 2
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Plan release (bump or publish-as-is)
+        id: plan
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view apple-photos-mcp version 2>/dev/null || echo "0.0.0")
+          MSG=$(git log -1 --pretty=%s)
+          echo "Local: $LOCAL  Published: $PUBLISHED  Last commit: $MSG"
+
+          if [ "$LOCAL" != "$PUBLISHED" ]; then
+            # Manual bump landed in this push — publish that version, no bump needed.
+            echo "action=publish" >> "$GITHUB_OUTPUT"
+          elif [[ "$MSG" == chore\(release\)* ]]; then
+            # Already a release commit; npm already has this version. Nothing to do.
+            echo "action=skip" >> "$GITHUB_OUTPUT"
+          else
+            # Normal push that didn't change the version — auto-bump patch and publish.
+            echo "action=bump" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.plan.outputs.action != 'skip'
+        run: npm ci
+
+      - name: Auto-bump patch version
+        if: steps.plan.outputs.action == 'bump'
+        id: bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          npm version patch --no-git-tag-version
+          NEW=$(node -p "require('./package.json').version")
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          git add package.json package-lock.json .claude-plugin/plugin.json
+          git commit -m "chore(release): v$NEW"
+
+      - name: Build
+        if: steps.plan.outputs.action != 'skip'
+        run: npm run build
+
+      - name: Publish to npm
+        if: steps.plan.outputs.action != 'skip'
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Push bump commit back to main
+        if: steps.plan.outputs.action == 'bump'
+        run: git push origin main
