@@ -86,6 +86,23 @@ describe("PhotosManager", () => {
       runMock.mockReturnValue({ error: "library locked" });
       expect(() => manager.query({})).toThrow("library locked");
     });
+
+    it("forwards date filters in ISO 8601 form", () => {
+      runMock.mockReturnValue({ data: { count: 0, photos: [] } });
+      manager.query({ fromDate: "2025-01-01", toDate: "2025-12-31T23:59:59" });
+      const [, args] = runMock.mock.calls[0];
+      expect(args).toEqual(["--from-date", "2025-01-01", "--to-date", "2025-12-31T23:59:59"]);
+    });
+
+    it("forwards mutually-exclusive media type flags", () => {
+      runMock.mockReturnValue({ data: { count: 0, photos: [] } });
+      manager.query({ movies: true });
+      expect(runMock.mock.calls[0][1]).toEqual(["--movies"]);
+
+      runMock.mockClear();
+      manager.query({ photos: true });
+      expect(runMock.mock.calls[0][1]).toEqual(["--photos"]);
+    });
   });
 
   describe("exportPhotos", () => {
@@ -111,6 +128,25 @@ describe("PhotosManager", () => {
       expect(args).toContain("A");
       expect(args).toContain("B");
       expect(args).toContain("--edited");
+    });
+
+    it("returns the skipped list when the python sidecar reports missing photos", () => {
+      runMock.mockReturnValue({
+        data: {
+          destination: "/tmp/out",
+          exportedCount: 1,
+          skippedCount: 1,
+          exported: ["a.jpg"],
+          skipped: [{ uuid: "MISSING-UUID", error: "original not downloaded from iCloud" }],
+        },
+      });
+      const result = manager.exportPhotos(["A", "MISSING-UUID"], "/tmp/out");
+      expect(result.exportedCount).toBe(1);
+      expect(result.skippedCount).toBe(1);
+      expect(result.skipped[0]).toEqual({
+        uuid: "MISSING-UUID",
+        error: "original not downloaded from iCloud",
+      });
     });
   });
 
