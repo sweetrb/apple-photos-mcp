@@ -1,0 +1,30 @@
+# Source files (compiled output is in build/)
+src/
+
+# Development configuration
+.devcontainer/
+.github/
+.eslintrc.cjs
+.prettierrc
+.nvmrc
+tsconfig.json
+vitest.config.ts
+eslint.config.js
+
+# Test files
+**/*.test.ts
+test/
+coverage/
+
+# Python bridge venv (installed at runtime via npm run setup)
+venv/
+requirements.txt
+
+# Claude Code plugin files (marketplace only, not needed for npm)
+.claude-plugin/
+.mcp.json
+skills/
+
+# Other
+*.tgz
+.DS_Store

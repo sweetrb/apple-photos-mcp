@@ -1,0 +1,18 @@
+node_modules/
+build/
+*.js.map
+*.d.ts.map
+.env
+.DS_Store
+coverage/
+
+# Python venv
+venv/
+
+# Vitest temp files
+vitest.config.ts.timestamp-*
+
+# npm package files
+*.tgz
+.claude/
+.worktrees/

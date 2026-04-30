@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "apple-photos-mcp",
+  "version": "0.1.0",
+  "description": "Apple Photos integration for Claude Code via MCP",
+  "owner": {
+    "name": "Rob Sweet",
+    "email": "rob@superiortech.io"
+  },
+  "plugins": [
+    {
+      "name": "apple-photos",
+      "description": "Query and export from the macOS Apple Photos library via osxphotos",
+      "version": "0.1.0",
+      "author": {
+        "name": "Rob Sweet",
+        "email": "rob@superiortech.io"
+      },
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
