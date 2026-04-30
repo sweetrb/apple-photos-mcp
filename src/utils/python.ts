@@ -80,14 +80,21 @@ export function runPhotosReader<T = unknown>(
     }
     return { data: result as T };
   } catch (err: unknown) {
-    const error = err as Error & { stderr?: string; status?: number };
-    if (error.stderr?.includes("osxphotos not installed")) {
+    const error = err as Error & { stderr?: string | Buffer; status?: number };
+    const stderr = error.stderr?.toString().trim() ?? "";
+
+    if (stderr.includes("osxphotos not installed")) {
       return { error: "osxphotos not installed. Run: npm run setup" };
     }
     if (error.message?.includes("ETIMEDOUT") || error.message?.includes("timed out")) {
       return {
         error: `Operation timed out after ${timeoutMs}ms. Library may be very large.`,
       };
+    }
+    // Surface the Python traceback when there is one — without it the user just
+    // sees "Command failed: <python> <args>" with no clue what actually broke.
+    if (stderr) {
+      return { error: stderr };
     }
     return { error: error.message || "Unknown error executing Python script" };
   }

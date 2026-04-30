@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -27,6 +28,21 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _parse_date(value: str) -> datetime:
+    """Parse an ISO 8601 date or datetime string into a datetime object.
+
+    osxphotos QueryOptions requires real datetime objects for from_date / to_date.
+    Accept either a bare date ("2025-06-01") or a full ISO 8601 datetime.
+    """
+    # datetime.fromisoformat accepts both "YYYY-MM-DD" and full ISO 8601 in 3.11+.
+    return datetime.fromisoformat(value)
+
+
+def _normalize_count(value) -> int:
+    """osxphotos may return either an int count or a list of UUIDs depending on version."""
+    return value if isinstance(value, int) else len(value)
+
 
 def _open_db(library: str | None) -> PhotosDB:
     """Open the Photos library. None = system default library."""
@@ -122,9 +138,9 @@ def _query_options(args) -> QueryOptions:
     if args.person:
         kwargs["person"] = args.person
     if args.from_date:
-        kwargs["from_date"] = args.from_date
+        kwargs["from_date"] = _parse_date(args.from_date)
     if args.to_date:
-        kwargs["to_date"] = args.to_date
+        kwargs["to_date"] = _parse_date(args.to_date)
     if args.favorite:
         kwargs["favorite"] = True
     if args.not_favorite:
@@ -195,12 +211,13 @@ def cmd_query(args):
 
 
 def cmd_get_photo(args):
-    """Get full details for one photo by UUID."""
+    """Get full details for one photo by UUID, including photos in the trash."""
     db = _open_db(args.library)
-    matches = db.photos(uuid=[args.uuid], intrash=False)
-    if not matches:
-        # Also check trash
-        matches = db.photos(uuid=[args.uuid], intrash=True)
+    # PhotosDB.photos accepts intrash as a strict bool — query the live library
+    # first, then fall back to the trash so a single get-photo call works either way.
+    matches = db.photos(uuid=[args.uuid], intrash=False) or db.photos(
+        uuid=[args.uuid], intrash=True
+    )
     if not matches:
         return {"error": f"Photo not found: {args.uuid}"}
     return {"photo": _photo_detail(matches[0])}
@@ -234,11 +251,6 @@ def cmd_list_folders(args):
             "subfolderCount": len(folder.subfolders),
         })
     return {"count": len(items), "folders": items}
-
-
-def _normalize_count(value) -> int:
-    """osxphotos may return either an int count or a list of UUIDs depending on version."""
-    return value if isinstance(value, int) else len(value)
 
 
 def cmd_list_keywords(args):
@@ -289,7 +301,20 @@ def cmd_export(args):
                 overwrite=args.overwrite,
                 use_photos_export=False,
             )
-            exported.extend(paths)
+            if paths:
+                exported.extend(paths)
+            else:
+                # osxphotos returns an empty list (not an exception) when
+                # the original isn't downloaded locally. Surface that as a skip.
+                if p.ismissing or not p.path:
+                    reason = "original not downloaded from iCloud"
+                elif args.edited and not p.hasadjustments:
+                    reason = "no edited version exists"
+                elif args.raw and not p.path_raw:
+                    reason = "no raw sidecar exists"
+                else:
+                    reason = "export returned no files"
+                skipped.append({"uuid": p.uuid, "error": reason})
         except Exception as exc:  # noqa: BLE001 - report any export failure
             skipped.append({"uuid": p.uuid, "error": str(exc)})
 
