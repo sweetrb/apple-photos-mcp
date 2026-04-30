@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "apple-photos": {
-      "command": "npx",
-      "args": ["apple-photos-mcp"]
+      "command": "node",
+      "args": ["build/index.js"]
     }
   }
 }
