@@ -143,7 +143,9 @@ export class PhotosManager {
     if (options.raw) args.push("--raw");
     if (options.overwrite) args.push("--overwrite");
 
-    // Allow longer timeout for export — many large files may move bytes.
-    return this.run<ExportResult>("export", args, 5 * 60 * 1000);
+    // Generous timeout: when originals aren't on disk we fall back to
+    // Photos.app/AppleScript, which downloads from iCloud on demand. A batch
+    // of missing photos can move serious bytes.
+    return this.run<ExportResult>("export", args, 30 * 60 * 1000);
   }
 }

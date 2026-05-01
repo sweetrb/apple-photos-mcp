@@ -108,6 +108,7 @@ Or, if you cloned the repo, run `npm run setup` to create a project-local Python
 | **Live Photos** | Optionally include the live-photo video alongside the still |
 | **Raw Files** | Optionally include the raw (NEF, CR2, etc.) sidecar |
 | **Multi-photo Export** | Export multiple UUIDs in a single call |
+| **Auto iCloud Download** | If an original isn't on disk, export falls back to Photos.app to download it on demand — no extra parameter needed |
 
 ### Diagnostics
 
@@ -302,6 +303,8 @@ Export one or more photos by UUID to a destination directory.
 
 **Returns:** Destination path, count of files exported, count skipped, list of exported file paths, and any errors per UUID.
 
+**iCloud-only originals:** If a photo's original isn't on disk (Photos is using "Optimize Mac Storage"), the export automatically falls back to Photos.app via AppleScript, which downloads the original on demand — same behavior as opening the photo in Photos. This is slower than a direct file copy; expect waits proportional to download size for large batches. Photos that genuinely can't be exported (e.g. `edited=true` requested but no edits exist) are still skipped with a per-UUID reason.
+
 ---
 
 ## Usage Patterns
@@ -441,7 +444,7 @@ This is the same pattern used by [apple-numbers-mcp](https://github.com/sweetrb/
 | macOS only | Apple Photos and osxphotos are macOS-specific |
 | Read-only | osxphotos reads the Photos library; this server does not modify it |
 | Full Disk Access required | The Photos library SQLite database is in a protected directory |
-| No iCloud-only photos | Photos that exist only in iCloud (not downloaded) report `isMissing: true` and can't be exported |
+| iCloud-only export is slower | Originals that aren't on disk are downloaded on demand via Photos.app/AppleScript. The export still succeeds, but takes longer than a local copy and requires Photos.app to be installed and signed in to iCloud |
 | Photos.app may lock the library | If Photos.app is mid-write, opening the library can fail; close Photos.app and retry |
 | Person filter requires named faces | osxphotos cannot filter by unnamed/unrecognized faces |
 
@@ -462,7 +465,9 @@ This is the same pattern used by [apple-numbers-mcp](https://github.com/sweetrb/
 - The photo may have been deleted from the library.
 
 ### Exports skip files with "missing"
-- The photo exists in iCloud but is not downloaded locally. Open the photo in Photos.app to trigger a download, then retry.
+- Since 0.1.3, the export auto-downloads iCloud-only originals via Photos.app, so this skip should be rare. If it still happens:
+  - **"original not downloaded from iCloud (download attempt returned no files)"** — Photos.app couldn't fetch it. Check iCloud connectivity, that you're signed in, and that the photo isn't excluded by a Photos sync setting.
+  - **"no edited version exists"** / **"no raw sidecar exists"** — `edited=true` or `raw=true` was requested but the photo doesn't have one. Retry without that flag.
 
 ### Photos.app errors when running
 - Closing Photos.app may resolve database-lock errors. osxphotos opens the library in read-only mode but still requires that no writer holds an exclusive lock.

@@ -235,7 +235,10 @@ server.tool(
   "export",
   "Export one or more photos (by UUID) to a destination directory. " +
     "By default exports the original. Use edited=true to export the edited version, " +
-    "live=true to include the live-photo video, raw=true to include the raw image.",
+    "live=true to include the live-photo video, raw=true to include the raw image. " +
+    "If an original isn't on disk (iCloud-only), the export falls back to Photos.app " +
+    "to download it on demand — same behavior as opening the photo in Photos. " +
+    "This can be slow for large batches; expect waits proportional to download size.",
   {
     ...libraryArg,
     uuid: z.array(z.string()).min(1).describe("Photo UUID(s) to export"),

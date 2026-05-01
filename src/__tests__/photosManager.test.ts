@@ -148,6 +148,21 @@ describe("PhotosManager", () => {
         error: "original not downloaded from iCloud",
       });
     });
+
+    it("uses a 30-minute subprocess timeout to allow on-demand iCloud downloads", () => {
+      runMock.mockReturnValue({
+        data: {
+          destination: "/tmp/out",
+          exportedCount: 1,
+          skippedCount: 0,
+          exported: ["a.jpg"],
+          skipped: [],
+        },
+      });
+      manager.exportPhotos(["A"], "/tmp/out");
+      const [, , timeout] = runMock.mock.calls[0];
+      expect(timeout).toBe(30 * 60 * 1000);
+    });
   });
 
   describe("listKeywords", () => {
