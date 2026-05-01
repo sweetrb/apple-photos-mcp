@@ -291,30 +291,54 @@ def cmd_export(args):
 
     exported: list[str] = []
     skipped: list[dict] = []
+
+    def _do_export(p, use_photos_export: bool):
+        return p.export(
+            str(dest),
+            edited=args.edited,
+            live_photo=args.live,
+            raw_photo=args.raw,
+            overwrite=args.overwrite,
+            use_photos_export=use_photos_export,
+            timeout=300 if use_photos_export else 120,
+        )
+
+    def _unrecoverable_reason(p):
+        # Reasons retrying via Photos.app cannot fix.
+        if args.edited and not p.hasadjustments:
+            return "no edited version exists"
+        if args.raw and not p.path_raw:
+            return "no raw sidecar exists"
+        return None
+
     for p in matches:
         try:
-            paths = p.export(
-                str(dest),
-                edited=args.edited,
-                live_photo=args.live,
-                raw_photo=args.raw,
-                overwrite=args.overwrite,
-                use_photos_export=False,
-            )
+            paths = _do_export(p, use_photos_export=False)
+            if not paths:
+                unrecoverable = _unrecoverable_reason(p)
+                if unrecoverable:
+                    skipped.append({"uuid": p.uuid, "error": unrecoverable})
+                    continue
+                # Original isn't on disk (iCloud-only). Fall back to Photos.app
+                # via AppleScript, which downloads the original on demand —
+                # same behavior as opening the photo in Photos.
+                try:
+                    paths = _do_export(p, use_photos_export=True)
+                except Exception as exc:  # noqa: BLE001
+                    skipped.append(
+                        {"uuid": p.uuid, "error": f"iCloud download failed: {exc}"}
+                    )
+                    continue
+
             if paths:
                 exported.extend(paths)
             else:
-                # osxphotos returns an empty list (not an exception) when
-                # the original isn't downloaded locally. Surface that as a skip.
-                if p.ismissing or not p.path:
-                    reason = "original not downloaded from iCloud"
-                elif args.edited and not p.hasadjustments:
-                    reason = "no edited version exists"
-                elif args.raw and not p.path_raw:
-                    reason = "no raw sidecar exists"
-                else:
-                    reason = "export returned no files"
-                skipped.append({"uuid": p.uuid, "error": reason})
+                skipped.append(
+                    {
+                        "uuid": p.uuid,
+                        "error": "original not downloaded from iCloud (download attempt returned no files)",
+                    }
+                )
         except Exception as exc:  # noqa: BLE001 - report any export failure
             skipped.append({"uuid": p.uuid, "error": str(exc)})
 
