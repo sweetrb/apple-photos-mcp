@@ -2,7 +2,7 @@
   "mcpServers": {
     "apple-photos": {
       "command": "node",
-      "args": ["build/index.js"]
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/build/index.js"]
     }
   }
 }
