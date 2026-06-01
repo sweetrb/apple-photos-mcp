@@ -5,5 +5,11 @@
   "author": {
     "name": "Rob Sweet",
     "email": "rob@superiortech.io"
+  },
+  "mcpServers": {
+    "apple-photos": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/build/index.js"]
+    }
   }
 }

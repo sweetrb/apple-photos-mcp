@@ -392,6 +392,28 @@ If installed from source, use this configuration:
 
 The server prefers a project-local venv at `./venv/bin/python3` if present, and otherwise falls back to system `python3`. This means a global npm install works as long as `osxphotos` is on the system Python.
 
+#### Running from a clone in Claude Code (project-scope `.mcp.json`)
+
+This repo ships a `.mcp.json` at its root so that, when you run `claude` from inside a clone, the server is registered automatically as a **project-scope** server — no manual config needed. Before launching, you must:
+
+1. `npm run build` — compile the TypeScript to `build/index.js`.
+2. `npm run setup` — create the project-local Python venv at `./venv` with `osxphotos` (the server prefers `./venv/bin/python3`).
+3. **Grant Full Disk Access** to the app hosting Claude Code (Terminal, iTerm, VS Code, etc.) — the Photos library SQLite is in a protected directory and osxphotos reads it directly. See [Full Disk Access](#full-disk-access).
+
+Then launch Claude Code from the repo directory and approve the server when prompted.
+
+The entrypoint is written as:
+
+```json
+"args": ["${CLAUDE_PROJECT_DIR:-.}/build/index.js"]
+```
+
+`CLAUDE_PROJECT_DIR` is the variable Claude Code injects into a project/user-scoped server's environment, and it resolves to the repo root. **You must launch `claude` from inside the repo** for this to work — the bare `.` fallback is only a last resort and is *not* reliable, because it resolves against the launching process's working directory, not the repo.
+
+> **Why not `${CLAUDE_PLUGIN_ROOT}`?** `CLAUDE_PLUGIN_ROOT` is set **only** for marketplace plugin installs, never for a project-scope clone, so it can't drive the clone workflow. Conversely, a plugin install can't use `CLAUDE_PROJECT_DIR` (in a plugin, that points at the *user's* project, not the plugin's own directory). Claude Code does **not** support nested defaults like `${CLAUDE_PLUGIN_ROOT:-${CLAUDE_PROJECT_DIR:-.}}`, so a single entrypoint string cannot serve both contexts. The two distribution paths are therefore decoupled: the **plugin** carries its own MCP config in `.claude-plugin/plugin.json` (using `${CLAUDE_PLUGIN_ROOT}`), while the root `.mcp.json` is dedicated to the **clone** workflow (using `${CLAUDE_PROJECT_DIR:-.}`). Because `plugin.json` declares its own `mcpServers`, the plugin does not also auto-load the root `.mcp.json`, so there is no double-registration.
+
+> **Heads-up on scope precedence:** project-scope (`.mcp.json`) outranks user-scope. If you *also* have an `apple-photos` entry registered at user scope (e.g. an absolute path in `~/.claude.json`), the project-scope entry wins and the user-scope one is ignored entirely. Pick one — for local development on this repo, the project-scope `.mcp.json` is the intended source. To pin a specific local build instead, register it at **local** scope (`claude mcp add apple-photos -s local -- node /abs/path/build/index.js`), which outranks project scope.
+
 ---
 
 ## Full Disk Access
@@ -471,6 +493,14 @@ This is the same pattern used by [apple-numbers-mcp](https://github.com/sweetrb/
 
 ### Photos.app errors when running
 - Closing Photos.app may resolve database-lock errors. osxphotos opens the library in read-only mode but still requires that no writer holds an exclusive lock.
+
+### `apple-photos` server fails to connect when run from a clone
+- **Launch `claude` from inside the repo directory** so `CLAUDE_PROJECT_DIR` resolves to the repo root. The bare `.` fallback resolves against the launching process's working directory, not the repo, and is unreliable.
+- Run `npm run build` first — the entrypoint `${CLAUDE_PROJECT_DIR:-.}/build/index.js` won't exist until you compile.
+- Run `npm run setup` to create the `./venv` with `osxphotos`, or the server will fail to query the library.
+- Grant **Full Disk Access** to the host app (Terminal, iTerm, VS Code, etc.) — see [Full Disk Access](#full-disk-access).
+- Run `claude mcp list` and check for conflicting scopes. Project-scope (`.mcp.json`) outranks user-scope; a stale user-scope `apple-photos` entry pointing at a bad path can mask the project-scope one. To pin a specific build, register it at **local** scope: `claude mcp add apple-photos -s local -- node /abs/path/build/index.js`.
+- If the server shows as pending, approve the project-scope server when Claude Code prompts you.
 
 ---
 
