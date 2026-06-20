@@ -6,6 +6,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PhotosManager } from "./services/photosManager.js";
+import { successResponse, withErrorHandling } from "./tools/respond.js";
+import { runDoctor, formatDoctorReport } from "./tools/doctor.js";
+import { registerResourcesAndPrompts } from "./tools/resourcesAndPrompts.js";
+import { loadFileConfig } from "./services/fileConfig.js";
+
+// Load file-based config FIRST — before anything reads APPLE_PHOTOS_MCP_* env
+// vars — so settings survive a host that strips the MCP env block.
+loadFileConfig();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -14,28 +22,6 @@ const version: string = pkg.version;
 
 const manager = new PhotosManager();
 
-function errorResponse(message: string) {
-  return { content: [{ type: "text" as const, text: message }], isError: true };
-}
-
-function textResponse(text: string) {
-  return { content: [{ type: "text" as const, text }] };
-}
-
-function withErrorHandling<T>(
-  handler: (params: T) => ReturnType<typeof textResponse>,
-  prefix: string
-) {
-  return (params: T) => {
-    try {
-      return handler(params);
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      return errorResponse(`${prefix}: ${msg}`);
-    }
-  };
-}
-
 const server = new McpServer({
   name: "apple-photos",
   version,
@@ -43,7 +29,8 @@ const server = new McpServer({
     "MCP server for Apple Photos via osxphotos. Query the Photos library by date, album, " +
     "keyword, person, or favorite/hidden flags; list albums/folders/keywords/persons; " +
     "fetch full photo metadata (location, dimensions, EXIF-derived flags); and export " +
-    "originals or edited versions to a directory. Read-only against the Photos library.",
+    "originals or edited versions to a directory. Read-only against the Photos library. " +
+    "Read tools also return structuredContent (typed JSON) alongside the text.",
 });
 
 const libraryArg = {
@@ -60,8 +47,23 @@ server.tool(
   {},
   withErrorHandling(() => {
     const result = manager.healthCheck();
-    return textResponse(result.ok ? `OK ${result.message}` : `FAIL ${result.message}`);
+    return successResponse(result.ok ? `OK ${result.message}` : `FAIL ${result.message}`, {
+      ...result,
+    });
   }, "health-check")
+);
+
+// --- doctor ---
+server.tool(
+  "doctor",
+  "Run a full diagnostic: osxphotos install, Photos library readability, and Full Disk " +
+    "Access. Reports each check as ok/warn/fail with actionable advice. Use this when a tool " +
+    "returns a permission or 'unable to open' error.",
+  {},
+  withErrorHandling(() => {
+    const report = runDoctor(manager);
+    return successResponse(formatDoctorReport(report), { ...report });
+  }, "doctor")
 );
 
 // --- library-info ---
@@ -71,7 +73,7 @@ server.tool(
   libraryArg,
   withErrorHandling(({ library }) => {
     const info = manager.getLibraryInfo(library);
-    return textResponse(
+    return successResponse(
       `Library: ${info.libraryPath}\n` +
         `Photos DB version: ${info.dbVersion} (Photos.app ${info.photosVersion})\n\n` +
         `Photos:    ${info.photoCount}\n` +
@@ -80,7 +82,8 @@ server.tool(
         `Albums:    ${info.albumCount}\n` +
         `Folders:   ${info.folderCount}\n` +
         `Keywords:  ${info.keywordCount}\n` +
-        `Persons:   ${info.personCount}`
+        `Persons:   ${info.personCount}`,
+      { ...info }
     );
   }, "library-info")
 );
@@ -112,7 +115,7 @@ server.tool(
   withErrorHandling(({ library, ...filters }) => {
     const result = manager.query(filters, library);
     if (result.count === 0) {
-      return textResponse("No photos matched the query.");
+      return successResponse("No photos matched the query.", { count: 0, photos: [] });
     }
     const lines = result.photos.map((p) => {
       const flags: string[] = [];
@@ -123,7 +126,10 @@ server.tool(
       const dims = p.width && p.height ? ` ${p.width}×${p.height}` : "";
       return `${p.date ?? "?"} ${p.uuid} — ${p.filename}${dims}${flagStr}`;
     });
-    return textResponse(`Found ${result.count} photo(s):\n\n${lines.join("\n")}`);
+    return successResponse(`Found ${result.count} photo(s):\n\n${lines.join("\n")}`, {
+      count: result.count,
+      photos: result.photos,
+    });
   }, "query")
 );
 
@@ -161,7 +167,7 @@ server.tool(
     if (p.keywords.length) lines.push(`Keywords:    ${p.keywords.join(", ")}`);
     if (p.persons.length) lines.push(`Persons:     ${p.persons.join(", ")}`);
     if (p.labels.length) lines.push(`Labels:      ${p.labels.join(", ")}`);
-    return textResponse(lines.join("\n"));
+    return successResponse(lines.join("\n"), { photo: p });
   }, "get-photo")
 );
 
@@ -172,13 +178,13 @@ server.tool(
   libraryArg,
   withErrorHandling(({ library }) => {
     const { count, albums } = manager.listAlbums(library);
-    if (count === 0) return textResponse("No albums.");
+    if (count === 0) return successResponse("No albums.", { count: 0, albums: [] });
     const lines = albums.map((a) => {
       const path = a.folder.length ? `${a.folder.join(" / ")} / ` : "";
       const shared = a.isShared ? " [shared]" : "";
       return `${path}${a.title} (${a.photoCount})${shared} — ${a.uuid}`;
     });
-    return textResponse(`${count} album(s):\n\n${lines.join("\n")}`);
+    return successResponse(`${count} album(s):\n\n${lines.join("\n")}`, { count, albums });
   }, "list-albums")
 );
 
@@ -189,12 +195,12 @@ server.tool(
   libraryArg,
   withErrorHandling(({ library }) => {
     const { count, folders } = manager.listFolders(library);
-    if (count === 0) return textResponse("No folders.");
+    if (count === 0) return successResponse("No folders.", { count: 0, folders: [] });
     const lines = folders.map(
       (f) =>
         `${f.title}${f.parent ? ` (in ${f.parent})` : ""} — ${f.albumCount} albums, ${f.subfolderCount} subfolders`
     );
-    return textResponse(`${count} folder(s):\n\n${lines.join("\n")}`);
+    return successResponse(`${count} folder(s):\n\n${lines.join("\n")}`, { count, folders });
   }, "list-folders")
 );
 
@@ -208,9 +214,9 @@ server.tool(
   },
   withErrorHandling(({ library, limit }) => {
     const { count, keywords } = manager.listKeywords(limit, library);
-    if (count === 0) return textResponse("No keywords.");
+    if (count === 0) return successResponse("No keywords.", { count: 0, keywords: [] });
     const lines = keywords.map((k) => `${k.count.toString().padStart(6)}  ${k.keyword}`);
-    return textResponse(`${count} keyword(s):\n\n${lines.join("\n")}`);
+    return successResponse(`${count} keyword(s):\n\n${lines.join("\n")}`, { count, keywords });
   }, "list-keywords")
 );
 
@@ -224,9 +230,9 @@ server.tool(
   },
   withErrorHandling(({ library, limit }) => {
     const { count, persons } = manager.listPersons(limit, library);
-    if (count === 0) return textResponse("No persons.");
+    if (count === 0) return successResponse("No persons.", { count: 0, persons: [] });
     const lines = persons.map((p) => `${p.count.toString().padStart(6)}  ${p.name}`);
-    return textResponse(`${count} person(s):\n\n${lines.join("\n")}`);
+    return successResponse(`${count} person(s):\n\n${lines.join("\n")}`, { count, persons });
   }, "list-persons")
 );
 
@@ -267,9 +273,13 @@ server.tool(
     if (result.skipped.length) {
       lines.push("", "Skipped:", ...result.skipped.map((s) => `  ${s.uuid}: ${s.error}`));
     }
-    return textResponse(lines.join("\n"));
+    return successResponse(lines.join("\n"), { ...result });
   }, "export")
 );
+
+// Register read-only resources (photos://library, albums, persons, keywords,
+// photo/{uuid}) and workflow prompts.
+registerResourcesAndPrompts(server, manager);
 
 async function main() {
   const transport = new StdioServerTransport();

@@ -83,7 +83,7 @@ Or, if you cloned the repo, run `npm run setup` to create a project-local Python
 - **Node.js 20+** - Required for the MCP server
 - **Python 3.9+ with osxphotos** - The server uses [osxphotos](https://github.com/RhetTbull/osxphotos) under the hood. Install via `pip3 install osxphotos` or via `npm run setup` if installing from source.
 - **Apple Photos** - Must have a Photos library (default location: `~/Pictures/Photos Library.photoslibrary`)
-- **Full Disk Access** - The Photos library lives in a protected directory. The host app needs Full Disk Access — see [below](#full-disk-access).
+- **Full Disk Access** - The Photos library lives in a protected directory. The host app needs Full Disk Access — see [below](#full-disk-access) and the [Full Disk Access Setup Guide](docs/FULL-DISK-ACCESS.md).
 
 ## Features
 
@@ -115,6 +115,16 @@ Or, if you cloned the repo, run `npm run setup` to create a project-local Python
 | Feature | Description |
 |---------|-------------|
 | **Health Check** | Verify osxphotos is installed and the library can be opened |
+| **Doctor** | Richer setup diagnostic — checks osxphotos install, Photos library readability, and Full Disk Access, each reported ok / warn / fail with actionable advice |
+
+Read tools also return **structured JSON** (`structuredContent`) alongside the human-readable text, so agents can consume results without parsing prose.
+
+### MCP resources & prompts
+
+Resources expose read-only context the client can attach without a tool call:
+`photos://library`, `photos://albums`, `photos://persons`, `photos://keywords`,
+and the `photos://photo/{uuid}` template (full metadata for one photo). Prompts
+package common workflows: `find-photos`, `export-photos`, `photo-summary`.
 
 ---
 
@@ -131,6 +141,16 @@ Verify osxphotos is installed and the Photos library can be opened.
 **Parameters:** None
 
 **Returns:** osxphotos version, library path, and total photo count — or an error if the library is inaccessible.
+
+---
+
+#### `doctor`
+
+Run a full setup diagnostic: osxphotos installation, Photos library readability, and Full Disk Access — each reported as ok / warn / fail with an actionable message. This is the richer counterpart to `health-check`; reach for it first when a tool returns a permission or "unable to open" error.
+
+**Parameters:** None
+
+**Returns:** A per-check report. The `structuredContent` carries the raw `{ healthy, checks[] }`, where each check has `name`, `status` (`ok`/`warn`/`fail`), and `detail`. The Full Disk Access check explicitly reports whether the host process can read the library — see [Full Disk Access](#full-disk-access).
 
 ---
 
@@ -432,9 +452,47 @@ The Photos library SQLite database lives in a protected directory (`~/Pictures/P
    - **iTerm**: Add `/Applications/iTerm.app`
 5. Restart the application after granting access
 
+### Verifying it worked
+
+Run the **`doctor`** tool — it explicitly reports the **Full Disk Access** check (alongside osxphotos install and library readability) as ok / warn / fail, so it's the best way to confirm the grant took effect. `health-check` and `library-info` also work as a quick smoke test.
+
+For the full why-and-how walkthrough, see the [Full Disk Access Setup Guide](docs/FULL-DISK-ACCESS.md).
+
 ### Without Full Disk Access
 
-The `health-check` tool will fail and report a permissions error. No tool will be able to open the library.
+The `health-check` tool will fail and report a permissions error, and `doctor`'s Full Disk Access check will report `fail`. No tool will be able to open the library.
+
+---
+
+## Configuration
+
+All configuration is optional — the server works out of the box.
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APPLE_PHOTOS_MCP_MAX_BUFFER` | `104857600` (100 MB) | Max bytes captured from the Python sidecar's stdout. Raise it if a very large library/query is truncated; lower it to cap memory. |
+| `APPLE_PHOTOS_MCP_CONFIG_FILE` | `~/Library/Application Support/apple-photos-mcp/config.json` | Path to the JSON config file (see below). |
+
+### Configuration file (when the host strips `env`)
+
+Some host apps (e.g. Claude Desktop) launch the MCP server with a scrubbed
+environment and ignore the `env` block in their server config, so there's no way
+to pass `APPLE_PHOTOS_MCP_*` settings through it. In that case, put them in a JSON
+file the host doesn't manage — `APPLE_PHOTOS_MCP_CONFIG_FILE`, or by default
+`~/Library/Application Support/apple-photos-mcp/config.json`:
+
+```json
+{
+  "APPLE_PHOTOS_MCP_MAX_BUFFER": "209715200"
+}
+```
+
+The server reads it at startup and merges values into the environment **without
+overriding** anything already set there (so an explicit `env` still wins). This
+is the recommended way to configure the server under Claude Desktop. Keep only
+non-secret config here.
 
 ---
 
@@ -460,6 +518,8 @@ This is the same pattern used by [apple-numbers-mcp](https://github.com/sweetrb/
 ---
 
 ## Known Limitations
+
+For the full rundown — read-only scope, iCloud export caveats, face/album behavior, and library lag — see **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**. The summary below is the quick version.
 
 | Limitation | Reason |
 |------------|--------|
@@ -509,11 +569,14 @@ This is the same pattern used by [apple-numbers-mcp](https://github.com/sweetrb/
 ```bash
 npm install         # Install dependencies
 npm run setup       # Create ./venv with osxphotos
-npm run build       # Compile TypeScript
-npm test            # Run unit tests
-npm run typecheck   # Type-check without emitting
-npm run lint        # Check code style
-npm run format      # Format code
+npm run build           # Compile TypeScript
+npm test                # Run unit tests
+npm run test:integration  # Run integration tests against the real Photos library
+npm run test:all        # Unit + integration
+npm run test:coverage   # Unit tests with coverage report
+npm run typecheck       # Type-check without emitting
+npm run lint            # Check code style
+npm run format          # Format code
 ```
 
 The Python sidecar is a thin CLI that the TypeScript layer shells out to:

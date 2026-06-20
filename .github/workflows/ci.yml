@@ -35,11 +35,45 @@ jobs:
       - name: Run linter
         run: npm run lint
 
+      - name: Check formatting
+        run: npm run format:check
+
       - name: Type check
         run: npm run typecheck
 
-      - name: Run tests
-        run: npm test
+      - name: Run tests with coverage
+        run: npm run test:coverage
 
       - name: Build
         run: npm run build
+
+  # Integration suite (opt-in, real Photos library). On CI the runner has no
+  # signed-in Photos library, so the live tests self-skip; the pure tests still
+  # run, proving the harness loads. Locally (with a populated library) the full
+  # read-only suite runs.
+  integration:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up Python venv (osxphotos)
+        run: npm run setup
+
+      - name: Run integration tests
+        run: npm run test:integration
