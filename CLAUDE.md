@@ -23,9 +23,15 @@ modify the library itself.
 
 Before any tool works, two things must be in place:
 
-1. **Python sidecar installed.** The server shells out to osxphotos (Python). On
-   a source clone, run `npm run setup` to create the project-local venv at
-   `./venv` with osxphotos. On a global install, `pip3 install osxphotos`.
+1. **Python sidecar installed — self-installing.** The server shells out to
+   osxphotos (Python). For most users this needs **no manual step**: the venv at
+   `./venv` is built automatically on the first tool call (a one-time setup that
+   can take ~a minute; progress logs to stderr), then the call proceeds. The venv
+   is also picked up without a restart once it exists, and rebuilt automatically
+   if a package update changes its requirements. Pre-warm it with `npm run setup`
+   to skip the first-call delay. Auto-setup needs Python 3, `pip`, and network
+   access; it can be disabled with `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1` (then you
+   must run `npm run setup` or `pip3 install osxphotos` yourself).
 2. **Full Disk Access granted** to the host app (Claude/Terminal/iTerm/VS Code),
    then the host app **fully restarted**. The Photos library database is in a
    protected directory; without FDA, *every* tool fails. See
@@ -99,7 +105,7 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 
 | Error | Likely cause | What to do |
 |-------|--------------|------------|
-| "osxphotos not installed. Run: npm run setup" | Python sidecar/venv missing | Run `npm run setup` (source clone) or `pip3 install osxphotos` (global) |
+| "osxphotos not installed. Run: npm run setup" | Auto-setup couldn't run — disabled via `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1`, or Python 3 / `pip` / network unavailable (normally the venv self-installs on first use) | Run `npm run setup` (source clone) or `pip3 install osxphotos` (global), or unset `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` |
 | "operation not permitted" / "unable to open database" / permission error | Full Disk Access not granted (or granted to the wrong app) | Grant FDA to the **host** app and fully restart it — see [docs/FULL-DISK-ACCESS.md](./docs/FULL-DISK-ACCESS.md) |
 | "Photo not found: <uuid>" | Wrong/stale UUID, or photo deleted | Re-run `query` to get current UUIDs, then retry |
 | Export skipped: "original not downloaded from iCloud" | iCloud-only original couldn't be fetched | Check iCloud connectivity / signed-in state; ensure Photos.app automation is allowed |
