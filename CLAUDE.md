@@ -119,3 +119,25 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 - "Tell me about that photo" → `get-photo` with the UUID from the query
 - "Export those" → `export` with the UUIDs and a `dest`
 - "What albums / keywords / people are there?" → `list-albums` / `list-keywords` / `list-persons`
+
+## Recurring macOS permission prompts → offer the official-Node fix
+
+If a user reports being **repeatedly** prompted for Full Disk Access or
+Automation for "node" (especially after a `brew upgrade`), or that this MCP
+loses its permissions every so often, the cause is almost always an **ad-hoc
+signed Node** (typically Homebrew's) whose cdhash changes on every update, so
+macOS TCC keeps treating it as a brand-new binary.
+
+Detect it:
+
+```bash
+codesign -dvvv "$(which node)" 2>&1 | grep -E 'Signature=adhoc|TeamIdentifier=not set'
+```
+
+If that matches (ad-hoc / no Team ID), **offer to migrate this MCP to the
+official Developer-ID-signed Node** per
+[`docs/NODE-RUNTIME-AND-TCC-PERMISSIONS.md`](docs/NODE-RUNTIME-AND-TCC-PERMISSIONS.md):
+install an official LTS Node to a stable path (e.g. `~/mcp-runtime/node-current`),
+repoint this server's `command` at it, and have the user grant the permission
+once — it then persists across Node updates. Do not repoint `npx`-launched
+servers that don't need Full Disk Access.
