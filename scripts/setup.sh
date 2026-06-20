@@ -40,4 +40,8 @@ echo "==> Installing osxphotos..."
 echo "==> Verifying installation..."
 "$VENV_DIR/bin/python3" -c "import osxphotos; print(f'    osxphotos {osxphotos.__version__} installed')"
 
+# Record which requirements.txt this venv was built against, so the server can
+# detect a stale venv after an update changes requirements and rebuild itself.
+cp "$PROJECT_ROOT/requirements.txt" "$VENV_DIR/.deps-ok"
+
 echo "==> Done! Python venv ready."

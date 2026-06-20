@@ -31,7 +31,7 @@ If you're using [Claude Code](https://claude.com/product/claude-code) (in Termin
 Install the sweetrb/apple-photos-mcp MCP server so you can help me query my Apple Photos library
 ```
 
-Claude will handle the installation and configuration automatically. After install, you'll need to install `osxphotos` (Python) and grant Full Disk Access — see [Requirements](#requirements) below.
+Claude will handle the installation and configuration automatically. The Python `osxphotos` dependency installs **automatically on first use** (a one-time, ~minute-long setup), so the only manual step is granting Full Disk Access — see [Requirements](#requirements) below.
 
 ### Using the Plugin Marketplace
 
@@ -51,12 +51,13 @@ This method also installs a **skill** that teaches Claude when and how to use Ap
 npm install -g github:sweetrb/apple-photos-mcp
 ```
 
-**2. Install osxphotos** (the Python library this server depends on):
-```bash
-pip3 install osxphotos
-```
+**2. Python deps install automatically.** The first tool call auto-bootstraps a project-local Python venv with `osxphotos` (a one-time setup that can take ~a minute; progress is logged to stderr). You do **not** need to install anything by hand.
 
-Or, if you cloned the repo, run `npm run setup` to create a project-local Python venv with `osxphotos` pre-installed.
+To skip the first-call delay, you can pre-warm the venv ahead of time:
+```bash
+npm run setup    # optional — pre-installs osxphotos so the first tool call is instant
+```
+Auto-setup needs Python 3, `pip`, and network access. If any are missing — or you disabled auto-setup via `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1` — run `npm run setup` (or `pip3 install osxphotos`) yourself. See [Configuration](#configuration) and [Troubleshooting](#troubleshooting).
 
 **3. Add to Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 ```json
@@ -81,7 +82,7 @@ Or, if you cloned the repo, run `npm run setup` to create a project-local Python
 
 - **macOS** - The Photos library is macOS-only
 - **Node.js 20+** - Required for the MCP server
-- **Python 3.9+ with osxphotos** - The server uses [osxphotos](https://github.com/RhetTbull/osxphotos) under the hood. Install via `pip3 install osxphotos` or via `npm run setup` if installing from source.
+- **Python 3.9+** - The server uses [osxphotos](https://github.com/RhetTbull/osxphotos) under the hood and **installs it automatically on first use** into a project-local venv (one-time, ~a minute). You only need Python 3, `pip`, and a network connection available. Pre-warm it with `npm run setup` if you'd rather not wait on the first call.
 - **Apple Photos** - Must have a Photos library (default location: `~/Pictures/Photos Library.photoslibrary`)
 - **Full Disk Access** - The Photos library lives in a protected directory. The host app needs Full Disk Access — see [below](#full-disk-access) and the [Full Disk Access Setup Guide](docs/FULL-DISK-ACCESS.md).
 
@@ -385,8 +386,9 @@ AI: [calls list-albums with library="/Volumes/Archive/Photos.photoslibrary"]
 
 ```bash
 npm install -g github:sweetrb/apple-photos-mcp
-pip3 install osxphotos
 ```
+
+`osxphotos` installs automatically on the first tool call — no separate `pip3 install` needed.
 
 ### From Source (with Project-Local venv)
 
@@ -394,9 +396,11 @@ pip3 install osxphotos
 git clone https://github.com/sweetrb/apple-photos-mcp.git
 cd apple-photos-mcp
 npm install
-npm run setup    # creates ./venv and installs osxphotos
+npm run setup    # OPTIONAL — pre-builds ./venv with osxphotos; otherwise it's built on first use
 npm run build
 ```
+
+The `npm run setup` step is optional: if you skip it, the server auto-bootstraps the venv on the first tool call (one-time, ~a minute). Running it ahead of time just avoids that first-call delay.
 
 If installed from source, use this configuration:
 ```json
@@ -410,14 +414,14 @@ If installed from source, use this configuration:
 }
 ```
 
-The server prefers a project-local venv at `./venv/bin/python3` if present, and otherwise falls back to system `python3`. This means a global npm install works as long as `osxphotos` is on the system Python.
+The server prefers a project-local venv at `./venv/bin/python3` if present, and otherwise falls back to system `python3`. If neither has `osxphotos`, the server auto-builds the venv on first use (unless `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1`). The venv is also self-healing: it's picked up as soon as it exists — no server restart needed if you build or repair it while the server is running — and is rebuilt automatically if a package update changes its requirements.
 
 #### Running from a clone in Claude Code (project-scope `.mcp.json`)
 
 This repo ships a `.mcp.json` at its root so that, when you run `claude` from inside a clone, the server is registered automatically as a **project-scope** server — no manual config needed. Before launching, you must:
 
 1. `npm run build` — compile the TypeScript to `build/index.js`.
-2. `npm run setup` — create the project-local Python venv at `./venv` with `osxphotos` (the server prefers `./venv/bin/python3`).
+2. `npm run setup` — *optional*; pre-builds the project-local venv at `./venv` with `osxphotos` (the server prefers `./venv/bin/python3`). Skip it and the server builds the venv on the first tool call.
 3. **Grant Full Disk Access** to the app hosting Claude Code (Terminal, iTerm, VS Code, etc.) — the Photos library SQLite is in a protected directory and osxphotos reads it directly. See [Full Disk Access](#full-disk-access).
 
 Then launch Claude Code from the repo directory and approve the server when prompted.
@@ -473,6 +477,8 @@ All configuration is optional — the server works out of the box.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `APPLE_PHOTOS_MCP_MAX_BUFFER` | `104857600` (100 MB) | Max bytes captured from the Python sidecar's stdout. Raise it if a very large library/query is truncated; lower it to cap memory. |
+| `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` | unset (auto-setup on) | Set to `1` (or any truthy value) to disable the automatic first-use venv bootstrap. With it on, you must run `npm run setup` (or `pip3 install osxphotos`) yourself. |
+| `APPLE_PHOTOS_MCP_SETUP_TIMEOUT` | `300000` (5 min) | Max time, in milliseconds, the automatic venv bootstrap may run before it's aborted. Raise it on slow networks where the `osxphotos` install needs longer. |
 | `APPLE_PHOTOS_MCP_CONFIG_FILE` | `~/Library/Application Support/apple-photos-mcp/config.json` | Path to the JSON config file (see below). |
 
 ### Configuration file (when the host strips `env`)
@@ -534,8 +540,13 @@ For the full rundown — read-only scope, iCloud export caveats, face/album beha
 
 ## Troubleshooting
 
+### The first tool call is slow / "setting up the Python venv" in the logs
+- This is expected: it's the **one-time** automatic venv build (creating `./venv` and installing `osxphotos`). It can take ~a minute and logs progress to stderr. Subsequent calls are fast. Pre-warm with `npm run setup` to avoid it.
+- If the build keeps hitting a timeout on a slow network, raise `APPLE_PHOTOS_MCP_SETUP_TIMEOUT` (milliseconds; default 5 min).
+
 ### "osxphotos not installed. Run: npm run setup"
-- Run `pip3 install osxphotos` (global install) or `npm run setup` (project-local venv).
+- This only appears when automatic setup couldn't run — i.e. you set `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1`, or Python 3 / `pip` / network access is unavailable.
+- Fix it by running `npm run setup` (project-local venv) or `pip3 install osxphotos` (global install) — or unset `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` to re-enable auto-setup.
 - If you used a virtualenv, make sure it's the one at `./venv/` in the project directory.
 
 ### "Library not found" or permission errors
@@ -557,7 +568,7 @@ For the full rundown — read-only scope, iCloud export caveats, face/album beha
 ### `apple-photos` server fails to connect when run from a clone
 - **Launch `claude` from inside the repo directory** so `CLAUDE_PROJECT_DIR` resolves to the repo root. The bare `.` fallback resolves against the launching process's working directory, not the repo, and is unreliable.
 - Run `npm run build` first — the entrypoint `${CLAUDE_PROJECT_DIR:-.}/build/index.js` won't exist until you compile.
-- Run `npm run setup` to create the `./venv` with `osxphotos`, or the server will fail to query the library.
+- The `./venv` with `osxphotos` builds automatically on the first tool call; run `npm run setup` only to pre-warm it, or if you've set `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1`.
 - Grant **Full Disk Access** to the host app (Terminal, iTerm, VS Code, etc.) — see [Full Disk Access](#full-disk-access).
 - Run `claude mcp list` and check for conflicting scopes. Project-scope (`.mcp.json`) outranks user-scope; a stale user-scope `apple-photos` entry pointing at a bad path can mask the project-scope one. To pin a specific build, register it at **local** scope: `claude mcp add apple-photos -s local -- node /abs/path/build/index.js`.
 - If the server shows as pending, approve the project-scope server when Claude Code prompts you.
