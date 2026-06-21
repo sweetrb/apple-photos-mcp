@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Documentation
+- Refreshed the README tagline to reflect the full query/search/export/inspect capabilities, matching the GitHub repo one-liner and `package.json` description.
 - Added `docs/NODE-RUNTIME-AND-TCC-PERMISSIONS.md`: why macOS re-prompts for Full Disk Access / Automation when the server runs under an ad-hoc-signed (e.g. Homebrew) Node, and the fix — run it under the official Developer-ID-signed Node so the grant survives Node updates. README and CLAUDE.md now point at it.
 
 ## [0.3.0] (2026-06-20)
