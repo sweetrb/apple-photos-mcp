@@ -36,7 +36,7 @@
     "prepare": "husky; npm run build"
   },
   "volta": {
-    "node": "22.13.1"
+    "node": "24.17.0"
   },
   "keywords": [
     "mcp",
