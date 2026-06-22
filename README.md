@@ -6,6 +6,10 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 [![CI](https://github.com/sweetrb/apple-photos-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/sweetrb/apple-photos-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+<p align="center">
+  <img src="codex/assets/screenshot.svg" alt="Apple Photos MCP — search, browse, and export the macOS Photos library from Codex, Claude, and other AI assistants" width="680">
+</p>
+
 > **Read-only against the Photos library.** Exports write files to a directory you choose, but the library itself is never modified.
 
 ## What is This?
