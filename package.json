@@ -1,7 +1,7 @@
 {
   "name": "apple-photos-mcp",
   "version": "0.3.5",
-  "description": "MCP server for Apple Photos - query, search, export, and inspect the macOS Photos library via osxphotos",
+  "description": "MCP server for Apple Photos - query, search, export, and inspect the macOS Photos library via Claude and other AI assistants",
   "type": "module",
   "main": "build/index.js",
   "types": "build/index.d.ts",
