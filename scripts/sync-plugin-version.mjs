@@ -9,8 +9,44 @@ updateJson(".claude-plugin/plugin.json", (data) => {
   data.version = version;
 });
 
+updateJson("codex/.codex-plugin/plugin.json", (data) => {
+  data.version = version;
+});
+
 updateJson(".claude-plugin/marketplace.json", (data) => {
   data.version = version;
+  for (const plugin of data.plugins ?? []) {
+    if (plugin.name === "apple-photos") {
+      plugin.version = version;
+    }
+  }
+});
+
+updateJson(".agents/plugins/marketplace.json", (data) => {
+  for (const plugin of data.plugins ?? []) {
+    if (plugin.name === "apple-photos") {
+      plugin.version = version;
+    }
+  }
+});
+
+updateJson(".hermes-plugin/plugin.json", (data) => {
+  data.version = version;
+});
+
+updateJson(".antigravity-plugin/plugin.json", (data) => {
+  data.version = version;
+});
+
+updateJson(".hermes-plugin/marketplace.json", (data) => {
+  for (const plugin of data.plugins ?? []) {
+    if (plugin.name === "apple-photos") {
+      plugin.version = version;
+    }
+  }
+});
+
+updateJson(".antigravity-plugin/marketplace.json", (data) => {
   for (const plugin of data.plugins ?? []) {
     if (plugin.name === "apple-photos") {
       plugin.version = version;

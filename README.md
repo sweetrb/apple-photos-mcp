@@ -44,6 +44,21 @@ Install as a Claude Code plugin for automatic configuration and enhanced AI beha
 
 This method also installs a **skill** that teaches Claude when and how to use Apple Photos effectively.
 
+### Using the Codex Marketplace
+
+The same plugin is available for Codex. Add the marketplace and install the plugin:
+
+```bash
+codex plugin marketplace add sweetrb/apple-photos-mcp
+codex plugin add apple-photos@apple-photos-mcp
+```
+
+The Codex plugin runs the published `apple-photos-mcp` server through `npx` and ships the same Apple Photos skill, so behavior matches the Claude Code plugin. Because the server is a Python-sidecar (osxphotos) server, the first tool call after an `npx` launch auto-bootstraps a project-local Python venv with `osxphotos` (a one-time, ~minute-long setup), and the host process still needs Full Disk Access — see [Requirements](#requirements) below.
+
+### Other Hosts (Hermes, Antigravity)
+
+Plugin packaging for the Hermes and Antigravity hosts is also included (`.hermes-plugin/` and `.antigravity-plugin/`). Each registers the same `apple-photos` MCP server (launched via `npx -y apple-photos-mcp`) and bundles the Apple Photos skill, so behavior matches the Claude Code and Codex plugins. Install them through each host's plugin/marketplace mechanism pointed at this repository.
+
 ### Manual Installation
 
 **1. Install the server:**

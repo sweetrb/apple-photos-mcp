@@ -1,0 +1,23 @@
+{
+  "name": "apple-photos",
+  "version": "0.3.3",
+  "description": "Query and export from the macOS Apple Photos library via osxphotos - search by date/album/keyword/person, list albums and folders, fetch metadata, and export originals or edited photos (macOS only).",
+  "author": {
+    "name": "Rob Sweet",
+    "email": "rob@superiortech.io"
+  },
+  "license": "MIT",
+  "category": "productivity",
+  "displayName": "Apple Photos",
+  "homepage": "https://github.com/sweetrb/apple-photos-mcp#readme",
+  "repository": "https://github.com/sweetrb/apple-photos-mcp",
+  "keywords": [
+    "mcp",
+    "apple-photos",
+    "antigravity",
+    "claude",
+    "codex",
+    "macos",
+    "photos"
+  ]
+}

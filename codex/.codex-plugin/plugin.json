@@ -1,0 +1,46 @@
+{
+  "name": "apple-photos",
+  "version": "0.3.3",
+  "description": "Query and export from the macOS Apple Photos library via osxphotos - search by date/album/keyword/person, list albums and folders, fetch metadata, and export originals or edited photos (macOS only).",
+  "author": {
+    "name": "Rob Sweet",
+    "email": "rob@superiortech.io"
+  },
+  "homepage": "https://github.com/sweetrb/apple-photos-mcp#readme",
+  "repository": "https://github.com/sweetrb/apple-photos-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "apple-photos",
+    "claude",
+    "codex",
+    "macos",
+    "photos"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Apple Photos",
+    "shortDescription": "Query, inspect, and export from the macOS Apple Photos library.",
+    "longDescription": "A macOS-only Apple Photos connector for Codex that uses the apple-photos-mcp server (backed by osxphotos) to query the Photos library by date, album, keyword, person, or favorite/hidden flags; list albums, folders, keywords, and persons; fetch full photo metadata; and export originals or edited versions to a directory. Read-only against the library, with diagnostics support.",
+    "developerName": "Rob Sweet",
+    "category": "Productivity",
+    "capabilities": [
+      "MCP Servers",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/sweetrb/apple-photos-mcp#readme",
+    "defaultPrompt": [
+      "Find all my photos from our trip to Spain in 2023.",
+      "How many photos do I have and what are my top keywords?",
+      "Export my favorite sunset photos to ~/Desktop/sunsets."
+    ],
+    "brandColor": "#ec4899",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
+    "screenshots": [
+      "./assets/screenshot.svg"
+    ]
+  }
+}
