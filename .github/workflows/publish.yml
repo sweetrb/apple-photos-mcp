@@ -5,8 +5,8 @@ name: Auto release
 # to npm. If the version was already bumped manually (e.g. minor/major), just
 # publish.
 #
-# This replaces the old publish.yml which only handled the "manual bump"
-# half — every push to main now produces an npm release.
+# Every push to main produces an npm release (this is the repo's single publish
+# workflow). Publishing uses OIDC trusted publishing — no NPM_TOKEN.
 
 on:
   workflow_run:
@@ -22,6 +22,7 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+      id-token: write
 
     steps:
       - name: Checkout main with push token
@@ -37,6 +38,9 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: "npm"
+
+      - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
+        run: npm install -g npm@latest
 
       - name: Plan release (bump or publish-as-is)
         id: plan
@@ -80,8 +84,6 @@ jobs:
       - name: Publish to npm
         if: steps.plan.outputs.action != 'skip'
         run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Push bump commit back to main
         if: steps.plan.outputs.action == 'bump'
