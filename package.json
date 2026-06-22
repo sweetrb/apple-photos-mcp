@@ -31,7 +31,7 @@
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:all": "vitest run && vitest run --config vitest.integration.config.ts",
-    "version": "node scripts/sync-plugin-version.mjs && git add .claude-plugin/plugin.json .claude-plugin/marketplace.json",
+    "version": "node scripts/sync-plugin-version.mjs && git add .claude-plugin .agents/plugins codex .hermes-plugin .antigravity-plugin",
     "prepublishOnly": "npm run lint && npm run test && npm run build",
     "prepare": "husky; npm run build"
   },
