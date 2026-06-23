@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Codex marketplace shipped the Apple Notes icon for Apple Photos.** Replaced `codex/assets/icon.png` (and added an `icon.svg` source) with a Photos-specific icon — a teal card with a mountains-and-sun glyph, part of a consistent Apple MCP icon family. (Same root cause as the Mail #56 / Numbers #7 reports.)
+
+### Documentation
+- README: added npm-downloads, supported-Node, platform-macOS, and MCP badges next to the existing version/CI/License badges.
+- Documented the `doctor` tool in the Apple Photos skill tool table (it was registered but missing from the skill); kept the canonical and Codex skill copies in sync.
+
 ### Added
 
 - **Multi-host plugin packaging (Codex, Hermes, Antigravity).** In addition to the existing Claude Code plugin, the repo now ships plugin manifests for three more hosts: a full **Codex** package (`codex/` with `.codex-plugin/plugin.json`, `.mcp.json`, bundled Apple Photos skill, and marketplace assets) plus `.agents/plugins/marketplace.json`; **Hermes** packaging (`.hermes-plugin/`); and **Antigravity** packaging (`.antigravity-plugin/`, with the bundled skill). Every host registers the same `apple-photos` MCP server (launched via `npx -y apple-photos-mcp`) and ships the same skill, so behavior matches the Claude Code plugin. `scripts/sync-plugin-version.mjs` now keeps all of these manifests in step with `package.json` on `npm version`. This brings apple-photos-mcp to the same multi-host packaging parity as the other Apple MCP servers (mail, notes, numbers).

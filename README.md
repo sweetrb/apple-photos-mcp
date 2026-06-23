@@ -3,8 +3,12 @@
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI assistants like Claude to query, search, export, and inspect the macOS Apple Photos library, backed by the [osxphotos](https://github.com/RhetTbull/osxphotos) library.
 
 [![npm version](https://img.shields.io/npm/v/apple-photos-mcp)](https://www.npmjs.com/package/apple-photos-mcp)
+[![npm downloads](https://img.shields.io/npm/dm/apple-photos-mcp)](https://www.npmjs.com/package/apple-photos-mcp)
+[![node](https://img.shields.io/node/v/apple-photos-mcp)](https://www.npmjs.com/package/apple-photos-mcp)
 [![CI](https://github.com/sweetrb/apple-photos-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/sweetrb/apple-photos-mcp/actions/workflows/ci.yml)
+[![platform: macOS](https://img.shields.io/badge/platform-macOS-111?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![MCP](https://img.shields.io/badge/MCP-server-blue)](https://modelcontextprotocol.io)
 
 <p align="center">
   <img src="codex/assets/screenshot.png" alt="Apple Photos MCP — search, browse, and export the macOS Photos library from Codex, Claude, and other AI assistants" width="680">
