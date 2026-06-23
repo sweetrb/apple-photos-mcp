@@ -105,7 +105,7 @@ Auto-setup needs Python 3, `pip`, and network access. If any are missing — or 
 
 - **macOS** - The Photos library is macOS-only
 - **Node.js 20+** - Required for the MCP server
-- **Python 3.9+** - The server uses [osxphotos](https://github.com/RhetTbull/osxphotos) under the hood and **installs it automatically on first use** into a project-local venv (one-time, ~a minute). You only need Python 3, `pip`, and a network connection available. Pre-warm it with `npm run setup` if you'd rather not wait on the first call.
+- **Python 3.11+** - The server uses [osxphotos](https://github.com/RhetTbull/osxphotos) under the hood and **installs it automatically on first use** into a project-local venv (one-time, ~a minute). You only need Python 3.11+, `pip`, and a network connection available. osxphotos requires Python ≥ 3.10 and the date filters need 3.11; macOS ships 3.9, so install a newer Python first (e.g. `brew install python@3.12`). Pre-warm it with `npm run setup` if you'd rather not wait on the first call.
 - **Apple Photos** - Must have a Photos library (default location: `~/Pictures/Photos Library.photoslibrary`)
 - **Full Disk Access** - The Photos library lives in a protected directory. The host app needs Full Disk Access — see [below](#full-disk-access) and the [Full Disk Access Setup Guide](docs/FULL-DISK-ACCESS.md).
 

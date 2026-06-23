@@ -43,7 +43,9 @@ const libraryArg = {
 // --- health-check ---
 server.tool(
   "health-check",
-  "Verify osxphotos is installed and the Photos library can be opened",
+  "Use when: you want a quick smoke test that osxphotos is installed and the Photos library can be opened.\n" +
+    "Returns: ok/fail plus the osxphotos version, library path, and total photo count.\n" +
+    "Do not use when: you need a full setup diagnostic that pinpoints whether the failure is a missing osxphotos, an unreadable library, or denied Full Disk Access — use doctor instead.",
   {},
   withErrorHandling(() => {
     const result = manager.healthCheck();
@@ -56,9 +58,9 @@ server.tool(
 // --- doctor ---
 server.tool(
   "doctor",
-  "Run a full diagnostic: osxphotos install, Photos library readability, and Full Disk " +
-    "Access. Reports each check as ok/warn/fail with actionable advice. Use this when a tool " +
-    "returns a permission or 'unable to open' error.",
+  "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\n" +
+    "Returns: three checks — osxphotos install, Photos library readability, and Full Disk Access — each reported ok/warn/fail with actionable advice.\n" +
+    "Do not use when: you only need the lightweight is-it-working smoke test — use health-check instead.",
   {},
   withErrorHandling(() => {
     const report = runDoctor(manager);
@@ -69,7 +71,9 @@ server.tool(
 // --- library-info ---
 server.tool(
   "library-info",
-  "Get high-level stats about the Photos library: counts of photos, movies, albums, folders, keywords, and persons",
+  "Use when: you want high-level stats about the whole library — total counts of photos, movies, albums, folders, keywords, and persons — or to confirm which library you're targeting before drilling in.\n" +
+    "Returns: the library path, Photos DB and Photos.app versions, and the six counts.\n" +
+    "Do not use when: you want the actual albums/keywords/persons rather than just their counts — use list-albums / list-keywords / list-persons; or you want to find specific photos — use query.",
   libraryArg,
   withErrorHandling(({ library }) => {
     const info = manager.getLibraryInfo(library);
@@ -91,9 +95,9 @@ server.tool(
 // --- query ---
 server.tool(
   "query",
-  "Search the Photos library. Combine filters (album, keyword, person, date range, favorite, " +
-    "hidden, photo/movie type, title/description substrings) to narrow results. Returns photo " +
-    "summaries with UUIDs — use get-photo for full details on a specific match.",
+  "Use when: you need to find photos matching one or more filters — album, keyword, person, ISO date range, favorite/hidden flags, photo/movie type, or title/description substrings — and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID.\n" +
+    "Returns: a count plus photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) — feed a UUID into get-photo for full metadata or into export to copy files.\n" +
+    "Do not use when: you already have a UUID and want full metadata for that one photo — use get-photo; or you just want the catalog of album/keyword/person names — use list-albums / list-keywords / list-persons.",
   {
     ...libraryArg,
     uuid: z.array(z.string()).optional().describe("Specific UUIDs to fetch"),
@@ -136,8 +140,9 @@ server.tool(
 // --- get-photo ---
 server.tool(
   "get-photo",
-  "Get full metadata for a single photo by UUID — dimensions, dates, location, place, " +
-    "albums, keywords, persons, labels, and type flags (HDR/live/raw/edited/etc.)",
+  "Use when: you have a single photo's UUID (typically from query) and want its complete metadata.\n" +
+    "Returns: dimensions and original dimensions, dates, title/description, location and place, albums, keywords, persons, labels, file paths, size, and type flags (HDR/live/raw/edited/portrait/panorama/etc.).\n" +
+    "Do not use when: you don't have a UUID yet, or you want to inspect many photos at once — use query to find and summarize matches first.",
   {
     ...libraryArg,
     uuid: z.string().describe("Photo UUID"),
@@ -174,7 +179,9 @@ server.tool(
 // --- list-albums ---
 server.tool(
   "list-albums",
-  "List all albums in the library, including their folder paths and photo counts",
+  "Use when: you want the catalog of albums — e.g. to discover exact album names before filtering query by album, or to browse the library's organization.\n" +
+    "Returns: every album's title, folder path, photo count, shared status, and UUID.\n" +
+    "Do not use when: you want the photos inside an album — use query with the album filter; you want the folder hierarchy rather than albums — use list-folders; or you just want a total album count — use library-info.",
   libraryArg,
   withErrorHandling(({ library }) => {
     const { count, albums } = manager.listAlbums(library);
@@ -191,7 +198,9 @@ server.tool(
 // --- list-folders ---
 server.tool(
   "list-folders",
-  "List all folders in the library with their parent and album/subfolder counts",
+  "Use when: you want the library's folder hierarchy — the containers that hold albums and subfolders — to understand how albums are nested.\n" +
+    "Returns: every folder's title, parent folder, album count, and subfolder count.\n" +
+    "Do not use when: you want the albums themselves (with their photo counts) — use list-albums; or you just want a total folder count — use library-info.",
   libraryArg,
   withErrorHandling(({ library }) => {
     const { count, folders } = manager.listFolders(library);
@@ -207,7 +216,9 @@ server.tool(
 // --- list-keywords ---
 server.tool(
   "list-keywords",
-  "List keywords sorted by usage count. Use limit to cap.",
+  "Use when: you want the catalog of keywords (tags) in the library — e.g. to discover exact keyword spellings before filtering query by keyword, or to see which tags are most used. Pass limit for the top-N.\n" +
+    "Returns: keywords with their photo counts, sorted most-used first.\n" +
+    "Do not use when: you want photos carrying a keyword — use query with the keyword filter; or you want people/faces rather than tags — use list-persons.",
   {
     ...libraryArg,
     limit: z.number().int().positive().optional().describe("Top-N keywords"),
@@ -223,7 +234,9 @@ server.tool(
 // --- list-persons ---
 server.tool(
   "list-persons",
-  "List people detected by Photos face recognition, sorted by photo count",
+  "Use when: you want the catalog of named people from Photos face recognition — e.g. to discover exact person names before filtering query by person, or to see who appears most. Pass limit for the top-N; unidentified faces appear as _UNKNOWN_.\n" +
+    "Returns: persons with their photo counts, sorted most-photographed first.\n" +
+    "Do not use when: you want photos of a person — use query with the person filter; or you want subject tags rather than people — use list-keywords.",
   {
     ...libraryArg,
     limit: z.number().int().positive().optional().describe("Top-N persons"),
@@ -239,12 +252,10 @@ server.tool(
 // --- export ---
 server.tool(
   "export",
-  "Export one or more photos (by UUID) to a destination directory. " +
-    "By default exports the original. Use edited=true to export the edited version, " +
-    "live=true to include the live-photo video, raw=true to include the raw image. " +
-    "If an original isn't on disk (iCloud-only), the export falls back to Photos.app " +
-    "to download it on demand — same behavior as opening the photo in Photos. " +
-    "This can be slow for large batches; expect waits proportional to download size.",
+  "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\n" +
+    "Returns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. edited=true requested but no edits exist).\n" +
+    "Do not use when: you only need metadata or file paths rather than copies on disk — use get-photo; or you're still figuring out which photos to export — use query first.\n" +
+    "Safety: this is the only side-effecting tool — it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand — this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
   {
     ...libraryArg,
     uuid: z.array(z.string()).min(1).describe("Photo UUID(s) to export"),

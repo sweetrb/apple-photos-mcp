@@ -2,7 +2,23 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-23
+
+First stable release. The public tool API (query / get-photo / library-info / list-* / export — all read-only except `export`) is now committed under semver 1.0. This release consolidates the recent multi-host packaging + marketplace work and adds production hardening.
+
+### Added
+- **Structured MCP tool descriptions on all 10 tools** in the `Use when: / Returns: / Do not use when:` shape (with a `Safety:` clause on `export`), so an agent can pick the right tool from metadata alone — matching the other Apple MCP servers.
+- **CONTRIBUTING.md and SECURITY.md.**
+
+### Changed
+- **Switched to the manual-bump release model** (`publish.yml`, replacing the auto-bump `auto-release.yml`): the version is now bumped in the release commit, so `main`'s HEAD is always a normal CI-checked commit. This fixes the repo's perpetual non-green status (the old model's bot-pushed `chore(release)` commit never ran CI) and restores a per-release CHANGELOG.
+- **Bumped `@modelcontextprotocol/sdk` to ^1.29.0**, clearing all `npm audit` advisories (transitive, from the SDK's unused HTTP transport) — `npm audit --omit=dev` is now clean.
+- **Pinned the Python dependency range** (`osxphotos>=0.69.0,<0.76`) so an incompatible future minor can't silently change the output contract.
+
 ### Fixed
+- **Permission errors are now actionable.** When osxphotos hits a Full-Disk-Access / "unable to open database" failure, every tool appends guidance (grant Full Disk Access; run the `doctor` tool; see `docs/FULL-DISK-ACCESS.md`) instead of surfacing the raw low-level error.
+- **Python version is gated.** `scripts/setup.sh` now prefers a Python ≥ 3.11 interpreter and fails fast with guidance if only an older one (e.g. macOS's stock 3.9) is found. README updated to **Python 3.11+** (osxphotos needs ≥ 3.10; the date filters need 3.11).
+- **Release reliability:** the `npm install -g npm@latest` step in `publish.yml` now retries, so a transient registry `ECONNRESET` no longer aborts a release.
 - **Codex marketplace shipped the Apple Notes icon for Apple Photos.** Replaced `codex/assets/icon.png` (and added an `icon.svg` source) with a Photos-specific icon — a teal card with a mountains-and-sun glyph, part of a consistent Apple MCP icon family. (Same root cause as the Mail #56 / Numbers #7 reports.)
 
 ### Documentation

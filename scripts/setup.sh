@@ -12,7 +12,7 @@ VENV_DIR="$PROJECT_ROOT/venv"
 echo "==> Setting up Python venv in $VENV_DIR"
 
 PYTHON=""
-for cmd in python3 python; do
+for cmd in python3.14 python3.13 python3.12 python3.11 python3 python; do
   if command -v "$cmd" &>/dev/null; then
     PYTHON="$cmd"
     break
@@ -25,6 +25,16 @@ if [ -z "$PYTHON" ]; then
 fi
 
 echo "    Using: $PYTHON ($($PYTHON --version))"
+
+# Require Python >= 3.11 (osxphotos needs >=3.10; full ISO-8601 date parsing in
+# the --from-date/--to-date filters needs 3.11). macOS ships 3.9 — fail early.
+if ! "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+  echo "ERROR: Python >= 3.11 required, but '$PYTHON' is $($PYTHON --version 2>&1)." >&2
+  echo "       macOS ships Python 3.9. Install a newer one, e.g.:" >&2
+  echo "         brew install python@3.12     # then re-run: npm run setup" >&2
+  echo "       or from https://www.python.org/downloads/" >&2
+  exit 1
+fi
 
 if [ ! -d "$VENV_DIR" ]; then
   echo "==> Creating virtual environment..."

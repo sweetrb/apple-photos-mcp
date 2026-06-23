@@ -1,36 +1,38 @@
-name: Auto release
+name: Publish to npm
 
-# Runs after CI succeeds on main. If the version in package.json hasn't been
-# bumped manually, bump the patch version, commit it back to main, and publish
-# to npm. If the version was already bumped manually (e.g. minor/major), just
-# publish.
-#
-# Every push to main produces an npm release (this is the repo's single publish
-# workflow). Publishing uses OIDC trusted publishing — no NPM_TOKEN.
+# Publishes to npm when package.json's version differs from what's on npm —
+# either on a GitHub Release, or when CI succeeds on a push to main (the manual
+# `chore(release): vX.Y.Z` commit). Manual-bump model, matching the other Apple
+# MCP servers: the version is bumped in the release commit, so main's HEAD is
+# always a normal, CI'd commit (no bot-pushed version commit that GitHub won't
+# run checks on). Publishing uses OIDC trusted publishing — no NPM_TOKEN.
 
 on:
+  release:
+    types: [created]
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main]
 
 jobs:
-  release:
+  publish:
     if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
+      github.event_name == 'release' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: macos-latest
     permissions:
-      contents: write
       id-token: write
+      contents: read
 
     steps:
-      - name: Checkout main with push token
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: main
+          # Release path: the release's tag/commit. Auto path: main (the commit
+          # CI just validated).
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || github.ref }}
           fetch-depth: 2
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -39,52 +41,55 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: "npm"
 
-      - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
-        run: npm install -g npm@latest
-
-      - name: Plan release (bump or publish-as-is)
-        id: plan
+      - name: Check if version is already published
+        id: check
         run: |
-          LOCAL=$(node -p "require('./package.json').version")
-          PUBLISHED=$(npm view apple-photos-mcp version 2>/dev/null || echo "0.0.0")
-          MSG=$(git log -1 --pretty=%s)
-          echo "Local: $LOCAL  Published: $PUBLISHED  Last commit: $MSG"
-
-          if [ "$LOCAL" != "$PUBLISHED" ]; then
-            # Manual bump landed in this push — publish that version, no bump needed.
-            echo "action=publish" >> "$GITHUB_OUTPUT"
-          elif [[ "$MSG" == chore\(release\)* ]]; then
-            # Already a release commit; npm already has this version. Nothing to do.
-            echo "action=skip" >> "$GITHUB_OUTPUT"
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED_VERSION=$(npm view apple-photos-mcp version 2>/dev/null || echo "0.0.0")
+          echo "Local: $LOCAL_VERSION  Published: $PUBLISHED_VERSION"
+          echo "local=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$LOCAL_VERSION" = "$PUBLISHED_VERSION" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            # Normal push that didn't change the version — auto-bump patch and publish.
-            echo "action=bump" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
+        if: steps.check.outputs.skip == 'false'
+        # Retry: the global install hits the live registry and has flaked on
+        # transient ECONNRESET, aborting releases. Try up to 3 times.
+        run: |
+          for i in 1 2 3; do
+            npm install -g npm@latest && exit 0
+            echo "npm upgrade attempt $i failed; retrying in 5s…" >&2
+            sleep 5
+          done
+          echo "::error::npm upgrade failed after 3 attempts" >&2
+          exit 1
+
       - name: Install dependencies
-        if: steps.plan.outputs.action != 'skip'
+        if: steps.check.outputs.skip == 'false'
         run: npm ci
 
-      - name: Auto-bump patch version
-        if: steps.plan.outputs.action == 'bump'
-        id: bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          npm version patch --no-git-tag-version
-          NEW=$(node -p "require('./package.json').version")
-          echo "version=$NEW" >> "$GITHUB_OUTPUT"
-          git add package.json package-lock.json .claude-plugin/plugin.json
-          git commit -m "chore(release): v$NEW"
+      - name: Run linter
+        if: steps.check.outputs.skip == 'false'
+        run: npm run lint
+
+      - name: Run tests
+        if: steps.check.outputs.skip == 'false'
+        run: npm test
 
       - name: Build
-        if: steps.plan.outputs.action != 'skip'
+        if: steps.check.outputs.skip == 'false'
         run: npm run build
 
       - name: Publish to npm
-        if: steps.plan.outputs.action != 'skip'
+        if: steps.check.outputs.skip == 'false'
+        # OIDC trusted publishing — no token. Requires id-token: write (above),
+        # npm >= 11.5.1 (upgraded above), and a Trusted Publisher configured for
+        # this package on npmjs.com (GitHub Actions → sweetrb/apple-photos-mcp, publish.yml).
         run: npm publish
 
-      - name: Push bump commit back to main
-        if: steps.plan.outputs.action == 'bump'
-        run: git push origin main
+      - name: Skip publish (version already published)
+        if: steps.check.outputs.skip == 'true'
+        run: echo "Version ${{ steps.check.outputs.local }} is already published. Skipping."

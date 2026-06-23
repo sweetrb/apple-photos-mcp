@@ -11,6 +11,23 @@ import type {
   QueryResult,
 } from "../types.js";
 
+/**
+ * macOS denies reading the Photos library without Full Disk Access; osxphotos
+ * then surfaces a low-level error like "unable to open database file". Append
+ * actionable guidance so the failure is self-service rather than cryptic.
+ */
+function augmentPermissionError(message: string): string {
+  if (/not permitted|permission|full disk|denied|unable to open/i.test(message)) {
+    return (
+      `${message}\n\nThis looks like a macOS permission issue: the app running this ` +
+      `MCP server needs Full Disk Access (System Settings → Privacy & Security → ` +
+      `Full Disk Access). Run the \`doctor\` tool for a full diagnosis, or see ` +
+      `docs/FULL-DISK-ACCESS.md.`
+    );
+  }
+  return message;
+}
+
 export class PhotosManager {
   /**
    * Build the CLI args common to every subcommand.
@@ -23,7 +40,7 @@ export class PhotosManager {
   private run<T>(command: string, args: string[], timeoutMs?: number): T {
     const result = runPhotosReader<T>(command, args, timeoutMs);
     if (result.error) {
-      throw new Error(result.error);
+      throw new Error(augmentPermissionError(result.error));
     }
     if (!result.data) {
       throw new Error("Python script returned no data");
