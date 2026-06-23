@@ -41,12 +41,19 @@ const libraryArg = {
 };
 
 // --- health-check ---
-server.tool(
+server.registerTool(
   "health-check",
-  "Use when: you want a quick smoke test that osxphotos is installed and the Photos library can be opened.\n" +
-    "Returns: ok/fail plus the osxphotos version, library path, and total photo count.\n" +
-    "Do not use when: you need a full setup diagnostic that pinpoints whether the failure is a missing osxphotos, an unreadable library, or denied Full Disk Access — use doctor instead.",
-  {},
+  {
+    description:
+      "Use when: you want a quick smoke test that osxphotos is installed and the Photos library can be opened.\n" +
+      "Returns: ok/fail plus the osxphotos version, library path, and total photo count.\n" +
+      "Do not use when: you need a full setup diagnostic that pinpoints whether the failure is a missing osxphotos, an unreadable library, or denied Full Disk Access — use doctor instead.",
+    inputSchema: {},
+    outputSchema: {
+      ok: z.boolean().optional(),
+      message: z.string().optional(),
+    },
+  },
   withErrorHandling(() => {
     const result = manager.healthCheck();
     return successResponse(result.ok ? `OK ${result.message}` : `FAIL ${result.message}`, {
@@ -56,12 +63,29 @@ server.tool(
 );
 
 // --- doctor ---
-server.tool(
+server.registerTool(
   "doctor",
-  "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\n" +
-    "Returns: three checks — osxphotos install, Photos library readability, and Full Disk Access — each reported ok/warn/fail with actionable advice.\n" +
-    "Do not use when: you only need the lightweight is-it-working smoke test — use health-check instead.",
-  {},
+  {
+    description:
+      "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\n" +
+      "Returns: three checks — osxphotos install, Photos library readability, and Full Disk Access — each reported ok/warn/fail with actionable advice.\n" +
+      "Do not use when: you only need the lightweight is-it-working smoke test — use health-check instead.",
+    inputSchema: {},
+    outputSchema: {
+      healthy: z.boolean().optional(),
+      checks: z
+        .array(
+          z
+            .object({
+              name: z.string().optional(),
+              status: z.string().optional(),
+              detail: z.string().optional(),
+            })
+            .passthrough()
+        )
+        .optional(),
+    },
+  },
   withErrorHandling(() => {
     const report = runDoctor(manager);
     return successResponse(formatDoctorReport(report), { ...report });
@@ -69,12 +93,27 @@ server.tool(
 );
 
 // --- library-info ---
-server.tool(
+server.registerTool(
   "library-info",
-  "Use when: you want high-level stats about the whole library — total counts of photos, movies, albums, folders, keywords, and persons — or to confirm which library you're targeting before drilling in.\n" +
-    "Returns: the library path, Photos DB and Photos.app versions, and the six counts.\n" +
-    "Do not use when: you want the actual albums/keywords/persons rather than just their counts — use list-albums / list-keywords / list-persons; or you want to find specific photos — use query.",
-  libraryArg,
+  {
+    description:
+      "Use when: you want high-level stats about the whole library — total counts of photos, movies, albums, folders, keywords, and persons — or to confirm which library you're targeting before drilling in.\n" +
+      "Returns: the library path, Photos DB and Photos.app versions, and the six counts.\n" +
+      "Do not use when: you want the actual albums/keywords/persons rather than just their counts — use list-albums / list-keywords / list-persons; or you want to find specific photos — use query.",
+    inputSchema: libraryArg,
+    outputSchema: {
+      libraryPath: z.string().optional(),
+      dbVersion: z.string().optional(),
+      photosVersion: z.union([z.string(), z.number()]).optional(),
+      photoCount: z.number().optional(),
+      movieCount: z.number().optional(),
+      totalCount: z.number().optional(),
+      albumCount: z.number().optional(),
+      folderCount: z.number().optional(),
+      keywordCount: z.number().optional(),
+      personCount: z.number().optional(),
+    },
+  },
   withErrorHandling(({ library }) => {
     const info = manager.getLibraryInfo(library);
     return successResponse(
@@ -93,28 +132,35 @@ server.tool(
 );
 
 // --- query ---
-server.tool(
+server.registerTool(
   "query",
-  "Use when: you need to find photos matching one or more filters — album, keyword, person, ISO date range, favorite/hidden flags, photo/movie type, or title/description substrings — and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID.\n" +
-    "Returns: a count plus photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) — feed a UUID into get-photo for full metadata or into export to copy files.\n" +
-    "Do not use when: you already have a UUID and want full metadata for that one photo — use get-photo; or you just want the catalog of album/keyword/person names — use list-albums / list-keywords / list-persons.",
   {
-    ...libraryArg,
-    uuid: z.array(z.string()).optional().describe("Specific UUIDs to fetch"),
-    album: z.array(z.string()).optional().describe("Album name(s); ANY-match"),
-    keyword: z.array(z.string()).optional().describe("Keyword(s); ANY-match"),
-    person: z.array(z.string()).optional().describe("Person name(s); ANY-match"),
-    fromDate: z.string().optional().describe("ISO 8601 lower bound on photo date"),
-    toDate: z.string().optional().describe("ISO 8601 upper bound on photo date"),
-    favorite: z.boolean().optional().describe("Only favorites"),
-    notFavorite: z.boolean().optional().describe("Exclude favorites"),
-    hidden: z.boolean().optional().describe("Only hidden photos"),
-    notHidden: z.boolean().optional().describe("Exclude hidden photos (default behavior)"),
-    photos: z.boolean().optional().describe("Include still photos"),
-    movies: z.boolean().optional().describe("Include movies"),
-    title: z.string().optional().describe("Substring match on title"),
-    description: z.string().optional().describe("Substring match on description"),
-    limit: z.number().int().positive().optional().describe("Cap the number of results"),
+    description:
+      "Use when: you need to find photos matching one or more filters — album, keyword, person, ISO date range, favorite/hidden flags, photo/movie type, or title/description substrings — and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID.\n" +
+      "Returns: a count plus photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) — feed a UUID into get-photo for full metadata or into export to copy files.\n" +
+      "Do not use when: you already have a UUID and want full metadata for that one photo — use get-photo; or you just want the catalog of album/keyword/person names — use list-albums / list-keywords / list-persons.",
+    inputSchema: {
+      ...libraryArg,
+      uuid: z.array(z.string()).optional().describe("Specific UUIDs to fetch"),
+      album: z.array(z.string()).optional().describe("Album name(s); ANY-match"),
+      keyword: z.array(z.string()).optional().describe("Keyword(s); ANY-match"),
+      person: z.array(z.string()).optional().describe("Person name(s); ANY-match"),
+      fromDate: z.string().optional().describe("ISO 8601 lower bound on photo date"),
+      toDate: z.string().optional().describe("ISO 8601 upper bound on photo date"),
+      favorite: z.boolean().optional().describe("Only favorites"),
+      notFavorite: z.boolean().optional().describe("Exclude favorites"),
+      hidden: z.boolean().optional().describe("Only hidden photos"),
+      notHidden: z.boolean().optional().describe("Exclude hidden photos (default behavior)"),
+      photos: z.boolean().optional().describe("Include still photos"),
+      movies: z.boolean().optional().describe("Include movies"),
+      title: z.string().optional().describe("Substring match on title"),
+      description: z.string().optional().describe("Substring match on description"),
+      limit: z.number().int().positive().optional().describe("Cap the number of results"),
+    },
+    outputSchema: {
+      count: z.number().optional(),
+      photos: z.array(z.object({}).passthrough()).optional(),
+    },
   },
   withErrorHandling(({ library, ...filters }) => {
     const result = manager.query(filters, library);
@@ -138,14 +184,20 @@ server.tool(
 );
 
 // --- get-photo ---
-server.tool(
+server.registerTool(
   "get-photo",
-  "Use when: you have a single photo's UUID (typically from query) and want its complete metadata.\n" +
-    "Returns: dimensions and original dimensions, dates, title/description, location and place, albums, keywords, persons, labels, file paths, size, and type flags (HDR/live/raw/edited/portrait/panorama/etc.).\n" +
-    "Do not use when: you don't have a UUID yet, or you want to inspect many photos at once — use query to find and summarize matches first.",
   {
-    ...libraryArg,
-    uuid: z.string().describe("Photo UUID"),
+    description:
+      "Use when: you have a single photo's UUID (typically from query) and want its complete metadata.\n" +
+      "Returns: dimensions and original dimensions, dates, title/description, location and place, albums, keywords, persons, labels, file paths, size, and type flags (HDR/live/raw/edited/portrait/panorama/etc.).\n" +
+      "Do not use when: you don't have a UUID yet, or you want to inspect many photos at once — use query to find and summarize matches first.",
+    inputSchema: {
+      ...libraryArg,
+      uuid: z.string().describe("Photo UUID"),
+    },
+    outputSchema: {
+      photo: z.object({}).passthrough().optional(),
+    },
   },
   withErrorHandling(({ library, uuid }) => {
     const p = manager.getPhoto(uuid, library);
@@ -177,12 +229,19 @@ server.tool(
 );
 
 // --- list-albums ---
-server.tool(
+server.registerTool(
   "list-albums",
-  "Use when: you want the catalog of albums — e.g. to discover exact album names before filtering query by album, or to browse the library's organization.\n" +
-    "Returns: every album's title, folder path, photo count, shared status, and UUID.\n" +
-    "Do not use when: you want the photos inside an album — use query with the album filter; you want the folder hierarchy rather than albums — use list-folders; or you just want a total album count — use library-info.",
-  libraryArg,
+  {
+    description:
+      "Use when: you want the catalog of albums — e.g. to discover exact album names before filtering query by album, or to browse the library's organization.\n" +
+      "Returns: every album's title, folder path, photo count, shared status, and UUID.\n" +
+      "Do not use when: you want the photos inside an album — use query with the album filter; you want the folder hierarchy rather than albums — use list-folders; or you just want a total album count — use library-info.",
+    inputSchema: libraryArg,
+    outputSchema: {
+      count: z.number().optional(),
+      albums: z.array(z.object({}).passthrough()).optional(),
+    },
+  },
   withErrorHandling(({ library }) => {
     const { count, albums } = manager.listAlbums(library);
     if (count === 0) return successResponse("No albums.", { count: 0, albums: [] });
@@ -196,12 +255,19 @@ server.tool(
 );
 
 // --- list-folders ---
-server.tool(
+server.registerTool(
   "list-folders",
-  "Use when: you want the library's folder hierarchy — the containers that hold albums and subfolders — to understand how albums are nested.\n" +
-    "Returns: every folder's title, parent folder, album count, and subfolder count.\n" +
-    "Do not use when: you want the albums themselves (with their photo counts) — use list-albums; or you just want a total folder count — use library-info.",
-  libraryArg,
+  {
+    description:
+      "Use when: you want the library's folder hierarchy — the containers that hold albums and subfolders — to understand how albums are nested.\n" +
+      "Returns: every folder's title, parent folder, album count, and subfolder count.\n" +
+      "Do not use when: you want the albums themselves (with their photo counts) — use list-albums; or you just want a total folder count — use library-info.",
+    inputSchema: libraryArg,
+    outputSchema: {
+      count: z.number().optional(),
+      folders: z.array(z.object({}).passthrough()).optional(),
+    },
+  },
   withErrorHandling(({ library }) => {
     const { count, folders } = manager.listFolders(library);
     if (count === 0) return successResponse("No folders.", { count: 0, folders: [] });
@@ -214,14 +280,21 @@ server.tool(
 );
 
 // --- list-keywords ---
-server.tool(
+server.registerTool(
   "list-keywords",
-  "Use when: you want the catalog of keywords (tags) in the library — e.g. to discover exact keyword spellings before filtering query by keyword, or to see which tags are most used. Pass limit for the top-N.\n" +
-    "Returns: keywords with their photo counts, sorted most-used first.\n" +
-    "Do not use when: you want photos carrying a keyword — use query with the keyword filter; or you want people/faces rather than tags — use list-persons.",
   {
-    ...libraryArg,
-    limit: z.number().int().positive().optional().describe("Top-N keywords"),
+    description:
+      "Use when: you want the catalog of keywords (tags) in the library — e.g. to discover exact keyword spellings before filtering query by keyword, or to see which tags are most used. Pass limit for the top-N.\n" +
+      "Returns: keywords with their photo counts, sorted most-used first.\n" +
+      "Do not use when: you want photos carrying a keyword — use query with the keyword filter; or you want people/faces rather than tags — use list-persons.",
+    inputSchema: {
+      ...libraryArg,
+      limit: z.number().int().positive().optional().describe("Top-N keywords"),
+    },
+    outputSchema: {
+      count: z.number().optional(),
+      keywords: z.array(z.object({}).passthrough()).optional(),
+    },
   },
   withErrorHandling(({ library, limit }) => {
     const { count, keywords } = manager.listKeywords(limit, library);
@@ -232,14 +305,21 @@ server.tool(
 );
 
 // --- list-persons ---
-server.tool(
+server.registerTool(
   "list-persons",
-  "Use when: you want the catalog of named people from Photos face recognition — e.g. to discover exact person names before filtering query by person, or to see who appears most. Pass limit for the top-N; unidentified faces appear as _UNKNOWN_.\n" +
-    "Returns: persons with their photo counts, sorted most-photographed first.\n" +
-    "Do not use when: you want photos of a person — use query with the person filter; or you want subject tags rather than people — use list-keywords.",
   {
-    ...libraryArg,
-    limit: z.number().int().positive().optional().describe("Top-N persons"),
+    description:
+      "Use when: you want the catalog of named people from Photos face recognition — e.g. to discover exact person names before filtering query by person, or to see who appears most. Pass limit for the top-N; unidentified faces appear as _UNKNOWN_.\n" +
+      "Returns: persons with their photo counts, sorted most-photographed first.\n" +
+      "Do not use when: you want photos of a person — use query with the person filter; or you want subject tags rather than people — use list-keywords.",
+    inputSchema: {
+      ...libraryArg,
+      limit: z.number().int().positive().optional().describe("Top-N persons"),
+    },
+    outputSchema: {
+      count: z.number().optional(),
+      persons: z.array(z.object({}).passthrough()).optional(),
+    },
   },
   withErrorHandling(({ library, limit }) => {
     const { count, persons } = manager.listPersons(limit, library);
@@ -250,20 +330,30 @@ server.tool(
 );
 
 // --- export ---
-server.tool(
+server.registerTool(
   "export",
-  "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\n" +
-    "Returns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. edited=true requested but no edits exist).\n" +
-    "Do not use when: you only need metadata or file paths rather than copies on disk — use get-photo; or you're still figuring out which photos to export — use query first.\n" +
-    "Safety: this is the only side-effecting tool — it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand — this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
   {
-    ...libraryArg,
-    uuid: z.array(z.string()).min(1).describe("Photo UUID(s) to export"),
-    dest: z.string().describe("Destination directory (created if missing)"),
-    edited: z.boolean().optional().describe("Export the edited version instead of the original"),
-    live: z.boolean().optional().describe("Also export the live-photo video"),
-    raw: z.boolean().optional().describe("Also export the raw image"),
-    overwrite: z.boolean().optional().describe("Overwrite existing files at the destination"),
+    description:
+      "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\n" +
+      "Returns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. edited=true requested but no edits exist).\n" +
+      "Do not use when: you only need metadata or file paths rather than copies on disk — use get-photo; or you're still figuring out which photos to export — use query first.\n" +
+      "Safety: this is the only side-effecting tool — it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand — this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
+    inputSchema: {
+      ...libraryArg,
+      uuid: z.array(z.string()).min(1).describe("Photo UUID(s) to export"),
+      dest: z.string().describe("Destination directory (created if missing)"),
+      edited: z.boolean().optional().describe("Export the edited version instead of the original"),
+      live: z.boolean().optional().describe("Also export the live-photo video"),
+      raw: z.boolean().optional().describe("Also export the raw image"),
+      overwrite: z.boolean().optional().describe("Overwrite existing files at the destination"),
+    },
+    outputSchema: {
+      destination: z.string().optional(),
+      exportedCount: z.number().optional(),
+      skippedCount: z.number().optional(),
+      exported: z.array(z.string()).optional(),
+      skipped: z.array(z.object({}).passthrough()).optional(),
+    },
   },
   withErrorHandling(({ library, uuid, dest, edited, live, raw, overwrite }) => {
     const result = manager.exportPhotos(uuid, dest, {
