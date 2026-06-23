@@ -1,6 +1,0 @@
-{
-  "apple-photos": {
-    "command": "npx",
-    "args": ["-y", "apple-photos-mcp"]
-  }
-}

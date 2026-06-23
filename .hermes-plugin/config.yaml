@@ -1,0 +1,20 @@
+# Apple Photos MCP server — configuration for NousResearch's Hermes Agent.
+# Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp/
+#
+# Hermes has no third-party plugin/marketplace drop-in. Register the server
+# one of two ways:
+#
+#   1. CLI (recommended):
+#        hermes mcp add apple-photos --command npx --args -y apple-photos-mcp
+#
+#   2. Manual: merge the mcp_servers block below into ~/.hermes/config.yaml,
+#      then restart your Hermes session.
+#
+# Requires macOS, Node.js 18+, Python 3.11+ with osxphotos, and Full Disk
+# Access for the launching process (see the repo README → Requirements).
+mcp_servers:
+  apple-photos:
+    command: npx
+    args:
+      - "-y"
+      - "apple-photos-mcp"

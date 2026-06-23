@@ -65,7 +65,10 @@ The Codex plugin runs the published `apple-photos-mcp` server through `npx` and 
 
 ### Other Hosts (Hermes, Antigravity)
 
-Plugin packaging for the Hermes and Antigravity hosts is also included (`.hermes-plugin/` and `.antigravity-plugin/`). Each registers the same `apple-photos` MCP server (launched via `npx -y apple-photos-mcp`) and bundles the Apple Photos skill, so behavior matches the Claude Code and Codex plugins. Install them through each host's plugin/marketplace mechanism pointed at this repository.
+Configuration for two more hosts is included — each registers the same `apple-photos` MCP server (`npx -y apple-photos-mcp`). As a Python-sidecar (osxphotos) server it also needs Full Disk Access; see [Requirements](#requirements).
+
+- **[Hermes Agent](https://hermes-agent.nousresearch.com/)** (NousResearch) — Hermes has no plugin/marketplace drop-in. Add the server with `hermes mcp add apple-photos --command npx --args -y apple-photos-mcp`, or merge [`.hermes-plugin/config.yaml`](.hermes-plugin/config.yaml) into `~/.hermes/config.yaml`. Details: [`.hermes-plugin/README.md`](.hermes-plugin/README.md).
+- **[Antigravity](https://antigravity.google/)** (Google) — add the server entry from [`.antigravity-plugin/mcp_config.json`](.antigravity-plugin/mcp_config.json) to `~/.gemini/config/mcp_config.json` (or via Antigravity's MCP settings).
 
 ### Manual Installation
 
