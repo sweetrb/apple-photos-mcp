@@ -88,7 +88,7 @@ jobs:
         # OIDC trusted publishing — no token. Requires id-token: write (above),
         # npm >= 11.5.1 (upgraded above), and a Trusted Publisher configured for
         # this package on npmjs.com (GitHub Actions → sweetrb/apple-photos-mcp, publish.yml).
-        run: npm publish
+        run: npm publish --provenance
 
       - name: Create GitHub Release (keep Releases in sync with npm)
         if: steps.check.outputs.skip == 'false'
