@@ -267,7 +267,10 @@ describe("checkDependencies", () => {
   });
 
   it("reports ok with the version when the import probe succeeds", () => {
-    execMock.mockReturnValue("0.69.0\n");
+    // findSystemPython probes the interpreter via execSync; the import probe runs
+    // via execFileSync (no shell).
+    execMock.mockReturnValue("0.69.0\n"); // findSystemPython
+    execFileMock.mockReturnValue("0.69.0\n"); // import probe
     const result = checkDependencies();
     expect(result.ok).toBe(true);
     expect(result.message).toContain("osxphotos");
@@ -275,10 +278,9 @@ describe("checkDependencies", () => {
   });
 
   it("reports not-ok with the setup hint when the import probe throws", () => {
-    // First execSync (system python version probe) succeeds; the import probe
-    // throws. Simplest: make every execSync throw -> findSystemPython throws and
-    // checkDependencies catches it, returning the missing-dep message.
-    execMock.mockImplementation(() => {
+    // findSystemPython succeeds (execSync); the execFileSync import probe throws.
+    execMock.mockReturnValue("0.69.0\n"); // findSystemPython
+    execFileMock.mockImplementation(() => {
       throw new Error("ModuleNotFoundError: No module named osxphotos");
     });
     const result = checkDependencies();
