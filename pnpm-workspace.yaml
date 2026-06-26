@@ -1,2 +1,7 @@
+# pnpm workspace config. Single-package repo — this file exists mainly to carry
+# the build-script approvals below. pnpm 11 reads build-script consent ONLY from
+# `allowBuilds` here (the v10 `onlyBuiltDependencies`, the package.json `pnpm`
+# field, and `.npmrc` are all ignored). Without approving esbuild, `pnpm install`
+# fails with ERR_PNPM_IGNORED_BUILDS.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
