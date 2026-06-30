@@ -20,7 +20,7 @@ try:
     from osxphotos import PhotosDB, QueryOptions
 except ImportError:
     print(json.dumps({
-        "error": "osxphotos not installed. Run: npm run setup"
+        "error": "osxphotos not installed. Run: pnpm run setup"
     }))
     sys.exit(1)
 
@@ -201,6 +201,10 @@ def cmd_query(args):
     options = _query_options(args)
     photos = db.query(options)
 
+    # db.query() returns lightweight PhotoInfo handles; the expensive work is the
+    # per-photo property access in _photo_summary (albums/keywords/persons/etc.).
+    # Slice to the requested limit *before* projecting so large libraries don't pay
+    # the full-projection cost for a small page. When no limit is set, project all.
     if args.limit and args.limit > 0:
         photos = photos[: args.limit]
 

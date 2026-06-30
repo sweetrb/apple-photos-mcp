@@ -36,6 +36,7 @@ const server = new McpServer({
 const libraryArg = {
   library: z
     .string()
+    .max(4096)
     .optional()
     .describe("Path to a .photoslibrary (default: system Photos library)"),
 };
@@ -141,21 +142,31 @@ server.registerTool(
       "Do not use when: you already have a UUID and want full metadata for that one photo — use get-photo; or you just want the catalog of album/keyword/person names — use list-albums / list-keywords / list-persons.",
     inputSchema: {
       ...libraryArg,
-      uuid: z.array(z.string()).optional().describe("Specific UUIDs to fetch"),
-      album: z.array(z.string()).optional().describe("Album name(s); ANY-match"),
-      keyword: z.array(z.string()).optional().describe("Keyword(s); ANY-match"),
-      person: z.array(z.string()).optional().describe("Person name(s); ANY-match"),
-      fromDate: z.string().optional().describe("ISO 8601 lower bound on photo date"),
-      toDate: z.string().optional().describe("ISO 8601 upper bound on photo date"),
+      uuid: z.array(z.string().max(256)).max(1000).optional().describe("Specific UUIDs to fetch"),
+      album: z.array(z.string().max(1024)).max(100).optional().describe("Album name(s); ANY-match"),
+      keyword: z.array(z.string().max(1024)).max(100).optional().describe("Keyword(s); ANY-match"),
+      person: z
+        .array(z.string().max(1024))
+        .max(100)
+        .optional()
+        .describe("Person name(s); ANY-match"),
+      fromDate: z.string().max(64).optional().describe("ISO 8601 lower bound on photo date"),
+      toDate: z.string().max(64).optional().describe("ISO 8601 upper bound on photo date"),
       favorite: z.boolean().optional().describe("Only favorites"),
       notFavorite: z.boolean().optional().describe("Exclude favorites"),
       hidden: z.boolean().optional().describe("Only hidden photos"),
       notHidden: z.boolean().optional().describe("Exclude hidden photos (default behavior)"),
       photos: z.boolean().optional().describe("Include still photos"),
       movies: z.boolean().optional().describe("Include movies"),
-      title: z.string().optional().describe("Substring match on title"),
-      description: z.string().optional().describe("Substring match on description"),
-      limit: z.number().int().positive().optional().describe("Cap the number of results"),
+      title: z.string().max(1024).optional().describe("Substring match on title"),
+      description: z.string().max(2048).optional().describe("Substring match on description"),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(100000)
+        .optional()
+        .describe("Cap the number of results"),
     },
     outputSchema: {
       count: z.number().optional(),
@@ -289,7 +300,7 @@ server.registerTool(
       "Do not use when: you want photos carrying a keyword — use query with the keyword filter; or you want people/faces rather than tags — use list-persons.",
     inputSchema: {
       ...libraryArg,
-      limit: z.number().int().positive().optional().describe("Top-N keywords"),
+      limit: z.number().int().positive().max(100000).optional().describe("Top-N keywords"),
     },
     outputSchema: {
       count: z.number().optional(),
@@ -314,7 +325,7 @@ server.registerTool(
       "Do not use when: you want photos of a person — use query with the person filter; or you want subject tags rather than people — use list-keywords.",
     inputSchema: {
       ...libraryArg,
-      limit: z.number().int().positive().optional().describe("Top-N persons"),
+      limit: z.number().int().positive().max(100000).optional().describe("Top-N persons"),
     },
     outputSchema: {
       count: z.number().optional(),
@@ -340,8 +351,8 @@ server.registerTool(
       "Safety: this is the only side-effecting tool — it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand — this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
     inputSchema: {
       ...libraryArg,
-      uuid: z.array(z.string()).min(1).describe("Photo UUID(s) to export"),
-      dest: z.string().describe("Destination directory (created if missing)"),
+      uuid: z.array(z.string().max(256)).min(1).max(1000).describe("Photo UUID(s) to export"),
+      dest: z.string().max(4096).describe("Destination directory (created if missing)"),
       edited: z.boolean().optional().describe("Export the edited version instead of the original"),
       live: z.boolean().optional().describe("Also export the live-photo video"),
       raw: z.boolean().optional().describe("Also export the raw image"),
@@ -393,6 +404,22 @@ async function main() {
   process.on("unhandledRejection", (reason) => {
     console.error("[unhandledRejection]", reason);
   });
+
+  // Deterministic shutdown: every osxphotos/AppleScript child is spawned
+  // synchronously (execFileSync), so there is nothing to await — exit cleanly on
+  // the usual termination signals and when the client closes stdin (EOF), rather
+  // than lingering as an orphan after the MCP host goes away.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.error(`[shutdown] ${signal} received, exiting`);
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.stdin.on("end", () => shutdown("stdin EOF"));
+  process.stdin.on("close", () => shutdown("stdin close"));
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
