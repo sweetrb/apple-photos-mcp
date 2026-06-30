@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-06-30
+### Changed
+- **Toolchain migrated to pnpm** (dev + CI + publish). CI now runs on the Node `[22, 24]` matrix with `pnpm/action-setup` + `pnpm install --frozen-lockfile`; `publish.yml` releases via `pnpm publish --provenance --no-git-checks` through OIDC trusted publishing (no `NPM_TOKEN`). Runtime `engines.node` stays `>=20` — pnpm is dev/CI-only.
+- **`query` short-circuits the per-photo projection at `limit`.** The Python sidecar already sliced the result list before projecting, but the path is now documented as the intended fast path so large libraries don't pay the full `_photo_summary` projection cost for a small page. Behavior is unchanged when no limit is set.
+
+### Added
+- **Input bounds on tool schemas.** `query` and `export` now cap string lengths (UUIDs, album/keyword/person names, title/description, library/dest paths) and array sizes, and the `limit` fields on `query`/`list-keywords`/`list-persons` gain a sane upper bound — rejecting pathological inputs at the schema boundary.
+- **Deterministic shutdown handler.** The server now exits cleanly on `SIGTERM`/`SIGINT` and on stdin EOF/close (client disconnect), complementing the existing `uncaughtException`/`unhandledRejection` net so it no longer lingers as an orphan after the MCP host goes away.
+
+### Docs
+- **README developer/build commands switched from `npm` to `pnpm`** in the Quick Start, From-Source, Development, and Troubleshooting sections (end-user `npm install -g` global-install hints and npm badges left as-is). The sidecar's "osxphotos not installed" hint now reads `pnpm run setup` to match.
+
 ## [1.1.2] - 2026-06-25
 ### Fixed
 - Added a process-level uncaughtException/unhandledRejection safety net so a stray error or a broken stdout pipe (EPIPE) on client disconnect can no longer crash the long-lived server; EPIPE now exits cleanly.
