@@ -1,7 +1,7 @@
 import { execSync, execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, parse } from "node:path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -9,9 +9,39 @@ const __dirname = dirname(__filename);
 const PACKAGE = "osxphotos";
 const ENV_PREFIX = "APPLE_PHOTOS_MCP";
 
+let cachedProjectRoot: string | null = null;
+
+/**
+ * Locate the package root — the directory that owns package.json AND the shipped
+ * python sidecar. Walking up from this module rather than assuming a fixed depth
+ * is required because the shipped entrypoint is now an esbuild bundle:
+ *   - bundled:   this code runs from build/index.js       (__dirname = build/)
+ *   - unbundled: this code runs from build/utils/python.js (__dirname = build/utils/)
+ *   - dev/tests: this code runs from src/utils/python.ts   (__dirname = src/utils/)
+ * A fixed `../..` was correct only for the unbundled layout and pointed one level
+ * ABOVE the real root once bundled, breaking the sidecar/venv/setup paths. The
+ * "contains package.json + src/utils/photos_reader.py" check disambiguates from a
+ * parent directory that merely happens to hold an unrelated package.json.
+ */
 function getProjectRoot(): string {
-  // build/utils/ or src/utils/ -> project root
-  return join(__dirname, "..", "..");
+  if (cachedProjectRoot !== null) return cachedProjectRoot;
+  const { root } = parse(__dirname);
+  let dir = __dirname;
+  while (true) {
+    if (
+      existsSync(join(dir, "package.json")) &&
+      existsSync(join(dir, "src", "utils", "photos_reader.py"))
+    ) {
+      cachedProjectRoot = dir;
+      return dir;
+    }
+    if (dir === root) break;
+    dir = dirname(dir);
+  }
+  // Fallback to the historical two-levels-up guess if no marked root was found
+  // (keeps behavior defined even in an unexpected layout).
+  cachedProjectRoot = join(__dirname, "..", "..");
+  return cachedProjectRoot;
 }
 
 function getScriptPath(): string {
