@@ -1,11 +1,10 @@
 {
   "name": "apple-photos-mcp",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "packageManager": "pnpm@11.9.0",
   "description": "MCP server for Apple Photos - query, search, export, and inspect the macOS Photos library via Claude and other AI assistants",
   "type": "module",
   "main": "build/index.js",
-  "types": "build/index.d.ts",
   "bin": {
     "apple-photos-mcp": "build/index.js"
   },
@@ -19,7 +18,7 @@
   ],
   "scripts": {
     "setup": "bash scripts/setup.sh",
-    "build": "tsc && tsc-alias",
+    "build": "tsc --noEmit && esbuild src/index.ts --bundle --platform=node --format=esm --outfile=build/index.js --banner:js=\"import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);\"",
     "start": "node build/index.js",
     "dev": "tsc --watch",
     "lint": "eslint src",
@@ -75,12 +74,12 @@
     "@typescript-eslint/eslint-plugin": "^8.57.2",
     "@typescript-eslint/parser": "^8.57.2",
     "@vitest/coverage-v8": "^3.2.6",
+    "esbuild": "^0.28.1",
     "eslint": "^9.0.0",
     "globals": "^17.0.0",
     "husky": "^9.0.0",
     "lint-staged": "^16.2.7",
     "prettier": "^3.0.0",
-    "tsc-alias": "^1.8.0",
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.51.0",
     "vitest": "^3.2.6"

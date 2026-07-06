@@ -1,8 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.4] - 2026-07-06
+### Fixed
+- **A bare `git clone` now runs the server with only Node present** ([#15]). Tracking `build/` (the previous release) put the compiled entrypoint in git, but `build/index.js` still `import`ed its dependencies (`@modelcontextprotocol/sdk`, `zod`) from `node_modules/`, which a plain clone / marketplace install lacks — so the server died on `ERR_MODULE_NOT_FOUND` before it could complete the MCP handshake. The build now **esbuild-bundles `src/index.ts` into a single self-contained `build/index.js`** (`tsc --noEmit` still type-checks; esbuild does the bundling), so the marketplace/git clone starts on Node alone with no install step. This mirrors the fix @oliverames landed for apple-notes-mcp (#69) and apple-mail-mcp (#79). The Python sidecar path logic was hardened alongside: `getProjectRoot()` now walks up to the directory that owns `package.json` + `src/utils/photos_reader.py` instead of assuming a fixed `build/utils/ → ../..` depth, so the collapsed single-file bundle still resolves `photos_reader.py`, the venv, `requirements.txt`, and `scripts/setup.sh` correctly.
+
 ### Changed
-- **`build/` is now tracked in git** (removed from `.gitignore`), matching apple-mail-mcp and apple-numbers-mcp. The `.claude-plugin/plugin.json` launches `node ${CLAUDE_PLUGIN_ROOT}/build/index.js` directly, so a marketplace/git-installed plugin needs the compiled output committed. `tsconfig.json` now also excludes `**/*.test.ts` from compilation (as mail/numbers do) so `build/` contains only shippable runtime code, not compiled tests. Build-infra only — no runtime behavior change.
+- **`.gitignore` now tracks only the bundled entrypoint** (`build/*` then `!build/index.js`) — per-module `tsc` output (e.g. from `pnpm run dev`) stays ignored. Added `esbuild` as a devDependency; dropped the now-unused `tsc-alias` devDependency and the `types` package.json field.
+- **`build/` is tracked in git** (from the previous release, #17/#18), matching apple-mail-mcp and apple-numbers-mcp. The `.claude-plugin/plugin.json` launches `node ${CLAUDE_PLUGIN_ROOT}/build/index.js` directly, so a marketplace/git-installed plugin needs the compiled output committed. `tsconfig.json` excludes `**/*.test.ts` from compilation (as mail/numbers do) so `build/` contains only shippable runtime code, not compiled tests.
+
+[#15]: https://github.com/sweetrb/apple-photos-mcp/issues/15
 
 ## [1.1.3] - 2026-06-30
 ### Changed
