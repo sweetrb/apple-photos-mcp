@@ -39,7 +39,8 @@ Before any tool works, two things must be in place:
 
 Run **`health-check`** first when in doubt — it confirms both at once (osxphotos
 present + library openable). When something is actually broken, reach for
-**`doctor`**: it's the richest diagnostic, checking osxphotos install, library
+**`doctor`**: it's the richest diagnostic, checking the Python interpreter
+(path + version — warns below the required 3.11), osxphotos install, library
 readability, and Full Disk Access separately and reporting each as ok / warn /
 fail with an actionable message — so it pinpoints *which* of the first-run
 requirements is missing.
@@ -81,7 +82,10 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
   filterable; unnamed faces show as `_UNKNOWN_`. Use `list-persons` to see
   available names first.
 - **Export is the only write — and it never touches the library.** `export`
-  writes file copies to the `dest` directory (created if missing). It never
+  writes file copies to the `dest` directory (created if missing). `dest` must
+  resolve — after `~` expansion and symlink resolution — to a path under the
+  home directory, `/tmp`, `/private/tmp`, or `/Volumes`; anything else is
+  rejected with an error naming those roots. It never
   modifies the Photos library. By default it exports the original; use
   `edited: true`, `live: true` (live-photo video), `raw: true`, and
   `overwrite: true` as needed. Without `overwrite`, a photo whose file already
@@ -100,7 +104,7 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 | Tool | Purpose |
 |------|---------|
 | `health-check` | Verify osxphotos is installed and the library opens |
-| `doctor` | Full setup diagnostic — osxphotos install, library readability, and Full Disk Access, each ok/warn/fail with advice (richer than `health-check`) |
+| `doctor` | Full setup diagnostic — Python interpreter version, osxphotos install, library readability, and Full Disk Access, each ok/warn/fail with advice (richer than `health-check`) |
 | `library-info` | High-level counts (photos, movies, albums, folders, keywords, persons) |
 | `query` | Find photos by date/album/keyword/person/flags → returns UUIDs |
 | `get-photo` | Full metadata for one photo by UUID |
@@ -122,6 +126,7 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 | Export skipped: "already exists at destination" | A file with that name is already at `dest` and `overwrite` wasn't set | Pass `overwrite: true` to replace, or export to a fresh directory |
 | Export skipped: "UUID not found (deleted or in trash)" | Stale UUID — photo deleted or moved to Recently Deleted since the query | Re-run `query` to get current UUIDs |
 | "Operation timed out after 60000ms" | Very large library — every call re-opens the Photos DB | Set `APPLE_PHOTOS_MCP_TIMEOUT` (ms) higher |
+| "Export destination ... is outside the allowed export roots" | `dest` resolves outside home, `/tmp`, `/private/tmp`, and `/Volumes` (symlinks are followed) | Pick a destination under one of those roots |
 | Database-lock error | Photos.app is mid-write | Close Photos.app and retry (queries only — iCloud export needs Photos) |
 
 ## Quick reference: getting the most from a request

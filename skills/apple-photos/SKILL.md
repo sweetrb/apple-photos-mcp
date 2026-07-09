@@ -79,7 +79,7 @@ User: "I want the edited versions, not the originals"
 
 4. **Date format is ISO 8601** (`2025-06-01` or `2025-06-01T00:00:00`).
 
-5. **Export creates the destination directory** if it doesn't exist. Use `overwrite=true` only when the user has confirmed they want to replace existing files.
+5. **Export creates the destination directory** if it doesn't exist, and the destination must resolve (after `~` expansion and symlink resolution) to a path under the home directory, `/tmp`, `/private/tmp`, or `/Volumes` — anything else is rejected. Use `overwrite=true` only when the user has confirmed they want to replace existing files.
 
 6. **macOS only.** The Photos library only exists on macOS.
 
@@ -91,6 +91,7 @@ User: "I want the edited versions, not the originals"
 |-------|--------------|
 | "osxphotos not installed" | Auto-setup failed — run `doctor` FIRST to see why. Most often `python3` is older than 3.11 (stock macOS ships 3.9): `brew install python@3.12`, then retry the tool call (the venv rebuilds automatically) |
 | "Operation not permitted" / "unable to open database" | Full Disk Access missing — grant it to the HOST app (Claude Desktop / Terminal / iTerm / VS Code, not node), then fully quit and relaunch that app. Guide: https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md |
+| "Export destination ... is outside the allowed export roots" | `dest` resolves outside the home directory, `/tmp`, `/private/tmp`, and `/Volumes` (symlinks are followed) — pick a destination under one of those roots |
 | "Library not found" | The `library` path doesn't exist or isn't a `.photoslibrary` |
 | "No photos matched the query" | Filters too narrow — relax the criteria |
 | "Photo not found: <uuid>" | Wrong UUID, or photo deleted |

@@ -2985,7 +2985,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve.call(this, root, ref);
+      let _sch = resolve3.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a = root.localRefs) === null || _a === void 0 ? void 0 : _a[ref];
         const { schemaId } = this.opts;
@@ -3012,7 +3012,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve(root, ref) {
+    function resolve3(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3643,7 +3643,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve(baseURI, relativeURI, options) {
+    function resolve3(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse4(baseURI, schemelessOptions), parse4(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3901,7 +3901,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve,
+      resolve: resolve3,
       resolveComponent,
       equal,
       serialize,
@@ -18981,7 +18981,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -18998,7 +18998,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve3, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -19076,7 +19076,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve(parseResult.data);
+            resolve3(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -19337,12 +19337,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve3, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve, interval);
+      const timeoutId = setTimeout(resolve3, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -20664,7 +20664,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -21337,12 +21337,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve3) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve();
+        resolve3();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve3);
       }
     });
   }
@@ -21351,13 +21351,82 @@ var StdioServerTransport = class {
 // src/index.ts
 import { readFileSync as readFileSync3 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { dirname as dirname2, join as join3 } from "node:path";
+import { dirname as dirname3, join as join6 } from "node:path";
+
+// src/services/photosManager.ts
+import { statSync as statSync2 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join4, resolve as resolve2 } from "node:path";
 
 // src/utils/python.ts
 import { execSync, execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, parse as parse3 } from "node:path";
+import { dirname, join as join2, parse as parse3 } from "node:path";
+
+// src/utils/docsUrls.ts
+var REPO_URL = "https://github.com/sweetrb/apple-photos-mcp";
+var REQUIREMENTS_URL = `${REPO_URL}#requirements`;
+var TROUBLESHOOTING_URL = `${REPO_URL}#troubleshooting`;
+var FDA_GUIDE_URL = `${REPO_URL}/blob/main/docs/FULL-DISK-ACCESS.md`;
+var FDA_REMEDIATION = `Grant Full Disk Access to the HOST app that launches this MCP server (Claude Desktop / Terminal / iTerm / VS Code \u2014 not node) in System Settings > Privacy & Security > Full Disk Access, then fully quit and relaunch that app. Run the \`doctor\` tool for a full diagnosis, or see ${FDA_GUIDE_URL}.`;
+
+// src/utils/setupLock.ts
+import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+function acquireSetupLock(lockDir, staleMs) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      mkdirSync(lockDir);
+      try {
+        writeFileSync(join(lockDir, "pid"), `${process.pid}
+`);
+      } catch {
+      }
+      return true;
+    } catch (err) {
+      if (err.code !== "EEXIST") {
+        return false;
+      }
+      let ageMs;
+      try {
+        ageMs = Date.now() - statSync(lockDir).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (ageMs > staleMs) {
+        try {
+          rmSync(lockDir, { recursive: true, force: true });
+        } catch {
+          return false;
+        }
+        continue;
+      }
+      return false;
+    }
+  }
+  return false;
+}
+function releaseSetupLock(lockDir) {
+  try {
+    rmSync(lockDir, { recursive: true, force: true });
+  } catch {
+  }
+}
+function sleepSyncMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+function waitForCompletion(isComplete, timeoutMs, pollMs = 1e3) {
+  const deadline = Date.now() + timeoutMs;
+  for (; ; ) {
+    if (isComplete()) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    sleepSyncMs(Math.min(pollMs, remaining));
+  }
+}
+
+// src/utils/python.ts
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
 var PACKAGE = "osxphotos";
@@ -21368,30 +21437,33 @@ function getProjectRoot() {
   const { root } = parse3(__dirname);
   let dir = __dirname;
   while (true) {
-    if (existsSync(join(dir, "package.json")) && existsSync(join(dir, "src", "utils", "photos_reader.py"))) {
+    if (existsSync(join2(dir, "package.json")) && existsSync(join2(dir, "src", "utils", "photos_reader.py"))) {
       cachedProjectRoot = dir;
       return dir;
     }
     if (dir === root) break;
     dir = dirname(dir);
   }
-  cachedProjectRoot = join(__dirname, "..", "..");
+  cachedProjectRoot = join2(__dirname, "..", "..");
   return cachedProjectRoot;
 }
 function getScriptPath() {
-  return join(getProjectRoot(), "src", "utils", "photos_reader.py");
+  return join2(getProjectRoot(), "src", "utils", "photos_reader.py");
 }
 function venvPythonPath() {
-  return join(getProjectRoot(), "venv", "bin", "python3");
+  return join2(getProjectRoot(), "venv", "bin", "python3");
 }
 function requirementsPath() {
-  return join(getProjectRoot(), "requirements.txt");
+  return join2(getProjectRoot(), "requirements.txt");
 }
 function setupScriptPath() {
-  return join(getProjectRoot(), "scripts", "setup.sh");
+  return join2(getProjectRoot(), "scripts", "setup.sh");
+}
+function setupLockPath() {
+  return join2(getProjectRoot(), "venv.setup.lock");
 }
 function depsMarkerPath() {
-  return join(getProjectRoot(), "venv", ".deps-ok");
+  return join2(getProjectRoot(), "venv", ".deps-ok");
 }
 function readIfExists(p) {
   try {
@@ -21420,7 +21492,7 @@ function findSystemPython() {
     }
   }
   throw new Error(
-    "Python 3 not found on PATH. Install Python 3.11+ (stock macOS ships 3.9 \u2014 brew install python@3.12), then retry. See https://github.com/sweetrb/apple-photos-mcp#requirements."
+    `Python 3 not found on PATH. Install Python 3.11+ (stock macOS ships 3.9 \u2014 brew install python@3.12), then retry. See ${REQUIREMENTS_URL}.`
   );
 }
 function resolvePython() {
@@ -21448,10 +21520,29 @@ function bootstrapTimeoutMs() {
   }
   return 5 * 60 * 1e3;
 }
+function lockStaleMs() {
+  return Math.max(2 * bootstrapTimeoutMs(), 10 * 60 * 1e3);
+}
 function bootstrapVenv() {
   bootstrapAttempted = true;
   const setup = setupScriptPath();
   if (!existsSync(setup)) return false;
+  const lockDir = setupLockPath();
+  if (!acquireSetupLock(lockDir, lockStaleMs())) {
+    console.error(
+      `[photos-mcp] Another process is already setting up the Python venv (lock: ${lockDir}) \u2014 waiting for it to finish\u2026`
+    );
+    if (waitForCompletion(() => venvIsReady(), bootstrapTimeoutMs())) {
+      console.error("[photos-mcp] Python venv ready (set up by another process).");
+      cachedPython = null;
+      readyConfirmed = false;
+      return true;
+    }
+    console.error(
+      `[photos-mcp] Timed out after ${bootstrapTimeoutMs()}ms waiting for another process's venv setup to finish. If no setup is actually running, remove the stale lock directory ${lockDir} and retry, or run scripts/setup.sh from a repo checkout (raise ${ENV_PREFIX}_SETUP_TIMEOUT to wait longer).`
+    );
+    return false;
+  }
   console.error(
     `[photos-mcp] ${PACKAGE} not ready \u2014 setting up the Python venv (one-time; this can take a minute)\u2026`
   );
@@ -21460,7 +21551,9 @@ function bootstrapVenv() {
       encoding: "utf-8",
       timeout: bootstrapTimeoutMs(),
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env
+      // The lock is already held by this process — tell setup.sh not to
+      // re-acquire (it would deadlock waiting on its own parent).
+      env: { ...process.env, [`${ENV_PREFIX}_SETUP_LOCK_HELD`]: "1" }
     });
     const last = out.trim().split("\n").pop() ?? "";
     console.error(`[photos-mcp] Python venv ready. ${last}`.trim());
@@ -21474,6 +21567,8 @@ function bootstrapVenv() {
       `[photos-mcp] Automatic venv setup failed: ${detail.split("\n").pop() ?? detail}`
     );
     return false;
+  } finally {
+    releaseSetupLock(lockDir);
   }
 }
 function ensureReady() {
@@ -21491,7 +21586,7 @@ function looksLikeMissingDep(message) {
   return /not installed|No module named|ModuleNotFoundError/i.test(message);
 }
 function setupHint() {
-  return `Install it with: pip3 install osxphotos (requires Python >= 3.11; stock macOS ships 3.9 \u2014 brew install python@3.12), or run scripts/setup.sh from a repo checkout. Run the doctor tool to diagnose, or see https://github.com/sweetrb/apple-photos-mcp#troubleshooting (set ${ENV_PREFIX}_NO_AUTO_SETUP=0 to allow automatic setup).`;
+  return `Install it with: pip3 install osxphotos (requires Python >= 3.11; stock macOS ships 3.9 \u2014 brew install python@3.12), or run scripts/setup.sh from a repo checkout. Run the doctor tool to diagnose, or see ${TROUBLESHOOTING_URL} (set ${ENV_PREFIX}_NO_AUTO_SETUP=0 to allow automatic setup).`;
 }
 function execReader(command, args, timeoutMs) {
   const python = resolvePython();
@@ -21572,6 +21667,18 @@ function runPhotosReader(command, args, timeoutMs) {
   }
   return result;
 }
+function getPythonInfo() {
+  try {
+    const python = resolvePython();
+    const version3 = execFileSync(python, ["--version"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"]
+    }).trim();
+    return { path: python, version: version3 };
+  } catch {
+    return null;
+  }
+}
 function checkDependencies() {
   ensureReady();
   try {
@@ -21593,19 +21700,92 @@ function checkDependencies() {
   }
 }
 
+// src/utils/exportPath.ts
+import { existsSync as existsSync2, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname as dirname2, join as join3, resolve, sep } from "node:path";
+var ALLOWED_EXPORT_ROOTS = [homedir(), "/tmp", "/private/tmp", "/Volumes"];
+var ALLOWED_EXPORT_ROOTS_TEXT = "your home directory, /tmp, /private/tmp, or /Volumes";
+function isPathWithinAllowedRoots(resolvedPath) {
+  return ALLOWED_EXPORT_ROOTS.some((root) => {
+    const base = root.endsWith(sep) ? root.slice(0, -1) : root;
+    return resolvedPath === base || resolvedPath.startsWith(base + sep);
+  });
+}
+function expandTilde(p) {
+  if (p === "~") return homedir();
+  if (p.startsWith(`~${sep}`) || p.startsWith("~/")) return join3(homedir(), p.slice(2));
+  return p;
+}
+function realpathDeepestExisting(p) {
+  let existing = p;
+  const tail = [];
+  while (!existsSync2(existing)) {
+    const parent = dirname2(existing);
+    if (parent === existing) break;
+    tail.unshift(basename(existing));
+    existing = parent;
+  }
+  let real;
+  try {
+    real = realpathSync(existing);
+  } catch {
+    real = existing;
+  }
+  return tail.length ? join3(real, ...tail) : real;
+}
+function resolveExportDest(dest) {
+  const resolved = realpathDeepestExisting(resolve(expandTilde(dest)));
+  if (!isPathWithinAllowedRoots(resolved)) {
+    throw new Error(
+      `Export destination "${dest}" resolves to "${resolved}", which is outside the allowed export roots (${ALLOWED_EXPORT_ROOTS_TEXT}). Choose a destination under one of those roots.`
+    );
+  }
+  return resolved;
+}
+
 // src/services/photosManager.ts
 function augmentPermissionError(message) {
   if (/not permitted|permission|full disk|denied|unable to open/i.test(message)) {
     return `${message}
 
-This looks like a macOS permission issue: grant Full Disk Access to the HOST app that launches this MCP server (Claude Desktop / Terminal / iTerm / VS Code \u2014 not node) in System Settings \u2192 Privacy & Security \u2192 Full Disk Access, then fully quit and relaunch that app. Run the \`doctor\` tool for a full diagnosis, or see https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md.`;
+This looks like a macOS permission issue: ${FDA_REMEDIATION}`;
   }
   return message;
 }
+function libraryDbFile(library) {
+  let lib;
+  if (library) {
+    const expanded = library === "~" ? homedir2() : library.startsWith("~/") ? join4(homedir2(), library.slice(2)) : library;
+    lib = resolve2(expanded);
+  } else {
+    lib = join4(homedir2(), "Pictures", "Photos Library.photoslibrary");
+  }
+  return lib.endsWith(".sqlite") ? lib : join4(lib, "database", "Photos.sqlite");
+}
+var CACHEABLE_COMMANDS = /* @__PURE__ */ new Set([
+  "library-info",
+  "list-albums",
+  "list-folders",
+  "list-keywords",
+  "list-persons"
+]);
+var MAX_CACHE_ENTRIES = 8;
 function flagArg(flag, value) {
   return `${flag}=${value}`;
 }
 var PhotosManager = class {
+  /**
+   * In-process cache for the rarely-changing catalog commands
+   * (CACHEABLE_COMMANDS). Every sidecar call pays a fixed spawn + full-DB-parse
+   * cost (seconds on a large library), and agents habitually re-list
+   * albums/keywords/persons within a session — this turns those repeats into
+   * ~0ms. Entries are validated against the library DB file's mtime on every
+   * hit, so a library change (import, edit, album rename) invalidates
+   * immediately; when the DB file can't be stat'ed (no FDA, odd layout) the
+   * cache simply stays out of the way.
+   */
+  cache = /* @__PURE__ */ new Map();
   /**
    * Build the CLI args common to every subcommand.
    * Library path is optional; when omitted, osxphotos uses the system library.
@@ -21613,13 +21793,42 @@ var PhotosManager = class {
   libraryArgs(library) {
     return library ? [flagArg("--library", library)] : [];
   }
-  run(command, args, timeoutMs) {
+  dbMtimeMs(library) {
+    try {
+      return statSync2(libraryDbFile(library)).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+  run(command, args, timeoutMs, library) {
+    const cacheable = CACHEABLE_COMMANDS.has(command);
+    let cacheKey = null;
+    let mtimeMs = null;
+    if (cacheable) {
+      mtimeMs = this.dbMtimeMs(library);
+      if (mtimeMs !== null) {
+        cacheKey = `${command}\0${JSON.stringify(args)}\0${libraryDbFile(library)}`;
+        const hit = this.cache.get(cacheKey);
+        if (hit && hit.mtimeMs === mtimeMs) {
+          return hit.data;
+        }
+        if (hit) this.cache.delete(cacheKey);
+      }
+    }
     const result = runPhotosReader(command, args, timeoutMs);
     if (result.error) {
       throw new Error(augmentPermissionError(result.error));
     }
     if (!result.data) {
       throw new Error("Python script returned no data");
+    }
+    if (cacheKey !== null && mtimeMs !== null) {
+      this.cache.set(cacheKey, { mtimeMs, data: result.data });
+      while (this.cache.size > MAX_CACHE_ENTRIES) {
+        const oldest = this.cache.keys().next().value;
+        if (oldest === void 0) break;
+        this.cache.delete(oldest);
+      }
     }
     return result.data;
   }
@@ -21640,7 +21849,7 @@ var PhotosManager = class {
     }
   }
   getLibraryInfo(library) {
-    return this.run("library-info", this.libraryArgs(library));
+    return this.run("library-info", this.libraryArgs(library), void 0, library);
   }
   query(filters, library) {
     const args = this.libraryArgs(library);
@@ -21679,30 +21888,31 @@ var PhotosManager = class {
     return result.photo;
   }
   listAlbums(library) {
-    return this.run("list-albums", this.libraryArgs(library));
+    return this.run("list-albums", this.libraryArgs(library), void 0, library);
   }
   listFolders(library) {
-    return this.run("list-folders", this.libraryArgs(library));
+    return this.run("list-folders", this.libraryArgs(library), void 0, library);
   }
   listKeywords(limit, library) {
     const args = this.libraryArgs(library);
     if (limit !== void 0) args.push(flagArg("--limit", limit));
-    return this.run("list-keywords", args);
+    return this.run("list-keywords", args, void 0, library);
   }
   listPersons(limit, library) {
     const args = this.libraryArgs(library);
     if (limit !== void 0) args.push(flagArg("--limit", limit));
-    return this.run("list-persons", args);
+    return this.run("list-persons", args, void 0, library);
   }
   exportPhotos(uuids, dest, options = {}) {
     if (uuids.length === 0) {
       throw new Error("At least one UUID is required to export");
     }
+    const resolvedDest = resolveExportDest(dest);
     const args = this.libraryArgs(options.library);
     for (const uuid2 of uuids) {
       args.push(flagArg("--uuid", uuid2));
     }
-    args.push(flagArg("--dest", dest));
+    args.push(flagArg("--dest", resolvedDest));
     if (options.edited) args.push("--edited");
     if (options.live) args.push("--live");
     if (options.raw) args.push("--raw");
@@ -21737,12 +21947,35 @@ function withErrorHandling(handler, prefix) {
 }
 
 // src/tools/doctor.ts
-var FDA_REMEDIATION = "Grant Full Disk Access to the HOST app that launches this MCP server (Claude Desktop / Terminal / iTerm / VS Code \u2014 not node) in System Settings > Privacy & Security > Full Disk Access, then fully quit and relaunch that app. Guide: https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md";
 function looksLikePermissionError(message) {
   return /not permitted|permission|full disk|denied|unable to open/i.test(message);
 }
 function runDoctor(manager2) {
   const checks = [];
+  try {
+    const info = getPythonInfo();
+    if (info) {
+      const m = /Python (\d+)\.(\d+)/.exec(info.version);
+      const tooOld = m !== null && (Number(m[1]) < 3 || Number(m[1]) === 3 && Number(m[2]) < 11);
+      checks.push({
+        name: "python_interpreter",
+        status: tooOld ? "warn" : "ok",
+        detail: tooOld ? `${info.version} at ${info.path} \u2014 osxphotos requires Python >= 3.11 (stock macOS ships 3.9). Install a newer Python (brew install python@3.12) and retry \u2014 the venv rebuilds automatically. See ${TROUBLESHOOTING_URL}` : `${info.version} (${info.path})`
+      });
+    } else {
+      checks.push({
+        name: "python_interpreter",
+        status: "fail",
+        detail: `Python 3 not found on PATH. Install Python >= 3.11 (e.g. brew install python@3.12). See ${TROUBLESHOOTING_URL}`
+      });
+    }
+  } catch (e) {
+    checks.push({
+      name: "python_interpreter",
+      status: "warn",
+      detail: `could not resolve the Python interpreter: ${String(e)}`
+    });
+  }
   try {
     const dep = checkDependencies();
     checks.push({
@@ -21754,7 +21987,7 @@ function runDoctor(manager2) {
     checks.push({
       name: "osxphotos",
       status: "fail",
-      detail: `could not verify osxphotos: ${String(e)}. See https://github.com/sweetrb/apple-photos-mcp#troubleshooting`
+      detail: `could not verify osxphotos: ${String(e)}. See ${TROUBLESHOOTING_URL}`
     });
   }
   let libraryOk = false;
@@ -21899,18 +22132,18 @@ function registerResourcesAndPrompts(server2, manager2) {
 }
 
 // src/services/fileConfig.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
-import { join as join2 } from "node:path";
-import { homedir } from "node:os";
+import { existsSync as existsSync3, readFileSync as readFileSync2 } from "node:fs";
+import { join as join5 } from "node:path";
+import { homedir as homedir3 } from "node:os";
 function fileConfigPath(env = process.env) {
   const override = env.APPLE_PHOTOS_MCP_CONFIG_FILE;
   if (override && override.trim()) return override.trim();
-  return join2(homedir(), "Library", "Application Support", "apple-photos-mcp", "config.json");
+  return join5(homedir3(), "Library", "Application Support", "apple-photos-mcp", "config.json");
 }
 function loadFileConfig(env = process.env, path = fileConfigPath(env)) {
   const applied = [];
   try {
-    if (!existsSync2(path)) return applied;
+    if (!existsSync3(path)) return applied;
     const parsed = JSON.parse(readFileSync2(path, "utf8"));
     if (!parsed || typeof parsed !== "object") return applied;
     for (const [k, v] of Object.entries(parsed)) {
@@ -21929,8 +22162,8 @@ function loadFileConfig(env = process.env, path = fileConfigPath(env)) {
 // src/index.ts
 loadFileConfig();
 var __filename2 = fileURLToPath2(import.meta.url);
-var __dirname2 = dirname2(__filename2);
-var pkg = JSON.parse(readFileSync3(join3(__dirname2, "..", "package.json"), "utf-8"));
+var __dirname2 = dirname3(__filename2);
+var pkg = JSON.parse(readFileSync3(join6(__dirname2, "..", "package.json"), "utf-8"));
 var version2 = pkg.version;
 var manager = new PhotosManager();
 var server = new McpServer({
@@ -21961,7 +22194,7 @@ server.registerTool(
 server.registerTool(
   "doctor",
   {
-    description: "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\nReturns: three checks \u2014 osxphotos install, Photos library readability, and Full Disk Access \u2014 each reported ok/warn/fail with actionable advice.\nDo not use when: you only need the lightweight is-it-working smoke test \u2014 use health-check instead.",
+    description: "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\nReturns: four checks \u2014 Python interpreter (path + version; warns below 3.11), osxphotos install, Photos library readability, and Full Disk Access \u2014 each reported ok/warn/fail with actionable advice.\nDo not use when: you only need the lightweight is-it-working smoke test \u2014 use health-check instead.",
     inputSchema: {},
     outputSchema: {
       healthy: external_exports.boolean().optional(),
@@ -22081,7 +22314,10 @@ server.registerTool(
     description: "Use when: you have a single photo's UUID (typically from query) and want its complete metadata.\nReturns: dimensions and original dimensions, dates, title/description, location and place, albums, keywords, persons, labels, file paths, size, and type flags (HDR/live/raw/edited/portrait/panorama/etc.).\nDo not use when: you don't have a UUID yet, or you want to inspect many photos at once \u2014 use query to find and summarize matches first.",
     inputSchema: {
       ...libraryArg,
-      uuid: external_exports.string().describe("Photo UUID")
+      uuid: external_exports.string().max(256).regex(
+        /^[0-9A-Fa-f-]+$/,
+        "must be a Photos UUID \u2014 hexadecimal segments separated by dashes (e.g. 1EB2B765-0765-43BA-A90C-0F0AE547B343)"
+      ).describe("Photo UUID (hex-with-dashes, as returned by query)")
     },
     outputSchema: {
       photo: external_exports.object({}).passthrough().optional()
@@ -22203,11 +22439,13 @@ ${lines.join("\n")}`, { count, persons });
 server.registerTool(
   "export",
   {
-    description: "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\nReturns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\nDo not use when: you only need metadata or file paths rather than copies on disk \u2014 use get-photo; or you're still figuring out which photos to export \u2014 use query first.\nSafety: this is the only side-effecting tool \u2014 it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand \u2014 this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
+    description: "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\nReturns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\nDo not use when: you only need metadata or file paths rather than copies on disk \u2014 use get-photo; or you're still figuring out which photos to export \u2014 use query first.\nSafety: this is the only side-effecting tool \u2014 it writes files into the destination directory (created if missing). dest must resolve (after expanding ~ and following symlinks) to a path under your home directory, /tmp, /private/tmp, or /Volumes; anything else is rejected. With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand \u2014 this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
     inputSchema: {
       ...libraryArg,
       uuid: external_exports.array(external_exports.string().max(256)).min(1).max(1e3).describe("Photo UUID(s) to export"),
-      dest: external_exports.string().max(4096).describe("Destination directory (created if missing)"),
+      dest: external_exports.string().min(1).max(4096).describe(
+        "Destination directory (created if missing). Must be under the home directory, /tmp, /private/tmp, or /Volumes"
+      ),
       edited: external_exports.boolean().optional().describe("Export the edited version instead of the original"),
       live: external_exports.boolean().optional().describe("Also export the live-photo video"),
       raw: external_exports.boolean().optional().describe("Also export the raw image"),

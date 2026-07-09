@@ -15,8 +15,9 @@ build/*
 .DS_Store
 coverage/
 
-# Python venv
+# Python venv (+ the transient cross-process bootstrap lock)
 venv/
+venv.setup.lock/
 __pycache__/
 
 # Vitest temp files

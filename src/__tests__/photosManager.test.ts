@@ -5,11 +5,27 @@ vi.mock("../utils/python.js", () => ({
   checkDependencies: vi.fn(),
 }));
 
+// node:fs is mocked so the metadata cache's mtime stat and the export-dest
+// symlink resolution are deterministic (no dependence on the machine's real
+// Photos library or /tmp contents). Defaults set in beforeEach: statSync
+// throws (=> caching disabled), existsSync true + realpathSync identity
+// (=> resolveExportDest is a pure normalization).
+vi.mock("node:fs", () => ({
+  statSync: vi.fn(),
+  existsSync: vi.fn(),
+  realpathSync: vi.fn(),
+}));
+
+import { statSync, existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { PhotosManager } from "../services/photosManager.js";
 import { runPhotosReader, checkDependencies } from "../utils/python.js";
 
 const runMock = vi.mocked(runPhotosReader);
 const checkMock = vi.mocked(checkDependencies);
+const statMock = vi.mocked(statSync);
+const existsMock = vi.mocked(existsSync);
+const realpathMock = vi.mocked(realpathSync);
 
 describe("PhotosManager", () => {
   let manager: PhotosManager;
@@ -18,6 +34,14 @@ describe("PhotosManager", () => {
     manager = new PhotosManager();
     runMock.mockReset();
     checkMock.mockReset();
+    statMock.mockReset();
+    statMock.mockImplementation(() => {
+      throw new Error("ENOENT: no such file");
+    });
+    existsMock.mockReset();
+    existsMock.mockReturnValue(true);
+    realpathMock.mockReset();
+    realpathMock.mockImplementation(((p: unknown) => String(p)) as typeof realpathSync);
   });
 
   afterEach(() => {
@@ -276,6 +300,166 @@ describe("PhotosManager", () => {
       manager.listPersons(15, "/tmp/Other.photoslibrary");
       const [, args] = runMock.mock.calls[0];
       expect(args).toEqual(["--library=/tmp/Other.photoslibrary", "--limit=15"]);
+    });
+  });
+
+  describe("export destination allowlist", () => {
+    const okResult = {
+      data: {
+        destination: "/tmp/out",
+        exportedCount: 1,
+        skippedCount: 0,
+        exported: ["a.jpg"],
+        skipped: [],
+      },
+    };
+
+    it("rejects a destination outside the allowed roots without spawning the sidecar", () => {
+      expect(() => manager.exportPhotos(["A"], "/etc/photos")).toThrow(
+        /home directory, \/tmp, \/private\/tmp, or \/Volumes/
+      );
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects a /Volumes prefix-sharing sibling (segment boundary)", () => {
+      expect(() => manager.exportPhotos(["A"], "/Volumesx/evil")).toThrow(/allowed export roots/);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects a ..-escape from an allowed root", () => {
+      expect(() => manager.exportPhotos(["A"], "/tmp/../etc/photos")).toThrow(
+        /allowed export roots/
+      );
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("expands ~ and passes the resolved destination to the sidecar", () => {
+      runMock.mockReturnValue(okResult);
+      manager.exportPhotos(["A"], "~/Desktop/exports");
+      const [, args] = runMock.mock.calls[0];
+      expect(args).toContain(`--dest=${homedir()}/Desktop/exports`);
+    });
+
+    it("accepts destinations under /tmp and /Volumes", () => {
+      runMock.mockReturnValue(okResult);
+      manager.exportPhotos(["A"], "/tmp/out");
+      expect(runMock.mock.calls[0][1]).toContain("--dest=/tmp/out");
+
+      runMock.mockClear();
+      runMock.mockReturnValue(okResult);
+      manager.exportPhotos(["A"], "/Volumes/USB/exports");
+      expect(runMock.mock.calls[0][1]).toContain("--dest=/Volumes/USB/exports");
+    });
+  });
+
+  describe("metadata cache", () => {
+    const fakeStat = (mtimeMs: number) => ({ mtimeMs }) as unknown as ReturnType<typeof statSync>;
+    const albums = { count: 1, albums: [{ title: "Vacation" }] };
+
+    it("serves a repeat catalog call from the cache (no second sidecar spawn)", () => {
+      statMock.mockReturnValue(fakeStat(1111));
+      runMock.mockReturnValue({ data: albums });
+
+      const first = manager.listAlbums();
+      const second = manager.listAlbums();
+
+      expect(runMock).toHaveBeenCalledTimes(1);
+      expect(second).toEqual(first);
+    });
+
+    it("stats the library DB file that backs the cache key", () => {
+      statMock.mockReturnValue(fakeStat(1111));
+      runMock.mockReturnValue({ data: albums });
+
+      manager.listAlbums();
+
+      const statted = String(statMock.mock.calls[0]?.[0]);
+      expect(statted).toContain("Photos Library.photoslibrary/database/Photos.sqlite");
+      expect(statted.startsWith(homedir())).toBe(true);
+    });
+
+    it("busts the cache when the library DB mtime changes", () => {
+      statMock.mockReturnValueOnce(fakeStat(1111)).mockReturnValue(fakeStat(2222));
+      runMock.mockReturnValue({ data: albums });
+
+      manager.listAlbums();
+      manager.listAlbums();
+
+      expect(runMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not cache when the DB file cannot be stat'ed", () => {
+      // beforeEach default: statSync throws.
+      runMock.mockReturnValue({ data: albums });
+
+      manager.listAlbums();
+      manager.listAlbums();
+
+      expect(runMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("caches per (command, args, library): different libraries don't collide", () => {
+      statMock.mockReturnValue(fakeStat(1111));
+      runMock.mockReturnValue({ data: albums });
+
+      manager.listAlbums();
+      manager.listAlbums("/tmp/Other.photoslibrary");
+
+      expect(runMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("covers all five catalog commands", () => {
+      statMock.mockReturnValue(fakeStat(1111));
+      runMock.mockReturnValue({
+        data: { count: 0, albums: [], folders: [], keywords: [], persons: [] },
+      });
+
+      manager.getLibraryInfo();
+      manager.getLibraryInfo();
+      manager.listFolders();
+      manager.listFolders();
+      manager.listKeywords(5);
+      manager.listKeywords(5);
+      manager.listPersons();
+      manager.listPersons();
+
+      // 4 distinct calls, each repeated once from cache.
+      expect(runMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("does NOT cache query or get-photo", () => {
+      statMock.mockReturnValue(fakeStat(1111));
+      runMock.mockReturnValue({ data: { count: 0, returned: 0, photos: [] } });
+      manager.query({ favorite: true });
+      manager.query({ favorite: true });
+      expect(runMock).toHaveBeenCalledTimes(2);
+
+      runMock.mockClear();
+      runMock.mockReturnValue({ data: { photo: { uuid: "A" } } });
+      manager.getPhoto("A");
+      manager.getPhoto("A");
+      expect(runMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not cache error results", () => {
+      statMock.mockReturnValue(fakeStat(1111));
+      runMock.mockReturnValueOnce({ error: "library locked" });
+      expect(() => manager.listAlbums()).toThrow("library locked");
+
+      runMock.mockReturnValueOnce({ data: albums });
+      expect(manager.listAlbums()).toEqual(albums);
+      expect(runMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps a different limit as a different cache entry", () => {
+      statMock.mockReturnValue(fakeStat(1111));
+      runMock.mockReturnValue({ data: { count: 0, keywords: [] } });
+
+      manager.listKeywords(10);
+      manager.listKeywords(20);
+      manager.listKeywords(10);
+
+      expect(runMock).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -186,7 +186,7 @@ Verify osxphotos is installed and the Photos library can be opened.
 
 #### `doctor`
 
-Run a full setup diagnostic: osxphotos installation, Photos library readability, and Full Disk Access — each reported as ok / warn / fail with an actionable message. This is the richer counterpart to `health-check`; reach for it first when a tool returns a permission or "unable to open" error.
+Run a full setup diagnostic: the resolved Python interpreter (path + version — warns when it's older than the required 3.11, with `brew install python@3.12` advice), osxphotos installation, Photos library readability, and Full Disk Access — each reported as ok / warn / fail with an actionable message. This is the richer counterpart to `health-check`; reach for it first when a tool returns a permission or "unable to open" error.
 
 **Parameters:** None
 
@@ -259,7 +259,7 @@ Get full metadata for a single photo by UUID.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `uuid` | string | Yes | Photo UUID |
+| `uuid` | string | Yes | Photo UUID, as returned by `query` (hexadecimal segments separated by dashes, max 256 chars — anything else is rejected before the library is even opened) |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
 **Example:**
@@ -334,7 +334,7 @@ Export one or more photos by UUID to a destination directory.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `uuid` | string[] | Yes | Photo UUID(s) to export (non-empty) |
-| `dest` | string | Yes | Destination directory (created if missing) |
+| `dest` | string | Yes | Destination directory (created if missing). Must resolve — after expanding `~` and following symlinks — to a path under your **home directory**, **/tmp**, **/private/tmp**, or **/Volumes**; anything else is rejected |
 | `edited` | boolean | No | Export the edited version instead of the original |
 | `live` | boolean | No | Also export the live-photo video |
 | `raw` | boolean | No | Also export the raw image |
@@ -362,6 +362,8 @@ Export one or more photos by UUID to a destination directory.
 ```
 
 **Returns:** Destination path, count of files exported, count skipped, list of exported file paths, and a per-UUID reason for every skip (file already exists, UUID not found / in Recently Deleted, iCloud download failed, ...). Every requested UUID is accounted for in `exported` + `skipped`.
+
+**Destination allowlist:** the destination is canonicalized (leading `~` expanded, `..` normalized, symlinks resolved — including a not-yet-existing final directory) and must land under the home directory, `/tmp`, `/private/tmp`, or `/Volumes`. The check is segment-aware (`/Volumesx` does not pass as `/Volumes`), and the canonical path is what's exported into, so a symlink under an allowed root can't redirect the write outside it.
 
 **Filename collisions:** Files keep the photo's original filename. If a file of that name already exists at the destination and `overwrite` is not set, the photo is skipped with reason `already exists at destination` — re-running an export never creates `IMG_1234 (1).jpg`-style duplicates. Pass `overwrite: true` to replace in place.
 
@@ -501,7 +503,7 @@ The Photos library SQLite database lives in a protected directory (`~/Pictures/P
 
 ### Verifying it worked
 
-Run the **`doctor`** tool — it explicitly reports the **Full Disk Access** check (alongside osxphotos install and library readability) as ok / warn / fail, so it's the best way to confirm the grant took effect. `health-check` and `library-info` also work as a quick smoke test.
+Run the **`doctor`** tool — it explicitly reports the **Full Disk Access** check (alongside the Python interpreter version, osxphotos install, and library readability) as ok / warn / fail, so it's the best way to confirm the grant took effect. `health-check` and `library-info` also work as a quick smoke test.
 
 For the full why-and-how walkthrough, see the [Full Disk Access Setup Guide](https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md).
 
@@ -522,7 +524,7 @@ All configuration is optional — the server works out of the box.
 | `APPLE_PHOTOS_MCP_MAX_BUFFER` | `104857600` (100 MB) | Max bytes captured from the Python sidecar's stdout. Raise it if a very large library/query is truncated; lower it to cap memory. |
 | `APPLE_PHOTOS_MCP_TIMEOUT` | `60000` (60 s) | Default per-command timeout, in milliseconds, for the Python sidecar. Every call re-opens the Photos database, and on very large libraries (100k+ photos) the load alone can exceed 60 s — raise this if tools report "Operation timed out". `export` keeps its own 30-minute window. |
 | `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` | unset (auto-setup on) | Set to `1` (or any truthy value) to disable the automatic first-use venv bootstrap. With it on, you must run `pnpm run setup` (or `pip3 install osxphotos`) yourself. |
-| `APPLE_PHOTOS_MCP_SETUP_TIMEOUT` | `300000` (5 min) | Max time, in milliseconds, the automatic venv bootstrap may run before it's aborted. Raise it on slow networks where the `osxphotos` install needs longer. |
+| `APPLE_PHOTOS_MCP_SETUP_TIMEOUT` | `300000` (5 min) | Max time, in milliseconds, the automatic venv bootstrap may run before it's aborted. Raise it on slow networks where the `osxphotos` install needs longer. Also bounds how long a second server instance waits on the cross-process setup lock for a concurrent bootstrap to finish (simultaneous first calls can't corrupt the venv). |
 | `APPLE_PHOTOS_MCP_CONFIG_FILE` | `~/Library/Application Support/apple-photos-mcp/config.json` | Path to the JSON config file (see below). |
 
 ### Configuration file (when the host strips `env`)
@@ -562,7 +564,7 @@ This is the same pattern used by [apple-numbers-mcp](https://github.com/sweetrb/
 
 - **Local only** — All operations happen locally via osxphotos. No data is sent to external servers.
 - **Read-only** against the Photos library — the library is never modified.
-- **Exports write to disk** — `export` writes files to the destination directory you specify. Confirm destinations before running on shared machines.
+- **Exports write to disk** — `export` writes files to the destination directory you specify, and only into an allowlisted location: the destination must resolve (symlinks included) to a path under your home directory, `/tmp`, `/private/tmp`, or `/Volumes`. Confirm destinations before running on shared machines.
 - **No credential storage** — The server doesn't store any passwords or authentication tokens.
 
 ---

@@ -1,13 +1,16 @@
 /**
  * Setup "doctor": one diagnostic covering the things that actually break an
- * apple-photos-mcp setup — osxphotos installation, Photos library reachability,
- * and Full Disk Access (required for the host process to read the library) —
- * each reported as ok / warn / fail with an actionable message.
+ * apple-photos-mcp setup — the resolved Python interpreter (path + version, so
+ * an old stock Python is visible at a glance), osxphotos installation, Photos
+ * library reachability, and Full Disk Access (required for the host process to
+ * read the library) — each reported as ok / warn / fail with an actionable
+ * message.
  *
  * @module tools/doctor
  */
 import type { PhotosManager } from "../services/photosManager.js";
-import { checkDependencies } from "../utils/python.js";
+import { checkDependencies, getPythonInfo } from "../utils/python.js";
+import { FDA_REMEDIATION, TROUBLESHOOTING_URL } from "../utils/docsUrls.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export interface DoctorCheck {
@@ -19,14 +22,6 @@ export interface DoctorReport {
   healthy: boolean;
   checks: DoctorCheck[];
 }
-
-/** Remediation message pointing the user at Full Disk Access. */
-const FDA_REMEDIATION =
-  "Grant Full Disk Access to the HOST app that launches this MCP server " +
-  "(Claude Desktop / Terminal / iTerm / VS Code — not node) in " +
-  "System Settings > Privacy & Security > Full Disk Access, then fully quit " +
-  "and relaunch that app. Guide: " +
-  "https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md";
 
 /** Heuristic: does this error look like a permission / Full Disk Access failure? */
 function looksLikePermissionError(message: string): boolean {
@@ -40,7 +35,44 @@ function looksLikePermissionError(message: string): boolean {
 export function runDoctor(manager: PhotosManager): DoctorReport {
   const checks: DoctorCheck[] = [];
 
-  // 1. osxphotos installation.
+  // 1. Python interpreter — the same resolution the sidecar uses (project venv
+  //    first, then system python3). Reported with its version so the most
+  //    common first-run failure — stock macOS Python 3.9 when osxphotos needs
+  //    >= 3.11 — is diagnosed instead of surfacing as "osxphotos not installed".
+  //    Mirrors apple-numbers-mcp's python_interpreter check.
+  try {
+    const info = getPythonInfo();
+    if (info) {
+      const m = /Python (\d+)\.(\d+)/.exec(info.version);
+      const tooOld = m !== null && (Number(m[1]) < 3 || (Number(m[1]) === 3 && Number(m[2]) < 11));
+      checks.push({
+        name: "python_interpreter",
+        status: tooOld ? "warn" : "ok",
+        detail: tooOld
+          ? `${info.version} at ${info.path} — osxphotos requires Python >= 3.11 ` +
+            `(stock macOS ships 3.9). Install a newer Python (brew install python@3.12) ` +
+            `and retry — the venv rebuilds automatically. ` +
+            `See ${TROUBLESHOOTING_URL}`
+          : `${info.version} (${info.path})`,
+      });
+    } else {
+      checks.push({
+        name: "python_interpreter",
+        status: "fail",
+        detail:
+          "Python 3 not found on PATH. Install Python >= 3.11 (e.g. brew install python@3.12). " +
+          `See ${TROUBLESHOOTING_URL}`,
+      });
+    }
+  } catch (e) {
+    checks.push({
+      name: "python_interpreter",
+      status: "warn",
+      detail: `could not resolve the Python interpreter: ${String(e)}`,
+    });
+  }
+
+  // 2. osxphotos installation.
   try {
     const dep = checkDependencies();
     checks.push({
@@ -52,14 +84,12 @@ export function runDoctor(manager: PhotosManager): DoctorReport {
     checks.push({
       name: "osxphotos",
       status: "fail",
-      detail:
-        `could not verify osxphotos: ${String(e)}. ` +
-        `See https://github.com/sweetrb/apple-photos-mcp#troubleshooting`,
+      detail: `could not verify osxphotos: ${String(e)}. See ${TROUBLESHOOTING_URL}`,
     });
   }
 
-  // 2. Photos library reachability. We remember whether it was a permission
-  //    error so check #3 (full_disk_access) can be derived from it.
+  // 3. Photos library reachability. We remember whether it was a permission
+  //    error so the full_disk_access check can be derived from it.
   let libraryOk = false;
   let libraryPermissionError = false;
   try {
@@ -80,7 +110,7 @@ export function runDoctor(manager: PhotosManager): DoctorReport {
     });
   }
 
-  // 3. Full Disk Access — derived from check #2.
+  // 4. Full Disk Access — derived from the photos_library check.
   if (libraryOk) {
     checks.push({
       name: "full_disk_access",

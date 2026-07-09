@@ -79,7 +79,7 @@ User: "I want the edited versions, not the originals"
 
 4. **Date format is ISO 8601** (`2025-06-01` or `2025-06-01T00:00:00`).
 
-5. **Export creates the destination directory** if it doesn't exist. Use `overwrite=true` only when the user has confirmed they want to replace existing files.
+5. **Export creates the destination directory** if it doesn't exist, and the destination must resolve (after `~` expansion and symlink resolution) to a path under the home directory, `/tmp`, `/private/tmp`, or `/Volumes` — anything else is rejected. Use `overwrite=true` only when the user has confirmed they want to replace existing files.
 
 6. **macOS only.** The Photos library only exists on macOS.
 
@@ -90,6 +90,7 @@ User: "I want the edited versions, not the originals"
 | Error | Likely Cause |
 |-------|--------------|
 | "osxphotos not installed" | First-run setup not done — run `npm run setup` |
+| "Export destination ... is outside the allowed export roots" | `dest` resolves outside the home directory, `/tmp`, `/private/tmp`, and `/Volumes` (symlinks are followed) — pick a destination under one of those roots |
 | "Library not found" | The `library` path doesn't exist or isn't a `.photoslibrary` |
 | "No photos matched the query" | Filters too narrow — relax the criteria |
 | "Photo not found: <uuid>" | Wrong UUID, or photo deleted |
