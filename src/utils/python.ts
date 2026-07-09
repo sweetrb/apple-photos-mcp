@@ -2,6 +2,8 @@ import { execSync, execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, parse } from "node:path";
+import { REQUIREMENTS_URL, TROUBLESHOOTING_URL } from "./docsUrls.js";
+import { acquireSetupLock, releaseSetupLock, waitForCompletion } from "./setupLock.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -58,6 +60,13 @@ function requirementsPath(): string {
 
 function setupScriptPath(): string {
   return join(getProjectRoot(), "scripts", "setup.sh");
+}
+
+// Cross-process bootstrap lock (see utils/setupLock.ts). Shared with
+// scripts/setup.sh, which implements the same mkdir-lock protocol for manual
+// runs — one directory, one protocol, whichever entry point gets there first.
+function setupLockPath(): string {
+  return join(getProjectRoot(), "venv.setup.lock");
 }
 
 // Written by scripts/setup.sh after a successful install; holds a copy of the
@@ -119,7 +128,7 @@ function findSystemPython(): string {
   throw new Error(
     "Python 3 not found on PATH. Install Python 3.11+ (stock macOS ships 3.9 — " +
       "brew install python@3.12), then retry. " +
-      "See https://github.com/sweetrb/apple-photos-mcp#requirements."
+      `See ${REQUIREMENTS_URL}.`
   );
 }
 
@@ -160,14 +169,49 @@ function bootstrapTimeoutMs(): number {
 }
 
 /**
+ * A held bootstrap lock older than this is presumed abandoned (holder died
+ * mid-setup) and taken over. Scaled off the setup timeout so a legitimately
+ * slow install (raised APPLE_PHOTOS_MCP_SETUP_TIMEOUT) is never hijacked.
+ */
+function lockStaleMs(): number {
+  return Math.max(2 * bootstrapTimeoutMs(), 10 * 60 * 1000);
+}
+
+/**
  * Create or refresh the venv by running scripts/setup.sh. Returns true on
  * success. Progress is logged to STDERR only — stdout is the MCP protocol
  * channel and must never be written to.
+ *
+ * Concurrency: guarded by a cross-process mkdir lock (utils/setupLock.ts) so
+ * two server instances hitting a fresh install can't both run pip into the
+ * same ./venv and corrupt it. The lock loser waits (bounded by the setup
+ * timeout) for the winner's completion marker instead of racing.
  */
 function bootstrapVenv(): boolean {
   bootstrapAttempted = true;
   const setup = setupScriptPath();
   if (!existsSync(setup)) return false;
+
+  const lockDir = setupLockPath();
+  if (!acquireSetupLock(lockDir, lockStaleMs())) {
+    console.error(
+      `[photos-mcp] Another process is already setting up the Python venv ` +
+        `(lock: ${lockDir}) — waiting for it to finish…`
+    );
+    if (waitForCompletion(() => venvIsReady(), bootstrapTimeoutMs())) {
+      console.error("[photos-mcp] Python venv ready (set up by another process).");
+      cachedPython = null;
+      readyConfirmed = false;
+      return true;
+    }
+    console.error(
+      `[photos-mcp] Timed out after ${bootstrapTimeoutMs()}ms waiting for another ` +
+        `process's venv setup to finish. If no setup is actually running, remove the ` +
+        `stale lock directory ${lockDir} and retry, or run scripts/setup.sh from a ` +
+        `repo checkout (raise ${ENV_PREFIX}_SETUP_TIMEOUT to wait longer).`
+    );
+    return false;
+  }
 
   console.error(
     `[photos-mcp] ${PACKAGE} not ready — setting up the Python venv (one-time; this can take a minute)…`
@@ -177,7 +221,9 @@ function bootstrapVenv(): boolean {
       encoding: "utf-8",
       timeout: bootstrapTimeoutMs(),
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      // The lock is already held by this process — tell setup.sh not to
+      // re-acquire (it would deadlock waiting on its own parent).
+      env: { ...process.env, [`${ENV_PREFIX}_SETUP_LOCK_HELD`]: "1" },
     });
     const last = out.trim().split("\n").pop() ?? "";
     console.error(`[photos-mcp] Python venv ready. ${last}`.trim());
@@ -191,6 +237,8 @@ function bootstrapVenv(): boolean {
       `[photos-mcp] Automatic venv setup failed: ${detail.split("\n").pop() ?? detail}`
     );
     return false;
+  } finally {
+    releaseSetupLock(lockDir);
   }
 }
 
@@ -221,7 +269,7 @@ function setupHint(): string {
     `Install it with: pip3 install osxphotos (requires Python >= 3.11; stock macOS ships 3.9 — ` +
     `brew install python@3.12), or run scripts/setup.sh from a repo checkout. ` +
     `Run the doctor tool to diagnose, or see ` +
-    `https://github.com/sweetrb/apple-photos-mcp#troubleshooting ` +
+    `${TROUBLESHOOTING_URL} ` +
     `(set ${ENV_PREFIX}_NO_AUTO_SETUP=0 to allow automatic setup).`
   );
 }
@@ -352,6 +400,31 @@ export function runPhotosReader<T = unknown>(
     }
   }
   return result;
+}
+
+export interface PythonInterpreterInfo {
+  path: string;
+  version: string;
+}
+
+/**
+ * Report the Python interpreter the sidecar would use right now — the same
+ * resolution order as every sidecar call (project venv first, then system
+ * python3/python). Returns null when no interpreter resolves at all. Used by
+ * the doctor tool so an old stock Python (macOS ships 3.9; osxphotos needs
+ * >= 3.11) is visible at a glance. Mirrors apple-numbers-mcp's getPythonInfo.
+ */
+export function getPythonInfo(): PythonInterpreterInfo | null {
+  try {
+    const python = resolvePython();
+    const version = execFileSync(python, ["--version"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    return { path: python, version };
+  } catch {
+    return null;
+  }
 }
 
 export function checkDependencies(): { ok: boolean; message: string } {

@@ -8,14 +8,26 @@ vi.mock("node:child_process", () => ({
 // existsSync/readFileSync are controllable per-test so we can simulate a venv
 // being present vs absent without touching the real filesystem. Defaults:
 // nothing exists (forces the system-python fallback) and no file content.
+// mkdirSync/rmSync/statSync/writeFileSync exist because utils/setupLock.ts
+// (imported by python.ts) names them — they are never called here since
+// auto-setup is disabled under VITEST.
 vi.mock("node:fs", () => ({
   existsSync: vi.fn(() => false),
   readFileSync: vi.fn(() => ""),
+  mkdirSync: vi.fn(),
+  rmSync: vi.fn(),
+  statSync: vi.fn(),
+  writeFileSync: vi.fn(),
 }));
 
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { runPhotosReader, checkDependencies, _resetPythonCache } from "../utils/python.js";
+import {
+  runPhotosReader,
+  checkDependencies,
+  getPythonInfo,
+  _resetPythonCache,
+} from "../utils/python.js";
 
 const execFileMock = vi.mocked(execFileSync);
 const execMock = vi.mocked(execSync);
@@ -356,6 +368,62 @@ describe("_resetPythonCache", () => {
 
     runPhotosReader("query", []);
     expect(String(execFileMock.mock.calls[0]?.[0])).toContain("venv/bin/python3");
+  });
+});
+
+describe("getPythonInfo", () => {
+  beforeEach(() => {
+    _resetPythonCache();
+    execFileMock.mockReset();
+    execMock.mockReset();
+    execMock.mockReturnValue("Python 3.12.4\n");
+    existsMock.mockReset();
+    existsMock.mockReturnValue(false);
+    readFileMock.mockReset();
+    readFileMock.mockReturnValue("");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reports the venv interpreter path and version when the venv exists", () => {
+    existsMock.mockImplementation((p: unknown) => String(p).includes("venv/bin/python3"));
+    execFileMock.mockReturnValue("Python 3.12.4\n");
+
+    const info = getPythonInfo();
+
+    expect(info).not.toBeNull();
+    expect(info?.path).toContain("venv/bin/python3");
+    expect(info?.version).toBe("Python 3.12.4");
+    // The --version probe goes through execFileSync (no shell).
+    const [, args] = execFileMock.mock.calls[0];
+    expect(args).toEqual(["--version"]);
+  });
+
+  it("falls back to the system interpreter when no venv exists", () => {
+    execFileMock.mockReturnValue("Python 3.9.6\n");
+
+    const info = getPythonInfo();
+
+    expect(info?.path).toBe("python3");
+    expect(info?.version).toBe("Python 3.9.6");
+  });
+
+  it("returns null when no interpreter resolves at all", () => {
+    execMock.mockImplementation(() => {
+      throw new Error("command not found");
+    });
+
+    expect(getPythonInfo()).toBeNull();
+  });
+
+  it("returns null when the version probe itself fails", () => {
+    execFileMock.mockImplementation(() => {
+      throw new Error("boom");
+    });
+
+    expect(getPythonInfo()).toBeNull();
   });
 });
 

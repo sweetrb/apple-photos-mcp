@@ -69,7 +69,7 @@ server.registerTool(
   {
     description:
       "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\n" +
-      "Returns: three checks — osxphotos install, Photos library readability, and Full Disk Access — each reported ok/warn/fail with actionable advice.\n" +
+      "Returns: four checks — Python interpreter (path + version; warns below 3.11), osxphotos install, Photos library readability, and Full Disk Access — each reported ok/warn/fail with actionable advice.\n" +
       "Do not use when: you only need the lightweight is-it-working smoke test — use health-check instead.",
     inputSchema: {},
     outputSchema: {
@@ -226,7 +226,15 @@ server.registerTool(
       "Do not use when: you don't have a UUID yet, or you want to inspect many photos at once — use query to find and summarize matches first.",
     inputSchema: {
       ...libraryArg,
-      uuid: z.string().describe("Photo UUID"),
+      uuid: z
+        .string()
+        .max(256)
+        .regex(
+          /^[0-9A-Fa-f-]+$/,
+          "must be a Photos UUID — hexadecimal segments separated by dashes " +
+            "(e.g. 1EB2B765-0765-43BA-A90C-0F0AE547B343)"
+        )
+        .describe("Photo UUID (hex-with-dashes, as returned by query)"),
     },
     outputSchema: {
       photo: z.object({}).passthrough().optional(),
@@ -370,11 +378,18 @@ server.registerTool(
       "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\n" +
       "Returns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\n" +
       "Do not use when: you only need metadata or file paths rather than copies on disk — use get-photo; or you're still figuring out which photos to export — use query first.\n" +
-      "Safety: this is the only side-effecting tool — it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand — this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
+      "Safety: this is the only side-effecting tool — it writes files into the destination directory (created if missing). dest must resolve (after expanding ~ and following symlinks) to a path under your home directory, /tmp, /private/tmp, or /Volumes; anything else is rejected. With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand — this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
     inputSchema: {
       ...libraryArg,
       uuid: z.array(z.string().max(256)).min(1).max(1000).describe("Photo UUID(s) to export"),
-      dest: z.string().max(4096).describe("Destination directory (created if missing)"),
+      dest: z
+        .string()
+        .min(1)
+        .max(4096)
+        .describe(
+          "Destination directory (created if missing). Must be under the home " +
+            "directory, /tmp, /private/tmp, or /Volumes"
+        ),
       edited: z.boolean().optional().describe("Export the edited version instead of the original"),
       live: z.boolean().optional().describe("Also export the live-photo video"),
       raw: z.boolean().optional().describe("Also export the raw image"),

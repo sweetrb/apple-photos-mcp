@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.1] - 2026-07-09
+### Added
+- **`export` destination allowlist.** The destination is now canonicalized (leading `~` expanded, `..` normalized, symlinks resolved — including a not-yet-existing final directory) and must land under the **home directory**, **/tmp**, **/private/tmp**, or **/Volumes**; anything else is rejected with an error naming the allowed roots. The check is path-segment-aware (`/Volumesx` does not pass as `/Volumes`), and the canonical path is what's handed to the sidecar, so a symlink under an allowed root can't redirect the write outside it. Ports apple-mail-mcp's `ALLOWED_SAVE_ROOTS` pattern to photos' only side-effecting tool.
+- **`doctor` now checks the Python interpreter** (new first check, `python_interpreter`): reports the resolved path + version using the same venv-then-system resolution the sidecar uses, **warns** below the required 3.11 with `brew install python@3.12` advice (the most common first-run failure — stock macOS ships 3.9 — previously surfaced only as a bare "osxphotos not installed"), and **fails** when no Python resolves at all. Ports apple-numbers-mcp's check.
+- **In-process metadata cache for the catalog commands** (`library-info`, `list-albums`, `list-folders`, `list-keywords`, `list-persons`). Every sidecar call re-parses the whole Photos database (seconds of fixed cost on large libraries), and agents habitually re-list catalogs within a session — repeats are now served from a small bounded cache keyed on (command, args, library) and invalidated the moment the library's `Photos.sqlite` mtime changes, so results are never stale. `query`, `get-photo`, and `export` are never cached; when the DB file can't be stat'ed, caching quietly stays out of the way.
+
+### Fixed
+- **Concurrent first-run venv bootstraps can no longer corrupt the venv.** Hosts that spawn one server instance per conversation could race two `python -m venv` + `pip install` runs into the same `./venv` — worse, the faster run's completion marker could bless a venv the slower run was still mutating. The bootstrap (both the server's auto-setup and `scripts/setup.sh`) is now guarded by an atomic cross-process `mkdir` lock: the winner runs the install, losers wait (bounded by `APPLE_PHOTOS_MCP_SETUP_TIMEOUT`) for the winner's completion marker, a lock abandoned by a dead process is reclaimed by age, and the `.deps-ok` marker is written atomically (tmp file + rename) as the very last step of setup — so an observable marker always describes a fully installed venv.
+- **`get-photo` validates its `uuid` input** (max 256 chars, hexadecimal-with-dashes) so junk input fails fast at the schema with a clear message instead of costing a full sidecar spawn + library parse — matching the length cap `query`/`export` UUIDs already had.
+
+### Changed
+- **Doc URLs and the Full-Disk-Access remediation are now single-sourced** in a new `src/utils/docsUrls.ts` (the house standard mail and notes already follow), replacing five hardcoded `github.com/sweetrb/apple-photos-mcp` URLs and two near-verbatim duplicated FDA remediation blocks (photosManager + doctor) that were one edit away from telling users different things.
+
 ## [1.2.0] - 2026-07-09
 ### Fixed
 - **Hidden photos are now actually excluded from `query` by default** (privacy fix). The docs promised "hidden photos are excluded by default" everywhere, but osxphotos only filters hidden photos when a flag is explicitly set — so a plain query (or an export driven by one) silently included photos the user had hidden in Photos.app. The sidecar now defaults to `not_hidden` unless `hidden: true` is passed; `hidden: true` still returns only hidden photos.
