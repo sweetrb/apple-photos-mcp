@@ -83,13 +83,14 @@ User: "I want the edited versions, not the originals"
 
 6. **macOS only.** The Photos library only exists on macOS.
 
-7. **First-run setup:** If `health-check` reports osxphotos is missing, instruct the user to run `npm run setup` once in the project to create the venv.
+7. **First-run setup is automatic.** The server auto-bootstraps a Python venv with `osxphotos` on the first tool call — the venv lives inside the plugin's own clone (under `~/.claude/plugins/` for a marketplace install), not in the user's project. If a tool still reports "osxphotos not installed", run the `doctor` tool FIRST to diagnose why auto-setup failed — the most common cause is `python3` older than 3.11 (stock macOS ships 3.9): have the user run `brew install python@3.12`, then simply retry the tool call (the venv rebuilds automatically).
 
 ## Error Handling
 
 | Error | Likely Cause |
 |-------|--------------|
-| "osxphotos not installed" | First-run setup not done — run `npm run setup` |
+| "osxphotos not installed" | Auto-setup failed — run `doctor` FIRST to see why. Most often `python3` is older than 3.11 (stock macOS ships 3.9): `brew install python@3.12`, then retry the tool call (the venv rebuilds automatically) |
+| "Operation not permitted" / "unable to open database" | Full Disk Access missing — grant it to the HOST app (Claude Desktop / Terminal / iTerm / VS Code, not node), then fully quit and relaunch that app. Guide: https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md |
 | "Library not found" | The `library` path doesn't exist or isn't a `.photoslibrary` |
 | "No photos matched the query" | Filters too narrow — relax the criteria |
 | "Photo not found: <uuid>" | Wrong UUID, or photo deleted |

@@ -1,6 +1,6 @@
 {
   "name": "apple-photos-mcp",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "packageManager": "pnpm@11.9.0",
   "description": "MCP server for Apple Photos - query, search, export, and inspect the macOS Photos library via Claude and other AI assistants",
   "type": "module",
@@ -13,6 +13,7 @@
     "src/utils/photos_reader.py",
     "scripts/setup.sh",
     "requirements.txt",
+    "docs",
     "README.md",
     "LICENSE"
   ],

@@ -19,10 +19,12 @@ import type {
 function augmentPermissionError(message: string): string {
   if (/not permitted|permission|full disk|denied|unable to open/i.test(message)) {
     return (
-      `${message}\n\nThis looks like a macOS permission issue: the app running this ` +
-      `MCP server needs Full Disk Access (System Settings → Privacy & Security → ` +
-      `Full Disk Access). Run the \`doctor\` tool for a full diagnosis, or see ` +
-      `docs/FULL-DISK-ACCESS.md.`
+      `${message}\n\nThis looks like a macOS permission issue: grant Full Disk Access to ` +
+      `the HOST app that launches this MCP server (Claude Desktop / Terminal / iTerm / ` +
+      `VS Code — not node) in System Settings → Privacy & Security → Full Disk Access, ` +
+      `then fully quit and relaunch that app. Run the \`doctor\` tool for a full ` +
+      `diagnosis, or see ` +
+      `https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md.`
     );
   }
   return message;

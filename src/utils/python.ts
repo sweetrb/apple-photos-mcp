@@ -117,14 +117,16 @@ function findSystemPython(): string {
     }
   }
   throw new Error(
-    'Python 3 not found. Install Python 3 (https://www.python.org), or run "npm run setup".'
+    "Python 3 not found on PATH. Install Python 3.11+ (stock macOS ships 3.9 — " +
+      "brew install python@3.12), then retry. " +
+      "See https://github.com/sweetrb/apple-photos-mcp#requirements."
   );
 }
 
 /**
  * Resolve a Python interpreter. The project venv is cached once present (it's
  * stable); a system-Python fallback is deliberately NOT cached, so a venv
- * created later (e.g. by auto-bootstrap, or a manual `npm run setup`) is picked
+ * created later (e.g. by auto-bootstrap, or a manual `scripts/setup.sh`) is picked
  * up on the very next call WITHOUT requiring a server restart.
  */
 function resolvePython(): string {
@@ -215,7 +217,13 @@ function looksLikeMissingDep(message: string): boolean {
 }
 
 function setupHint(): string {
-  return `Run: npm run setup (or set ${ENV_PREFIX}_NO_AUTO_SETUP=0 to allow automatic setup).`;
+  return (
+    `Install it with: pip3 install osxphotos (requires Python >= 3.11; stock macOS ships 3.9 — ` +
+    `brew install python@3.12), or run scripts/setup.sh from a repo checkout. ` +
+    `Run the doctor tool to diagnose, or see ` +
+    `https://github.com/sweetrb/apple-photos-mcp#troubleshooting ` +
+    `(set ${ENV_PREFIX}_NO_AUTO_SETUP=0 to allow automatic setup).`
+  );
 }
 
 function execReader<T>(command: string, args: string[], timeoutMs: number): PythonResult<T> {

@@ -22,9 +22,11 @@ export interface DoctorReport {
 
 /** Remediation message pointing the user at Full Disk Access. */
 const FDA_REMEDIATION =
-  "Grant Full Disk Access to the host app (e.g. Terminal/iTerm/Claude) in " +
-  "System Settings > Privacy & Security > Full Disk Access, then restart it. " +
-  "See docs/FULL-DISK-ACCESS.md.";
+  "Grant Full Disk Access to the HOST app that launches this MCP server " +
+  "(Claude Desktop / Terminal / iTerm / VS Code — not node) in " +
+  "System Settings > Privacy & Security > Full Disk Access, then fully quit " +
+  "and relaunch that app. Guide: " +
+  "https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md";
 
 /** Heuristic: does this error look like a permission / Full Disk Access failure? */
 function looksLikePermissionError(message: string): boolean {
@@ -44,13 +46,15 @@ export function runDoctor(manager: PhotosManager): DoctorReport {
     checks.push({
       name: "osxphotos",
       status: dep.ok ? "ok" : "fail",
-      detail: dep.ok ? dep.message : `${dep.message}. Run: npm run setup`,
+      detail: dep.message,
     });
   } catch (e) {
     checks.push({
       name: "osxphotos",
       status: "fail",
-      detail: `could not verify osxphotos: ${String(e)}. Run: npm run setup`,
+      detail:
+        `could not verify osxphotos: ${String(e)}. ` +
+        `See https://github.com/sweetrb/apple-photos-mcp#troubleshooting`,
     });
   }
 

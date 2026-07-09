@@ -83,7 +83,7 @@ describe("runPhotosReader", () => {
     });
     const result = runPhotosReader("health", []);
     expect(result.error).toContain("osxphotos not installed");
-    expect(result.error).toContain("npm run setup");
+    expect(result.error).toContain("pip3 install osxphotos");
   });
 
   it("maps a ModuleNotFoundError stderr to the setup hint too", () => {
@@ -286,6 +286,6 @@ describe("checkDependencies", () => {
     const result = checkDependencies();
     expect(result.ok).toBe(false);
     expect(result.message).toContain("osxphotos not installed");
-    expect(result.message).toContain("npm run setup");
+    expect(result.message).toContain("pip3 install osxphotos");
   });
 });

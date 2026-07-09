@@ -64,7 +64,7 @@ describe("runDoctor", () => {
     expect(report.healthy).toBe(false);
     const osx = report.checks.find((c) => c.name === "osxphotos");
     expect(osx?.status).toBe("fail");
-    expect(osx?.detail).toContain("npm run setup");
+    expect(osx?.detail).toContain("osxphotos not installed");
   });
 
   it("flags Full Disk Access when the library throws a permission error", () => {
@@ -83,7 +83,9 @@ describe("runDoctor", () => {
     const fda = report.checks.find((c) => c.name === "full_disk_access");
     expect(fda?.status).toBe("fail");
     expect(fda?.detail).toMatch(/Full Disk Access/i);
-    expect(fda?.detail).toContain("docs/FULL-DISK-ACCESS.md");
+    expect(fda?.detail).toContain(
+      "https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md"
+    );
   });
 
   it("warns (not fails) on full_disk_access when the library error is unrelated to permissions", () => {
