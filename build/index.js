@@ -21420,7 +21420,7 @@ function findSystemPython() {
     }
   }
   throw new Error(
-    'Python 3 not found. Install Python 3 (https://www.python.org), or run "npm run setup".'
+    "Python 3 not found on PATH. Install Python 3.11+ (stock macOS ships 3.9 \u2014 brew install python@3.12), then retry. See https://github.com/sweetrb/apple-photos-mcp#requirements."
   );
 }
 function resolvePython() {
@@ -21491,7 +21491,7 @@ function looksLikeMissingDep(message) {
   return /not installed|No module named|ModuleNotFoundError/i.test(message);
 }
 function setupHint() {
-  return `Run: npm run setup (or set ${ENV_PREFIX}_NO_AUTO_SETUP=0 to allow automatic setup).`;
+  return `Install it with: pip3 install osxphotos (requires Python >= 3.11; stock macOS ships 3.9 \u2014 brew install python@3.12), or run scripts/setup.sh from a repo checkout. Run the doctor tool to diagnose, or see https://github.com/sweetrb/apple-photos-mcp#troubleshooting (set ${ENV_PREFIX}_NO_AUTO_SETUP=0 to allow automatic setup).`;
 }
 function execReader(command, args, timeoutMs) {
   const python = resolvePython();
@@ -21574,7 +21574,7 @@ function augmentPermissionError(message) {
   if (/not permitted|permission|full disk|denied|unable to open/i.test(message)) {
     return `${message}
 
-This looks like a macOS permission issue: the app running this MCP server needs Full Disk Access (System Settings \u2192 Privacy & Security \u2192 Full Disk Access). Run the \`doctor\` tool for a full diagnosis, or see docs/FULL-DISK-ACCESS.md.`;
+This looks like a macOS permission issue: grant Full Disk Access to the HOST app that launches this MCP server (Claude Desktop / Terminal / iTerm / VS Code \u2014 not node) in System Settings \u2192 Privacy & Security \u2192 Full Disk Access, then fully quit and relaunch that app. Run the \`doctor\` tool for a full diagnosis, or see https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md.`;
   }
   return message;
 }
@@ -21711,7 +21711,7 @@ function withErrorHandling(handler, prefix) {
 }
 
 // src/tools/doctor.ts
-var FDA_REMEDIATION = "Grant Full Disk Access to the host app (e.g. Terminal/iTerm/Claude) in System Settings > Privacy & Security > Full Disk Access, then restart it. See docs/FULL-DISK-ACCESS.md.";
+var FDA_REMEDIATION = "Grant Full Disk Access to the HOST app that launches this MCP server (Claude Desktop / Terminal / iTerm / VS Code \u2014 not node) in System Settings > Privacy & Security > Full Disk Access, then fully quit and relaunch that app. Guide: https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md";
 function looksLikePermissionError(message) {
   return /not permitted|permission|full disk|denied|unable to open/i.test(message);
 }
@@ -21722,13 +21722,13 @@ function runDoctor(manager2) {
     checks.push({
       name: "osxphotos",
       status: dep.ok ? "ok" : "fail",
-      detail: dep.ok ? dep.message : `${dep.message}. Run: npm run setup`
+      detail: dep.message
     });
   } catch (e) {
     checks.push({
       name: "osxphotos",
       status: "fail",
-      detail: `could not verify osxphotos: ${String(e)}. Run: npm run setup`
+      detail: `could not verify osxphotos: ${String(e)}. See https://github.com/sweetrb/apple-photos-mcp#troubleshooting`
     });
   }
   let libraryOk = false;

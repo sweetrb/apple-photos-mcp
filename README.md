@@ -12,7 +12,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 [![MCP](https://img.shields.io/badge/MCP-server-blue)](https://modelcontextprotocol.io)
 
 <p align="center">
-  <img src="codex/assets/screenshot.png" alt="Apple Photos MCP — search, browse, and export the macOS Photos library from Codex, Claude, and other AI assistants" width="680">
+  <img src="https://raw.githubusercontent.com/sweetrb/apple-photos-mcp/main/codex/assets/screenshot.png" alt="Apple Photos MCP — search, browse, and export the macOS Photos library from Codex, Claude, and other AI assistants" width="680">
 </p>
 
 > **Read-only against the Photos library.** Exports write files to a directory you choose, but the library itself is never modified.
@@ -40,7 +40,13 @@ If you're using [Claude Code](https://claude.com/product/claude-code) (in Termin
 Install the sweetrb/apple-photos-mcp MCP server so you can help me query my Apple Photos library
 ```
 
-Claude will handle the installation and configuration automatically. The Python `osxphotos` dependency installs **automatically on first use** (a one-time, ~minute-long setup), so the only manual step is granting Full Disk Access — see [Requirements](#requirements) below.
+Claude will handle the installation and configuration automatically. Or register it yourself with one deterministic command:
+
+```bash
+claude mcp add apple-photos -s user -- npx -y apple-photos-mcp
+```
+
+The Python `osxphotos` dependency installs **automatically on first use** (a one-time, ~minute-long setup), so the only manual step is granting Full Disk Access — see [Requirements](#requirements) below.
 
 ### Using the Plugin Marketplace
 
@@ -52,6 +58,12 @@ Install as a Claude Code plugin for automatic configuration and enhanced AI beha
 ```
 
 This method also installs a **skill** that teaches Claude when and how to use Apple Photos effectively.
+
+A few things to know about the plugin install:
+
+- The plugin is a git clone under `~/.claude/plugins/marketplaces/apple-photos-mcp/`, and the server runs straight from that clone (no build step needed).
+- The **first tool call auto-bootstraps a Python venv** with `osxphotos` *inside that clone* — a one-time, ~minute-long setup that requires **Python 3.11+ on your PATH** (stock macOS ships 3.9; `brew install python@3.12`).
+- **Full Disk Access must be granted to the HOST app** running Claude Code (Terminal, iTerm, VS Code, Claude Desktop) — see [Requirements](#requirements) below.
 
 ### Using the Codex Marketplace
 
@@ -68,14 +80,14 @@ The Codex plugin runs the published `apple-photos-mcp` server through `npx` and 
 
 Configuration for two more hosts is included — each registers the same `apple-photos` MCP server (`npx -y apple-photos-mcp`). As a Python-sidecar (osxphotos) server it also needs Full Disk Access; see [Requirements](#requirements).
 
-- **[Hermes Agent](https://hermes-agent.nousresearch.com/)** (NousResearch) — Hermes has no plugin/marketplace drop-in. Add the server with `hermes mcp add apple-photos --command npx --args -y apple-photos-mcp`, or merge [`.hermes-plugin/config.yaml`](.hermes-plugin/config.yaml) into `~/.hermes/config.yaml`. Details: [`.hermes-plugin/README.md`](.hermes-plugin/README.md).
-- **[Antigravity](https://antigravity.google/)** (Google) — add the server entry from [`.antigravity-plugin/mcp_config.json`](.antigravity-plugin/mcp_config.json) to `~/.gemini/config/mcp_config.json` (or via Antigravity's MCP settings).
+- **[Hermes Agent](https://hermes-agent.nousresearch.com/)** (NousResearch) — Hermes has no plugin/marketplace drop-in. Add the server with `hermes mcp add apple-photos --command npx --args -y apple-photos-mcp`, or merge [`.hermes-plugin/config.yaml`](https://github.com/sweetrb/apple-photos-mcp/blob/main/.hermes-plugin/config.yaml) into `~/.hermes/config.yaml`. Details: [`.hermes-plugin/README.md`](https://github.com/sweetrb/apple-photos-mcp/blob/main/.hermes-plugin/README.md).
+- **[Antigravity](https://antigravity.google/)** (Google) — add the server entry from [`.antigravity-plugin/mcp_config.json`](https://github.com/sweetrb/apple-photos-mcp/blob/main/.antigravity-plugin/mcp_config.json) to `~/.gemini/config/mcp_config.json` (or via Antigravity's MCP settings).
 
 ### Manual Installation
 
 **1. Install the server:**
 ```bash
-npm install -g github:sweetrb/apple-photos-mcp
+npm install -g apple-photos-mcp
 ```
 
 **2. Python deps install automatically.** The first tool call auto-bootstraps a project-local Python venv with `osxphotos` (a one-time setup that can take ~a minute; progress is logged to stderr). You do **not** need to install anything by hand.
@@ -111,7 +123,7 @@ Auto-setup needs Python 3, `pip`, and network access. If any are missing — or 
 - **Node.js 20+** - Required for the MCP server
 - **Python 3.11+** - The server uses [osxphotos](https://github.com/RhetTbull/osxphotos) under the hood and **installs it automatically on first use** into a project-local venv (one-time, ~a minute). You only need Python 3.11+, `pip`, and a network connection available. osxphotos requires Python ≥ 3.10 and the date filters need 3.11; macOS ships 3.9, so install a newer Python first (e.g. `brew install python@3.12`). Pre-warm it with `pnpm run setup` if you'd rather not wait on the first call.
 - **Apple Photos** - Must have a Photos library (default location: `~/Pictures/Photos Library.photoslibrary`)
-- **Full Disk Access** - The Photos library lives in a protected directory. The host app needs Full Disk Access — see [below](#full-disk-access) and the [Full Disk Access Setup Guide](docs/FULL-DISK-ACCESS.md).
+- **Full Disk Access** - The Photos library lives in a protected directory. The host app needs Full Disk Access — see [below](#full-disk-access) and the [Full Disk Access Setup Guide](https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md).
 
 ## Features
 
@@ -412,7 +424,7 @@ AI: [calls list-albums with library="/Volumes/Archive/Photos.photoslibrary"]
 ### npm (Recommended)
 
 ```bash
-npm install -g github:sweetrb/apple-photos-mcp
+npm install -g apple-photos-mcp
 ```
 
 `osxphotos` installs automatically on the first tool call — no separate `pip3 install` needed.
@@ -428,6 +440,8 @@ pnpm run build
 ```
 
 The `pnpm run setup` step is optional: if you skip it, the server auto-bootstraps the venv on the first tool call (one-time, ~a minute). Running it ahead of time just avoids that first-call delay.
+
+You can also install straight from GitHub with `npm install -g github:sweetrb/apple-photos-mcp` — but this builds from source at install time (requires pnpm), so prefer the registry install above unless you specifically want an unreleased commit.
 
 If installed from source, use this configuration:
 ```json
@@ -487,7 +501,7 @@ The Photos library SQLite database lives in a protected directory (`~/Pictures/P
 
 Run the **`doctor`** tool — it explicitly reports the **Full Disk Access** check (alongside osxphotos install and library readability) as ok / warn / fail, so it's the best way to confirm the grant took effect. `health-check` and `library-info` also work as a quick smoke test.
 
-For the full why-and-how walkthrough, see the [Full Disk Access Setup Guide](docs/FULL-DISK-ACCESS.md).
+For the full why-and-how walkthrough, see the [Full Disk Access Setup Guide](https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md).
 
 ### Without Full Disk Access
 
@@ -552,7 +566,7 @@ This is the same pattern used by [apple-numbers-mcp](https://github.com/sweetrb/
 
 ## Known Limitations
 
-For the full rundown — read-only scope, iCloud export caveats, face/album behavior, and library lag — see **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**. The summary below is the quick version.
+For the full rundown — read-only scope, iCloud export caveats, face/album behavior, and library lag — see **[docs/LIMITATIONS.md](https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/LIMITATIONS.md)**. The summary below is the quick version.
 
 | Limitation | Reason |
 |------------|--------|
@@ -571,9 +585,10 @@ For the full rundown — read-only scope, iCloud export caveats, face/album beha
 - This is expected: it's the **one-time** automatic venv build (creating `./venv` and installing `osxphotos`). It can take ~a minute and logs progress to stderr. Subsequent calls are fast. Pre-warm with `pnpm run setup` to avoid it.
 - If the build keeps hitting a timeout on a slow network, raise `APPLE_PHOTOS_MCP_SETUP_TIMEOUT` (milliseconds; default 5 min).
 
-### "osxphotos not installed. Run: pnpm run setup"
-- This only appears when automatic setup couldn't run — i.e. you set `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1`, or Python 3 / `pip` / network access is unavailable.
-- Fix it by running `pnpm run setup` (project-local venv) or `pip3 install osxphotos` (global install) — or unset `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` to re-enable auto-setup.
+### "osxphotos not installed"
+- **Most common cause: your `python3` is older than 3.11.** Stock macOS ships Python 3.9, which is too old for the automatic venv setup to succeed. Install a newer Python (`brew install python@3.12`), then simply retry the tool call — the venv rebuilds automatically.
+- Auto-setup also can't run when `pip` or network access is unavailable, or when you set `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1`. Fix the missing piece (or unset the variable) and retry — or install by hand with `pip3 install osxphotos` (global) or `scripts/setup.sh` / `pnpm run setup` from a repo checkout (project-local venv).
+- Run the `doctor` tool for a per-check diagnosis of what's missing.
 - If you used a virtualenv, make sure it's the one at `./venv/` in the project directory.
 
 ### "Library not found" or permission errors
@@ -638,7 +653,7 @@ A software consulting, contracting, and development company.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details. This project is not affiliated with Apple Inc. or the [osxphotos](https://github.com/RhetTbull/osxphotos) project.
+MIT License - see [LICENSE](https://github.com/sweetrb/apple-photos-mcp/blob/main/LICENSE) for details. This project is not affiliated with Apple Inc. or the [osxphotos](https://github.com/RhetTbull/osxphotos) project.
 
 ## Contributing
 
@@ -655,4 +670,4 @@ Part of a family of macOS MCP servers:
 
 ## Recurring macOS permission prompts
 
-If macOS keeps re-prompting for Full Disk Access or Automation for `node` (often after a `brew upgrade`), see [docs/NODE-RUNTIME-AND-TCC-PERMISSIONS.md](docs/NODE-RUNTIME-AND-TCC-PERMISSIONS.md) — the fix is to run this server under the official, Developer-ID-signed Node so the grant survives Node updates.
+If macOS keeps re-prompting for Full Disk Access or Automation for `node` (often after a `brew upgrade`), see [docs/NODE-RUNTIME-AND-TCC-PERMISSIONS.md](https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/NODE-RUNTIME-AND-TCC-PERMISSIONS.md) — the fix is to run this server under the official, Developer-ID-signed Node so the grant survives Node updates.

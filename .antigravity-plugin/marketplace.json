@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "apple-photos",
-      "version": "1.1.4",
+      "version": "1.1.5",
       "description": "Query and export from the macOS Apple Photos library via osxphotos - search by date/album/keyword/person, list albums and folders, fetch metadata, and export originals or edited photos (macOS only).",
       "source": {
         "source": "local",
