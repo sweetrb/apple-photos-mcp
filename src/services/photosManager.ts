@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { runPhotosReader, checkDependencies, sidecarBusy, isVenvReady } from "../utils/python.js";
+import type { SidecarProgress } from "../utils/sidecarClient.js";
 import { FDA_REMEDIATION } from "../utils/docsUrls.js";
 import { resolveExportDest } from "../utils/exportPath.js";
 import type {
@@ -133,7 +134,8 @@ export class PhotosManager {
     command: string,
     args: string[],
     timeoutMs?: number,
-    library?: string
+    library?: string,
+    onProgress?: (p: SidecarProgress) => void
   ): Promise<T> {
     const cacheable = CACHEABLE_COMMANDS.has(command);
     let cacheKey: string | null = null;
@@ -156,7 +158,7 @@ export class PhotosManager {
       }
     }
 
-    const promise = this.spawnAndCache<T>(command, args, timeoutMs, cacheKey, mtimeMs);
+    const promise = this.spawnAndCache<T>(command, args, timeoutMs, cacheKey, mtimeMs, onProgress);
 
     if (cacheKey !== null && mtimeMs !== null) {
       const key = cacheKey;
@@ -178,9 +180,10 @@ export class PhotosManager {
     args: string[],
     timeoutMs: number | undefined,
     cacheKey: string | null,
-    mtimeMs: number | null
+    mtimeMs: number | null,
+    onProgress?: (p: SidecarProgress) => void
   ): Promise<T> {
-    const result = await runPhotosReader<T>(command, args, timeoutMs);
+    const result = await runPhotosReader<T>(command, args, timeoutMs, onProgress);
     if (result.error) {
       throw new Error(augmentPermissionError(result.error));
     }
@@ -317,6 +320,12 @@ export class PhotosManager {
       raw?: boolean;
       overwrite?: boolean;
       library?: string;
+      /**
+       * Per-photo progress callback. Only fires when the persistent sidecar
+       * serves the export (one-shot fallback buffers its output, so a
+       * fallback export completes without intermediate progress).
+       */
+      onProgress?: (p: SidecarProgress) => void;
     } = {}
   ): Promise<ExportResult> {
     if (uuids.length === 0) {
@@ -339,6 +348,6 @@ export class PhotosManager {
     // Generous timeout: when originals aren't on disk we fall back to
     // Photos.app/AppleScript, which downloads from iCloud on demand. A batch
     // of missing photos can move serious bytes.
-    return this.run<ExportResult>("export", args, 30 * 60 * 1000);
+    return this.run<ExportResult>("export", args, 30 * 60 * 1000, undefined, options.onProgress);
   }
 }

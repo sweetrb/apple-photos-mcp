@@ -21453,6 +21453,302 @@ function settle(ms) {
   return new Promise((resolve3) => setTimeout(resolve3, ms));
 }
 
+// src/utils/sidecarClient.ts
+import { spawn as nodeSpawn } from "node:child_process";
+var STDERR_RING_LINES = 40;
+var STDERR_TAIL_CHARS = 2e3;
+var PersistentSidecarClient = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.spawnImpl = opts.spawnImpl ?? ((file, args) => nodeSpawn(file, args));
+    this.log = opts.log ?? ((m) => console.error(m));
+  }
+  opts;
+  proc = null;
+  ready = false;
+  buffer = "";
+  stderrRing = [];
+  nextId = 1;
+  pending = null;
+  handshake = null;
+  idleTimer = null;
+  spawnCount = 0;
+  lastSpawnAt = null;
+  spawnImpl;
+  log;
+  get status() {
+    return {
+      running: this.proc !== null && this.ready,
+      pid: this.proc?.pid,
+      spawnCount: this.spawnCount,
+      lastSpawnAt: this.lastSpawnAt
+    };
+  }
+  /**
+   * Run one command through the serve protocol. The timeout covers the whole
+   * request — including a cold spawn + handshake when no process is running.
+   * Progress lines for this request's id are forwarded to onProgress.
+   */
+  async request(command, args, timeoutMs, onProgress) {
+    if (this.pending !== null || this.handshake !== null) {
+      return { kind: "error", error: "sidecar client busy (concurrent request)" };
+    }
+    this.clearIdleTimer();
+    const deadline = Date.now() + timeoutMs;
+    if (this.proc === null || !this.ready) {
+      const hs = await this.spawnAndHandshake(deadline);
+      if (hs !== true) return hs;
+    }
+    return new Promise((resolve3) => {
+      const id = this.nextId++;
+      const pending = {
+        id,
+        settled: false,
+        onProgress,
+        resolve: (outcome) => {
+          if (pending.settled) return;
+          pending.settled = true;
+          clearTimeout(pending.timer);
+          this.pending = null;
+          this.armIdleTimer();
+          resolve3(outcome);
+        },
+        timer: setTimeout(
+          () => {
+            this.kill("request timeout");
+            pending.resolve({ kind: "timeout" });
+          },
+          Math.max(1, deadline - Date.now())
+        )
+      };
+      this.pending = pending;
+      try {
+        this.proc?.stdin.write(JSON.stringify({ id, command, args }) + "\n");
+      } catch (err) {
+        this.kill("stdin write failed");
+        pending.resolve({
+          kind: "error",
+          error: `Photos sidecar request could not be written: ${String(err)}${this.stderrTail()}`
+        });
+      }
+    });
+  }
+  /** SIGKILL the serve process (shutdown, timeout, idle, protocol error). */
+  kill(reason) {
+    this.clearIdleTimer();
+    const proc = this.proc;
+    this.proc = null;
+    this.ready = false;
+    this.buffer = "";
+    if (proc !== null) {
+      if (process.env.DEBUG || process.env.VERBOSE) {
+        this.log(`[photos-mcp] killing persistent sidecar (${reason})`);
+      }
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+      }
+    }
+  }
+  // -------------------------------------------------------------------------
+  async spawnAndHandshake(deadline) {
+    let proc;
+    try {
+      const { file, args } = this.opts.resolveSpawn();
+      proc = this.spawnImpl(file, args);
+    } catch (err) {
+      return { kind: "fallback", reason: `spawn failed: ${String(err)}` };
+    }
+    this.proc = proc;
+    this.ready = false;
+    this.buffer = "";
+    this.stderrRing = [];
+    this.spawnCount += 1;
+    this.lastSpawnAt = Date.now();
+    proc.unref?.();
+    proc.stdout.unref?.();
+    proc.stderr.unref?.();
+    proc.stdout.on("data", (chunk) => this.onStdout(proc, String(chunk)));
+    proc.stderr.on("data", (chunk) => this.onStderr(String(chunk)));
+    proc.on("exit", (code, signal) => this.onExit(proc, code, signal));
+    proc.on("error", (err) => this.onProcError(proc, err));
+    proc.stdin.on("error", () => {
+    });
+    return new Promise((resolve3) => {
+      const handshake = {
+        settled: false,
+        resolve: (outcome) => {
+          if (handshake.settled) return;
+          handshake.settled = true;
+          clearTimeout(handshake.timer);
+          this.handshake = null;
+          resolve3(outcome);
+        },
+        timer: setTimeout(
+          () => {
+            this.kill("handshake timeout");
+            handshake.resolve({ kind: "timeout" });
+          },
+          Math.max(1, deadline - Date.now())
+        )
+      };
+      this.handshake = handshake;
+    });
+  }
+  onStdout(proc, chunk) {
+    if (proc !== this.proc) return;
+    this.buffer += chunk;
+    let nl;
+    while ((nl = this.buffer.indexOf("\n")) !== -1) {
+      const line = this.buffer.slice(0, nl).trim();
+      this.buffer = this.buffer.slice(nl + 1);
+      if (line.length === 0) continue;
+      this.onLine(line);
+      if (proc !== this.proc) return;
+    }
+  }
+  onLine(line) {
+    let msg;
+    try {
+      msg = JSON.parse(line);
+      if (msg === null || typeof msg !== "object") throw new Error("not an object");
+    } catch {
+      this.protocolFailure(`sidecar produced a non-protocol line: ${truncate(line, 200)}`);
+      return;
+    }
+    if (this.handshake !== null) {
+      if (msg.type === "ready" && msg.protocol === 1) {
+        this.ready = true;
+        this.handshake.resolve(true);
+      } else {
+        this.kill("handshake failed");
+        this.handshake?.resolve({
+          kind: "fallback",
+          reason: typeof msg.error === "string" ? msg.error : `unexpected handshake line: ${truncate(line, 200)}`
+        });
+      }
+      return;
+    }
+    const pending = this.pending;
+    if (msg.type === "progress") {
+      if (pending !== null && msg.id === pending.id && pending.onProgress) {
+        pending.onProgress({
+          done: typeof msg.done === "number" ? msg.done : 0,
+          total: typeof msg.total === "number" ? msg.total : 0,
+          current: typeof msg.current === "string" ? msg.current : void 0,
+          uuid: typeof msg.uuid === "string" ? msg.uuid : void 0
+        });
+      }
+      return;
+    }
+    if (msg.type === "result" || msg.type === "error") {
+      if (pending === null || msg.id !== pending.id) {
+        this.protocolFailure(
+          `sidecar answered id ${JSON.stringify(msg.id)} but ${pending === null ? "no request is pending" : `id ${pending.id} was expected`}`
+        );
+        return;
+      }
+      if (msg.type === "result") {
+        pending.resolve({
+          kind: "result",
+          data: msg.data,
+          dbCached: typeof msg.dbCached === "boolean" ? msg.dbCached : void 0
+        });
+      } else {
+        pending.resolve({
+          kind: "error",
+          error: typeof msg.error === "string" ? msg.error : "sidecar reported an unknown error"
+        });
+      }
+      return;
+    }
+    this.protocolFailure(`sidecar sent an unknown message type: ${truncate(line, 200)}`);
+  }
+  onStderr(chunk) {
+    for (const line of chunk.split("\n")) {
+      const trimmed = line.trimEnd();
+      if (trimmed.length === 0) continue;
+      this.stderrRing.push(trimmed);
+      if (this.stderrRing.length > STDERR_RING_LINES) this.stderrRing.shift();
+    }
+  }
+  onExit(proc, code, signal) {
+    if (proc !== this.proc) return;
+    this.proc = null;
+    this.ready = false;
+    this.buffer = "";
+    this.clearIdleTimer();
+    const detail = `exited unexpectedly (code ${code ?? "null"}, signal ${signal ?? "null"})`;
+    if (this.handshake !== null) {
+      this.handshake.resolve({
+        kind: "fallback",
+        reason: `sidecar ${detail} before the serve handshake${this.stderrTail()}`
+      });
+      return;
+    }
+    if (this.pending !== null) {
+      this.pending.resolve({
+        kind: "error",
+        error: `Photos sidecar ${detail}${this.stderrTail()}`
+      });
+    }
+  }
+  onProcError(proc, err) {
+    if (proc !== this.proc) return;
+    this.proc = null;
+    this.ready = false;
+    if (this.handshake !== null) {
+      this.handshake.resolve({ kind: "fallback", reason: `spawn failed: ${err.message}` });
+      return;
+    }
+    if (this.pending !== null) {
+      this.pending.resolve({
+        kind: "error",
+        error: `Photos sidecar process error: ${err.message}${this.stderrTail()}`
+      });
+    }
+  }
+  /** A malformed or out-of-order protocol line: kill and fail the request. */
+  protocolFailure(detail) {
+    this.kill("protocol failure");
+    if (this.handshake !== null) {
+      this.handshake.resolve({ kind: "fallback", reason: detail });
+      return;
+    }
+    if (this.pending !== null) {
+      this.pending.resolve({ kind: "error", error: `${detail}${this.stderrTail()}` });
+    }
+  }
+  stderrTail() {
+    if (this.stderrRing.length === 0) return "";
+    const tail = this.stderrRing.slice(-8).join("\n");
+    return `
+sidecar stderr:
+${truncate(tail, STDERR_TAIL_CHARS)}`;
+  }
+  armIdleTimer() {
+    this.clearIdleTimer();
+    const ms = this.opts.idleMs();
+    if (!(ms > 0) || this.proc === null) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.pending === null && this.handshake === null) {
+        this.kill("idle timeout");
+      }
+    }, ms);
+    this.idleTimer.unref?.();
+  }
+  clearIdleTimer() {
+    if (this.idleTimer !== null) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+};
+function truncate(s, max) {
+  return s.length > max ? `${s.slice(0, max)}\u2026` : s;
+}
+
 // src/utils/python.ts
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
@@ -21563,6 +21859,7 @@ function killActiveSidecars() {
     }
   }
   activeChildren.clear();
+  persistentClient.kill("shutdown");
 }
 function execFileAsync(file, args, options = {}) {
   return new Promise((resolve3, reject) => {
@@ -21655,6 +21952,15 @@ function looksLikeMissingDep(message) {
 function setupHint() {
   return `Install it with: pip3 install osxphotos (requires Python >= 3.11; stock macOS ships 3.9 \u2014 brew install python@3.12), or run scripts/setup.sh from a repo checkout. Run the doctor tool to diagnose, or see ${TROUBLESHOOTING_URL} (set ${ENV_PREFIX}_NO_AUTO_SETUP=0 to allow automatic setup).`;
 }
+function mapStructuredError(structured) {
+  if (structured.includes(`${PACKAGE} not installed`) || looksLikeMissingDep(structured)) {
+    return `${PACKAGE} not installed. ${setupHint()}`;
+  }
+  return structured;
+}
+function timeoutError(timeoutMs) {
+  return `Operation timed out after ${timeoutMs}ms. Library may be very large. Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`;
+}
 async function execReader(command, args, timeoutMs) {
   const python = resolvePython();
   const scriptPath = getScriptPath();
@@ -21681,10 +21987,7 @@ async function execReader(command, args, timeoutMs) {
         const parsed = JSON.parse(stdout);
         const structured = parsed && typeof parsed.error === "string" ? parsed.error : null;
         if (structured) {
-          if (structured.includes(`${PACKAGE} not installed`) || looksLikeMissingDep(structured)) {
-            return { error: `${PACKAGE} not installed. ${setupHint()}` };
-          }
-          return { error: structured };
+          return { error: mapStructuredError(structured) };
         }
       } catch {
       }
@@ -21694,9 +21997,7 @@ async function execReader(command, args, timeoutMs) {
     }
     const bufferExceeded = /maxBuffer.*exceeded/i.test(error2.message ?? "");
     if (error2.killed === true && !bufferExceeded || error2.message?.includes("ETIMEDOUT") || error2.message?.includes("timed out")) {
-      return {
-        error: `Operation timed out after ${timeoutMs}ms. Library may be very large. Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`
-      };
+      return { error: timeoutError(timeoutMs) };
     }
     if (stderr) {
       return { error: stderr };
@@ -21726,14 +22027,87 @@ var sidecarGate = createSerialGate(0);
 function sidecarBusy() {
   return sidecarGate.pending > 0;
 }
-async function runPhotosReader(command, args, timeoutMs) {
+var persistentClient = new PersistentSidecarClient({
+  resolveSpawn: () => ({ file: resolvePython(), args: [getScriptPath(), "--serve"] }),
+  idleMs: getSidecarIdleMs
+});
+var serveDisabledReason = null;
+var serveFallbackLogged = false;
+function persistentModeEnabled() {
+  const raw = process.env[`${ENV_PREFIX}_PERSISTENT_SIDECAR`];
+  if (raw === void 0 || raw === "") return true;
+  return isTrueish(raw);
+}
+var DEFAULT_SIDECAR_IDLE_MS = 5 * 60 * 1e3;
+function getSidecarIdleMs() {
+  const raw = process.env[`${ENV_PREFIX}_SIDECAR_IDLE_MS`];
+  if (raw !== void 0 && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return DEFAULT_SIDECAR_IDLE_MS;
+}
+function getSidecarInfo() {
+  const s = persistentClient.status;
+  const base = {
+    running: s.running,
+    pid: s.pid,
+    spawnCount: s.spawnCount,
+    lastSpawnAt: s.lastSpawnAt === null ? null : new Date(s.lastSpawnAt).toISOString()
+  };
+  if (!persistentModeEnabled()) {
+    return { mode: "one-shot", reason: `disabled via ${ENV_PREFIX}_PERSISTENT_SIDECAR`, ...base };
+  }
+  if (serveDisabledReason !== null) {
+    return { mode: "one-shot", reason: `serve handshake failed: ${serveDisabledReason}`, ...base };
+  }
+  return { mode: "persistent", ...base };
+}
+async function executeSidecar(command, args, timeoutMs, onProgress) {
+  if (persistentModeEnabled() && serveDisabledReason === null) {
+    const outcome = await persistentClient.request(command, args, timeoutMs, onProgress);
+    switch (outcome.kind) {
+      case "result": {
+        const data = outcome.data;
+        if (data && typeof data.error === "string") {
+          return { error: mapStructuredError(data.error) };
+        }
+        if ((process.env.DEBUG || process.env.VERBOSE) && outcome.dbCached !== void 0) {
+          console.error(
+            `[photos-mcp] serve ${command}: PhotosDB ${outcome.dbCached ? "reused" : "parsed"}`
+          );
+        }
+        return { data: outcome.data };
+      }
+      case "error":
+        return { error: mapStructuredError(outcome.error) };
+      case "timeout":
+        return { error: timeoutError(timeoutMs) };
+      case "fallback": {
+        if (!looksLikeMissingDep(outcome.reason)) {
+          serveDisabledReason = outcome.reason;
+        }
+        if (!serveFallbackLogged) {
+          serveFallbackLogged = true;
+          console.error(
+            `[photos-mcp] persistent sidecar unavailable \u2014 using one-shot mode${serveDisabledReason === null ? " for now" : ""}: ${outcome.reason}`
+          );
+        }
+        break;
+      }
+    }
+  }
+  return execReader(command, args, timeoutMs);
+}
+async function runPhotosReader(command, args, timeoutMs, onProgress) {
   return sidecarGate(async () => {
     await ensureReady();
     const timeout = timeoutMs ?? getDefaultTimeout();
-    const result = await execReader(command, args, timeout);
+    const result = await executeSidecar(command, args, timeout, onProgress);
     if (result.error && looksLikeMissingDep(result.error) && !bootstrapAttempted && !autoSetupDisabled()) {
       if (await attemptBootstrap()) {
-        return execReader(command, args, timeout);
+        persistentClient.kill("venv bootstrapped");
+        return executeSidecar(command, args, timeout, onProgress);
       }
     }
     return result;
@@ -21872,7 +22246,7 @@ var PhotosManager = class {
       return null;
     }
   }
-  async run(command, args, timeoutMs, library) {
+  async run(command, args, timeoutMs, library, onProgress) {
     const cacheable = CACHEABLE_COMMANDS.has(command);
     let cacheKey = null;
     let mtimeMs = null;
@@ -21891,7 +22265,7 @@ var PhotosManager = class {
         }
       }
     }
-    const promise = this.spawnAndCache(command, args, timeoutMs, cacheKey, mtimeMs);
+    const promise = this.spawnAndCache(command, args, timeoutMs, cacheKey, mtimeMs, onProgress);
     if (cacheKey !== null && mtimeMs !== null) {
       const key = cacheKey;
       const entry = { mtimeMs, promise };
@@ -21903,8 +22277,8 @@ var PhotosManager = class {
     }
     return promise;
   }
-  async spawnAndCache(command, args, timeoutMs, cacheKey, mtimeMs) {
-    const result = await runPhotosReader(command, args, timeoutMs);
+  async spawnAndCache(command, args, timeoutMs, cacheKey, mtimeMs, onProgress) {
+    const result = await runPhotosReader(command, args, timeoutMs, onProgress);
     if (result.error) {
       throw new Error(augmentPermissionError(result.error));
     }
@@ -22012,7 +22386,7 @@ var PhotosManager = class {
     if (options.live) args.push("--live");
     if (options.raw) args.push("--raw");
     if (options.overwrite) args.push("--overwrite");
-    return this.run("export", args, 30 * 60 * 1e3);
+    return this.run("export", args, 30 * 60 * 1e3, void 0, options.onProgress);
   }
 };
 
@@ -22031,9 +22405,9 @@ function errorResponse(message, structured) {
   return res;
 }
 function withErrorHandling(handler, prefix) {
-  return async (params) => {
+  return async (params, extra) => {
     try {
-      return await handler(params);
+      return await handler(params, extra);
     } catch (error2) {
       const msg = error2 instanceof Error ? error2.message : String(error2);
       return errorResponse(`${prefix}: ${msg}`);
@@ -22083,6 +22457,31 @@ async function runDoctor(manager2) {
       name: "osxphotos",
       status: "fail",
       detail: `could not verify osxphotos: ${String(e)}. See ${TROUBLESHOOTING_URL}`
+    });
+  }
+  try {
+    const sidecar = getSidecarInfo();
+    if (sidecar.mode === "persistent") {
+      const liveness = sidecar.running ? `serving (pid ${sidecar.pid ?? "?"})` : sidecar.spawnCount > 0 ? "idle (respawns on next call)" : "not yet spawned (starts on first tool call)";
+      const spawns = sidecar.spawnCount > 0 ? `; spawned ${sidecar.spawnCount}x, last at ${sidecar.lastSpawnAt ?? "?"}` : "";
+      checks.push({
+        name: "sidecar_mode",
+        status: "ok",
+        detail: `persistent \u2014 ${liveness}${spawns}`
+      });
+    } else {
+      const deliberate = sidecar.reason?.includes("PERSISTENT_SIDECAR") === true;
+      checks.push({
+        name: "sidecar_mode",
+        status: deliberate ? "ok" : "warn",
+        detail: `one-shot (${sidecar.reason ?? "unknown reason"})` + (deliberate ? "" : " \u2014 every call re-parses the library; see the server logs")
+      });
+    }
+  } catch (e) {
+    checks.push({
+      name: "sidecar_mode",
+      status: "warn",
+      detail: `could not determine the sidecar mode: ${String(e)}`
     });
   }
   let libraryOk = false;
@@ -22303,7 +22702,7 @@ server.registerTool(
 server.registerTool(
   "doctor",
   {
-    description: "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\nReturns: four checks \u2014 Python interpreter (path + version; warns below 3.11), osxphotos install, Photos library readability, and Full Disk Access \u2014 each reported ok/warn/fail with actionable advice.\nDo not use when: you only need the lightweight is-it-working smoke test \u2014 use health-check instead.",
+    description: "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\nReturns: five checks \u2014 Python interpreter (path + version; warns below 3.11), osxphotos install, sidecar mode (persistent vs one-shot, plus last respawn), Photos library readability, and Full Disk Access \u2014 each reported ok/warn/fail with actionable advice.\nDo not use when: you only need the lightweight is-it-working smoke test \u2014 use health-check instead.",
     inputSchema: {},
     outputSchema: {
       healthy: external_exports.boolean().optional(),
@@ -22548,7 +22947,7 @@ ${lines.join("\n")}`, { count, persons });
 server.registerTool(
   "export",
   {
-    description: "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\nReturns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\nDo not use when: you only need metadata or file paths rather than copies on disk \u2014 use get-photo; or you're still figuring out which photos to export \u2014 use query first.\nSafety: this is the only side-effecting tool \u2014 it writes files into the destination directory (created if missing). dest must resolve (after expanding ~ and following symlinks) to a path under your home directory, /tmp, /private/tmp, or /Volumes; anything else is rejected. With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand \u2014 this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
+    description: "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image. Large batches report per-photo MCP progress notifications when the request carries a progressToken.\nReturns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\nDo not use when: you only need metadata or file paths rather than copies on disk \u2014 use get-photo; or you're still figuring out which photos to export \u2014 use query first.\nSafety: this is the only side-effecting tool \u2014 it writes files into the destination directory (created if missing). dest must resolve (after expanding ~ and following symlinks) to a path under your home directory, /tmp, /private/tmp, or /Volumes; anything else is rejected. With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand \u2014 this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
     inputSchema: {
       ...libraryArg,
       uuid: external_exports.array(external_exports.string().max(256)).min(1).max(1e3).describe("Photo UUID(s) to export"),
@@ -22568,13 +22967,27 @@ server.registerTool(
       skipped: external_exports.array(external_exports.object({}).passthrough()).optional()
     }
   },
-  withErrorHandling(async ({ library, uuid: uuid2, dest, edited, live, raw, overwrite }) => {
+  withErrorHandling(async ({ library, uuid: uuid2, dest, edited, live, raw, overwrite }, extra) => {
+    const progressToken = extra?._meta?.progressToken;
+    const onProgress = progressToken === void 0 ? void 0 : (p) => {
+      void extra.sendNotification({
+        method: "notifications/progress",
+        params: {
+          progressToken,
+          progress: p.done,
+          total: p.total,
+          message: p.current ? `Exporting ${p.current} (${p.done + 1}/${p.total})` : `Exported ${p.done}/${p.total}`
+        }
+      }).catch(() => {
+      });
+    };
     const result = await manager.exportPhotos(uuid2, dest, {
       edited,
       live,
       raw,
       overwrite,
-      library
+      library,
+      onProgress
     });
     const lines = [
       `Destination: ${result.destination}`,

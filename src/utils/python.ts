@@ -6,6 +6,8 @@ import { dirname, join, parse } from "node:path";
 import { REQUIREMENTS_URL, TROUBLESHOOTING_URL } from "./docsUrls.js";
 import { acquireSetupLock, releaseSetupLock, waitForCompletion } from "./setupLock.js";
 import { createSerialGate } from "./serialize.js";
+import { PersistentSidecarClient } from "./sidecarClient.js";
+import type { SidecarProgress } from "./sidecarClient.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -124,6 +126,9 @@ export function _resetPythonCache(): void {
   readyConfirmed = false;
   bootstrapAttempted = false;
   bootstrapPromise = null;
+  serveDisabledReason = null;
+  serveFallbackLogged = false;
+  persistentClient.kill("cache reset");
 }
 
 function findSystemPython(): string {
@@ -218,6 +223,7 @@ export function killActiveSidecars(): void {
     }
   }
   activeChildren.clear();
+  persistentClient.kill("shutdown");
 }
 
 /**
@@ -367,6 +373,27 @@ function setupHint(): string {
   );
 }
 
+/**
+ * Map a structured sidecar error message (from one-shot stdout JSON or a
+ * serve-mode {"type":"error"} response — the strings are identical by
+ * contract) to the user-facing message: missing-dep errors get the setup
+ * hint, everything else surfaces verbatim.
+ */
+function mapStructuredError(structured: string): string {
+  if (structured.includes(`${PACKAGE} not installed`) || looksLikeMissingDep(structured)) {
+    return `${PACKAGE} not installed. ${setupHint()}`;
+  }
+  return structured;
+}
+
+/** The exact user-facing timeout string — shared by both sidecar modes. */
+function timeoutError(timeoutMs: number): string {
+  return (
+    `Operation timed out after ${timeoutMs}ms. Library may be very large. ` +
+    `Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`
+  );
+}
+
 async function execReader<T>(
   command: string,
   args: string[],
@@ -409,10 +436,7 @@ async function execReader<T>(
             ? (parsed as { error: string }).error
             : null;
         if (structured) {
-          if (structured.includes(`${PACKAGE} not installed`) || looksLikeMissingDep(structured)) {
-            return { error: `${PACKAGE} not installed. ${setupHint()}` };
-          }
-          return { error: structured };
+          return { error: mapStructuredError(structured) };
         }
       } catch {
         // stdout wasn't JSON — fall through to the stderr/message paths.
@@ -432,11 +456,7 @@ async function execReader<T>(
       error.message?.includes("ETIMEDOUT") ||
       error.message?.includes("timed out")
     ) {
-      return {
-        error:
-          `Operation timed out after ${timeoutMs}ms. Library may be very large. ` +
-          `Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`,
-      };
+      return { error: timeoutError(timeoutMs) };
     }
     // Surface the Python traceback when there is one — without it the user just
     // sees "Command failed: <python> <args>" with no clue what actually broke.
@@ -501,15 +521,145 @@ export function sidecarBusy(): boolean {
   return sidecarGate.pending > 0;
 }
 
+// ---------------------------------------------------------------------------
+// Persistent (serve-mode) sidecar
+// ---------------------------------------------------------------------------
+
+/**
+ * The long-lived `photos_reader.py --serve` process. Spawned on first use and
+ * reused across requests, so the multi-second fixed cost of every one-shot
+ * call (python start + `import osxphotos` + a full PhotosDB parse) is paid
+ * once; the sidecar itself revalidates the library's Photos.sqlite mtime
+ * before each request, so a changed library still re-parses immediately.
+ * Killed after APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS of inactivity (default 5 min,
+ * 0 = never) to bound resident memory; the next request respawns it.
+ */
+const persistentClient = new PersistentSidecarClient({
+  resolveSpawn: () => ({ file: resolvePython(), args: [getScriptPath(), "--serve"] }),
+  idleMs: getSidecarIdleMs,
+});
+
+/**
+ * Set when the serve handshake failed for a reason that retrying can't fix
+ * (an old script that doesn't know --serve, protocol garbage). Missing-dep
+ * handshake failures deliberately do NOT set this — the auto-bootstrap can
+ * fix those, after which serve mode is retried.
+ */
+let serveDisabledReason: string | null = null;
+let serveFallbackLogged = false;
+
+/** Persistent mode is on unless APPLE_PHOTOS_MCP_PERSISTENT_SIDECAR=0/false. */
+function persistentModeEnabled(): boolean {
+  const raw = process.env[`${ENV_PREFIX}_PERSISTENT_SIDECAR`];
+  if (raw === undefined || raw === "") return true;
+  return isTrueish(raw);
+}
+
+const DEFAULT_SIDECAR_IDLE_MS = 5 * 60 * 1000;
+
+/** Idle kill delay for the serve process; 0 disables the idle kill. */
+function getSidecarIdleMs(): number {
+  const raw = process.env[`${ENV_PREFIX}_SIDECAR_IDLE_MS`];
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return DEFAULT_SIDECAR_IDLE_MS;
+}
+
+/** Sidecar execution mode, as reported by the doctor tool. */
+export interface SidecarModeInfo {
+  mode: "persistent" | "one-shot";
+  /** Why one-shot mode is in effect (env override or handshake fallback). */
+  reason?: string;
+  running: boolean;
+  pid?: number;
+  spawnCount: number;
+  /** ISO timestamp of the most recent serve-process (re)spawn. */
+  lastSpawnAt: string | null;
+}
+
+export function getSidecarInfo(): SidecarModeInfo {
+  const s = persistentClient.status;
+  const base = {
+    running: s.running,
+    pid: s.pid,
+    spawnCount: s.spawnCount,
+    lastSpawnAt: s.lastSpawnAt === null ? null : new Date(s.lastSpawnAt).toISOString(),
+  };
+  if (!persistentModeEnabled()) {
+    return { mode: "one-shot", reason: `disabled via ${ENV_PREFIX}_PERSISTENT_SIDECAR`, ...base };
+  }
+  if (serveDisabledReason !== null) {
+    return { mode: "one-shot", reason: `serve handshake failed: ${serveDisabledReason}`, ...base };
+  }
+  return { mode: "persistent", ...base };
+}
+
+/**
+ * Run one sidecar command — through the persistent serve process when
+ * available, transparently falling back to a one-shot spawn when it isn't.
+ * Serve-mode outcomes map onto the exact same user-facing strings as
+ * one-shot mode (structured errors, the timeout message), so callers can't
+ * tell the modes apart except by speed.
+ */
+async function executeSidecar<T>(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  onProgress?: (p: SidecarProgress) => void
+): Promise<PythonResult<T>> {
+  if (persistentModeEnabled() && serveDisabledReason === null) {
+    const outcome = await persistentClient.request(command, args, timeoutMs, onProgress);
+    switch (outcome.kind) {
+      case "result": {
+        const data = outcome.data as { error?: unknown } | null;
+        if (data && typeof data.error === "string") {
+          return { error: mapStructuredError(data.error) };
+        }
+        if ((process.env.DEBUG || process.env.VERBOSE) && outcome.dbCached !== undefined) {
+          console.error(
+            `[photos-mcp] serve ${command}: PhotosDB ${outcome.dbCached ? "reused" : "parsed"}`
+          );
+        }
+        return { data: outcome.data as T };
+      }
+      case "error":
+        return { error: mapStructuredError(outcome.error) };
+      case "timeout":
+        return { error: timeoutError(timeoutMs) };
+      case "fallback": {
+        // Handshake failed. A missing dependency is transient (bootstrap can
+        // fix it and serve mode is retried); anything else disables serve
+        // mode for this process. Either way THIS request runs one-shot below,
+        // which reproduces dep errors through the established contract.
+        if (!looksLikeMissingDep(outcome.reason)) {
+          serveDisabledReason = outcome.reason;
+        }
+        if (!serveFallbackLogged) {
+          serveFallbackLogged = true;
+          console.error(
+            `[photos-mcp] persistent sidecar unavailable — using one-shot mode` +
+              `${serveDisabledReason === null ? " for now" : ""}: ${outcome.reason}`
+          );
+        }
+        break;
+      }
+    }
+  }
+  return execReader<T>(command, args, timeoutMs);
+}
+
 export async function runPhotosReader<T = unknown>(
   command: string,
   args: string[],
-  timeoutMs?: number
+  timeoutMs?: number,
+  onProgress?: (p: SidecarProgress) => void
 ): Promise<PythonResult<T>> {
   return sidecarGate(async () => {
     await ensureReady();
     const timeout = timeoutMs ?? getDefaultTimeout();
-    const result = await execReader<T>(command, args, timeout);
+    const result = await executeSidecar<T>(command, args, timeout, onProgress);
 
     // Belt-and-suspenders: if the deps still look missing and we haven't tried a
     // bootstrap yet, attempt it once and retry — covers a venv that exists but is
@@ -521,7 +671,10 @@ export async function runPhotosReader<T = unknown>(
       !autoSetupDisabled()
     ) {
       if (await attemptBootstrap()) {
-        return execReader<T>(command, args, timeout);
+        // The serve process (if any) was talking to the OLD interpreter/env —
+        // kill it so the retry respawns against the freshly built venv.
+        persistentClient.kill("venv bootstrapped");
+        return executeSidecar<T>(command, args, timeout, onProgress);
       }
     }
     return result;

@@ -43,10 +43,26 @@ Before any tool works, two things must be in place:
 Run **`health-check`** first when in doubt — it confirms both at once (osxphotos
 present + library openable). When something is actually broken, reach for
 **`doctor`**: it's the richest diagnostic, checking the Python interpreter
-(path + version — warns below the required 3.11), osxphotos install, library
-readability, and Full Disk Access separately and reporting each as ok / warn /
-fail with an actionable message — so it pinpoints *which* of the first-run
-requirements is missing.
+(path + version — warns below the required 3.11), osxphotos install, the
+sidecar execution mode (persistent vs one-shot fallback), library readability,
+and Full Disk Access separately and reporting each as ok / warn / fail with an
+actionable message — so it pinpoints *which* of the first-run requirements is
+missing.
+
+## Performance model: cold vs warm calls
+
+The Python sidecar runs as a **persistent process**: the first tool call pays a
+one-time cost (python start + osxphotos import + a full parse of the library
+database — roughly ~4 s on a ~30k-photo library, more on bigger ones), and
+subsequent calls reuse the resident parsed library and complete in
+**milliseconds**. The sidecar re-checks the library's modification time before
+every request, so results are never stale — a changed library (import, edit,
+album rename) triggers an automatic re-parse on the next call. After 5 idle
+minutes (`APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS`) the process is killed to free
+memory and the next call pays the cold cost again. Practical upshot: don't
+avoid follow-up calls for cost reasons — a `query` → `get-photo` → `export`
+chain costs the parse once, not three times. Batch `export`s report per-photo
+MCP progress notifications when the request carries a `progressToken`.
 
 ## The core workflow: query, then act
 
@@ -115,7 +131,7 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 | Tool | Purpose |
 |------|---------|
 | `health-check` | Verify osxphotos is installed and the library opens (while another operation is running it answers immediately with a liveness summary instead of queueing behind it) |
-| `doctor` | Full setup diagnostic — Python interpreter version, osxphotos install, library readability, and Full Disk Access, each ok/warn/fail with advice (richer than `health-check`) |
+| `doctor` | Full setup diagnostic — Python interpreter version, osxphotos install, sidecar mode (persistent vs one-shot), library readability, and Full Disk Access, each ok/warn/fail with advice (richer than `health-check`) |
 | `library-info` | High-level counts (photos, movies, albums, folders, keywords, persons) |
 | `query` | Find photos by date/album/keyword/person/flags → returns UUIDs |
 | `get-photo` | Full metadata for one photo by UUID |
@@ -136,7 +152,7 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 | Export skipped: "Photo does not have adjustments..." / "raw component not on disk..." | `edited` requested but the photo has no edits / `raw` requested but the raw file isn't downloaded | Retry without that flag |
 | Export skipped: "already exists at destination" | A file with that name is already at `dest` and `overwrite` wasn't set | Pass `overwrite: true` to replace, or export to a fresh directory |
 | Export skipped: "UUID not found (deleted or in trash)" | Stale UUID — photo deleted or moved to Recently Deleted since the query | Re-run `query` to get current UUIDs |
-| "Operation timed out after 60000ms" | Very large library — every call re-opens the Photos DB | Set `APPLE_PHOTOS_MCP_TIMEOUT` (ms) higher |
+| "Operation timed out after 60000ms" | Very large library — the first (cold) call after startup, an idle period, or a library change parses the whole Photos DB | Set `APPLE_PHOTOS_MCP_TIMEOUT` (ms) higher; warm calls are then fast |
 | "Export destination ... is outside the allowed export roots" | `dest` resolves outside home, `/tmp`, `/private/tmp`, and `/Volumes` (symlinks are followed) | Pick a destination under one of those roots |
 | Database-lock error | Photos.app is mid-write | Close Photos.app and retry (queries only — iCloud export needs Photos) |
 

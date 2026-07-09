@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PhotosManager } from "./services/photosManager.js";
 import { killActiveSidecars } from "./utils/python.js";
+import type { SidecarProgress } from "./utils/sidecarClient.js";
 import { successResponse, withErrorHandling } from "./tools/respond.js";
 import { runDoctor, formatDoctorReport } from "./tools/doctor.js";
 import { registerResourcesAndPrompts } from "./tools/resourcesAndPrompts.js";
@@ -70,7 +71,7 @@ server.registerTool(
   {
     description:
       "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\n" +
-      "Returns: four checks — Python interpreter (path + version; warns below 3.11), osxphotos install, Photos library readability, and Full Disk Access — each reported ok/warn/fail with actionable advice.\n" +
+      "Returns: five checks — Python interpreter (path + version; warns below 3.11), osxphotos install, sidecar mode (persistent vs one-shot, plus last respawn), Photos library readability, and Full Disk Access — each reported ok/warn/fail with actionable advice.\n" +
       "Do not use when: you only need the lightweight is-it-working smoke test — use health-check instead.",
     inputSchema: {},
     outputSchema: {
@@ -376,7 +377,7 @@ server.registerTool(
   "export",
   {
     description:
-      "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\n" +
+      "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image. Large batches report per-photo MCP progress notifications when the request carries a progressToken.\n" +
       "Returns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\n" +
       "Do not use when: you only need metadata or file paths rather than copies on disk — use get-photo; or you're still figuring out which photos to export — use query first.\n" +
       "Safety: this is the only side-effecting tool — it writes files into the destination directory (created if missing). dest must resolve (after expanding ~ and following symlinks) to a path under your home directory, /tmp, /private/tmp, or /Volumes; anything else is rejected. With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand — this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
@@ -404,13 +405,36 @@ server.registerTool(
       skipped: z.array(z.object({}).passthrough()).optional(),
     },
   },
-  withErrorHandling(async ({ library, uuid, dest, edited, live, raw, overwrite }) => {
+  withErrorHandling(async ({ library, uuid, dest, edited, live, raw, overwrite }, extra) => {
+    // Forward the sidecar's per-photo progress as MCP progress notifications —
+    // but only when the client asked for them by sending a progressToken.
+    // Notification failures must never fail the export itself.
+    const progressToken = extra?._meta?.progressToken;
+    const onProgress =
+      progressToken === undefined
+        ? undefined
+        : (p: SidecarProgress): void => {
+            void extra
+              .sendNotification({
+                method: "notifications/progress",
+                params: {
+                  progressToken,
+                  progress: p.done,
+                  total: p.total,
+                  message: p.current
+                    ? `Exporting ${p.current} (${p.done + 1}/${p.total})`
+                    : `Exported ${p.done}/${p.total}`,
+                },
+              })
+              .catch(() => {});
+          };
     const result = await manager.exportPhotos(uuid, dest, {
       edited,
       live,
       raw,
       overwrite,
       library,
+      onProgress,
     });
     const lines = [
       `Destination: ${result.destination}`,

@@ -1,15 +1,16 @@
 /**
  * Setup "doctor": one diagnostic covering the things that actually break an
  * apple-photos-mcp setup — the resolved Python interpreter (path + version, so
- * an old stock Python is visible at a glance), osxphotos installation, Photos
- * library reachability, and Full Disk Access (required for the host process to
- * read the library) — each reported as ok / warn / fail with an actionable
- * message.
+ * an old stock Python is visible at a glance), osxphotos installation, the
+ * sidecar execution mode (persistent serve process vs one-shot fallback, with
+ * the last respawn), Photos library reachability, and Full Disk Access
+ * (required for the host process to read the library) — each reported as
+ * ok / warn / fail with an actionable message.
  *
  * @module tools/doctor
  */
 import type { PhotosManager } from "../services/photosManager.js";
-import { checkDependencies, getPythonInfo, sidecarBusy } from "../utils/python.js";
+import { checkDependencies, getPythonInfo, getSidecarInfo, sidecarBusy } from "../utils/python.js";
 import { FDA_REMEDIATION, TROUBLESHOOTING_URL } from "../utils/docsUrls.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
@@ -95,7 +96,47 @@ export async function runDoctor(manager: PhotosManager): Promise<DoctorReport> {
     });
   }
 
-  // 3. Photos library reachability. We remember whether it was a permission
+  // 3. Sidecar execution mode — persistent (a long-lived serve process that
+  //    keeps the parsed PhotosDB resident) vs one-shot (spawn per call).
+  //    Pure-TS state, never touches the gate. One-shot via env override is a
+  //    deliberate choice (ok); one-shot because the serve handshake failed is
+  //    worth a warn — every call is paying the full library re-parse.
+  try {
+    const sidecar = getSidecarInfo();
+    if (sidecar.mode === "persistent") {
+      const liveness = sidecar.running
+        ? `serving (pid ${sidecar.pid ?? "?"})`
+        : sidecar.spawnCount > 0
+          ? "idle (respawns on next call)"
+          : "not yet spawned (starts on first tool call)";
+      const spawns =
+        sidecar.spawnCount > 0
+          ? `; spawned ${sidecar.spawnCount}x, last at ${sidecar.lastSpawnAt ?? "?"}`
+          : "";
+      checks.push({
+        name: "sidecar_mode",
+        status: "ok",
+        detail: `persistent — ${liveness}${spawns}`,
+      });
+    } else {
+      const deliberate = sidecar.reason?.includes("PERSISTENT_SIDECAR") === true;
+      checks.push({
+        name: "sidecar_mode",
+        status: deliberate ? "ok" : "warn",
+        detail:
+          `one-shot (${sidecar.reason ?? "unknown reason"})` +
+          (deliberate ? "" : " — every call re-parses the library; see the server logs"),
+      });
+    }
+  } catch (e) {
+    checks.push({
+      name: "sidecar_mode",
+      status: "warn",
+      detail: `could not determine the sidecar mode: ${String(e)}`,
+    });
+  }
+
+  // 4. Photos library reachability. We remember whether it was a permission
   //    error so the full_disk_access check can be derived from it. Skipped
   //    (warn) while another sidecar operation holds the gate — doctor must
   //    respond promptly, not queue behind a minutes-long query/export.
@@ -135,7 +176,7 @@ export async function runDoctor(manager: PhotosManager): Promise<DoctorReport> {
     });
   }
 
-  // 4. Full Disk Access — derived from the photos_library check.
+  // 5. Full Disk Access — derived from the photos_library check.
   if (libraryOk) {
     checks.push({
       name: "full_disk_access",
