@@ -562,7 +562,7 @@ This package is a **TypeScript MCP server with a Python sidecar**:
 
 - The MCP server (Node) speaks the Model Context Protocol over stdio.
 - A bundled Python script (`src/utils/photos_reader.py`) uses `osxphotos` to read the Photos library and returns JSON.
-- The TypeScript side spawns the Python script via `child_process.execFileSync`.
+- The TypeScript side spawns the Python script asynchronously (`child_process.execFile`) behind a serial gate: exactly one sidecar runs at a time, but the Node event loop stays free — so the server keeps answering MCP traffic (pings, `health-check`, `doctor`) even during a long `query` or a minutes-long iCloud `export`.
 
 This is the same pattern used by [apple-numbers-mcp](https://github.com/sweetrb/apple-numbers-mcp) for the `numbers-parser` Python library.
 

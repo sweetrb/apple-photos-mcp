@@ -76,29 +76,28 @@ export function releaseSetupLock(lockDir: string): void {
   }
 }
 
-/**
- * Synchronous sleep. The whole sidecar layer is deliberately synchronous
- * (execFileSync), so the bootstrap wait must block without an event loop.
- */
-export function sleepSyncMs(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** Awaitable sleep — yields the event loop while waiting. */
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * Poll `isComplete` until it returns true or `timeoutMs` elapses. Used by the
  * lock loser to wait for the winner's completion marker (venv .deps-ok).
- * Returns true when completion was observed, false on timeout.
+ * Awaitable (the sidecar layer is async — a blocking wait here would freeze
+ * the event loop and defeat the health-check-stays-responsive guarantee).
+ * Resolves true when completion was observed, false on timeout.
  */
-export function waitForCompletion(
+export async function waitForCompletion(
   isComplete: () => boolean,
   timeoutMs: number,
   pollMs = 1000
-): boolean {
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (isComplete()) return true;
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;
-    sleepSyncMs(Math.min(pollMs, remaining));
+    await sleepMs(Math.min(pollMs, remaining));
   }
 }

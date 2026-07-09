@@ -3,19 +3,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../utils/python.js", () => ({
   checkDependencies: vi.fn(),
   getPythonInfo: vi.fn(),
+  sidecarBusy: vi.fn(() => false),
 }));
 
 import { runDoctor, formatDoctorReport } from "../tools/doctor.js";
-import { checkDependencies, getPythonInfo } from "../utils/python.js";
+import { checkDependencies, getPythonInfo, sidecarBusy } from "../utils/python.js";
 import type { PhotosManager } from "../services/photosManager.js";
 import type { LibraryInfo } from "../types.js";
 
 const checkMock = vi.mocked(checkDependencies);
 const pythonInfoMock = vi.mocked(getPythonInfo);
+const busyMock = vi.mocked(sidecarBusy);
 
 /** Build a fake PhotosManager exposing just what runDoctor touches. */
 function fakeManager(getLibraryInfo: () => LibraryInfo): PhotosManager {
-  return { getLibraryInfo } as unknown as PhotosManager;
+  return { getLibraryInfo: async () => getLibraryInfo() } as unknown as PhotosManager;
 }
 
 const healthyLibrary: LibraryInfo = {
@@ -35,17 +37,19 @@ describe("runDoctor", () => {
   beforeEach(() => {
     checkMock.mockReset();
     pythonInfoMock.mockReset();
-    pythonInfoMock.mockReturnValue({
+    busyMock.mockReset();
+    busyMock.mockReturnValue(false);
+    pythonInfoMock.mockResolvedValue({
       path: "/repo/venv/bin/python3",
       version: "Python 3.12.4",
     });
   });
 
-  it("reports healthy when python, osxphotos, and the library are all fine", () => {
-    checkMock.mockReturnValue({ ok: true, message: "osxphotos 0.76.1 available" });
+  it("reports healthy when python, osxphotos, and the library are all fine", async () => {
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
     const manager = fakeManager(() => healthyLibrary);
 
-    const report = runDoctor(manager);
+    const report = await runDoctor(manager);
 
     expect(report.healthy).toBe(true);
     expect(report.checks.every((c) => c.status === "ok")).toBe(true);
@@ -67,11 +71,11 @@ describe("runDoctor", () => {
     expect(fda?.detail).toContain("readable");
   });
 
-  it("fails and is unhealthy when osxphotos is missing", () => {
-    checkMock.mockReturnValue({ ok: false, message: "osxphotos not installed" });
+  it("fails and is unhealthy when osxphotos is missing", async () => {
+    checkMock.mockResolvedValue({ ok: false, message: "osxphotos not installed" });
     const manager = fakeManager(() => healthyLibrary);
 
-    const report = runDoctor(manager);
+    const report = await runDoctor(manager);
 
     expect(report.healthy).toBe(false);
     const osx = report.checks.find((c) => c.name === "osxphotos");
@@ -79,12 +83,12 @@ describe("runDoctor", () => {
     expect(osx?.detail).toContain("osxphotos not installed");
   });
 
-  it("warns (with brew advice) when the resolved Python is older than 3.11", () => {
-    pythonInfoMock.mockReturnValue({ path: "/usr/bin/python3", version: "Python 3.9.6" });
-    checkMock.mockReturnValue({ ok: false, message: "osxphotos not installed" });
+  it("warns (with brew advice) when the resolved Python is older than 3.11", async () => {
+    pythonInfoMock.mockResolvedValue({ path: "/usr/bin/python3", version: "Python 3.9.6" });
+    checkMock.mockResolvedValue({ ok: false, message: "osxphotos not installed" });
     const manager = fakeManager(() => healthyLibrary);
 
-    const report = runDoctor(manager);
+    const report = await runDoctor(manager);
 
     const py = report.checks.find((c) => c.name === "python_interpreter");
     expect(py?.status).toBe("warn");
@@ -95,23 +99,23 @@ describe("runDoctor", () => {
     expect(py?.detail).toContain("https://github.com/sweetrb/apple-photos-mcp#troubleshooting");
   });
 
-  it("accepts a Python at or above 3.11", () => {
-    pythonInfoMock.mockReturnValue({ path: "/opt/python3.11", version: "Python 3.11.9" });
-    checkMock.mockReturnValue({ ok: true, message: "osxphotos 0.76.1 available" });
+  it("accepts a Python at or above 3.11", async () => {
+    pythonInfoMock.mockResolvedValue({ path: "/opt/python3.11", version: "Python 3.11.9" });
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
     const manager = fakeManager(() => healthyLibrary);
 
-    const report = runDoctor(manager);
+    const report = await runDoctor(manager);
 
     const py = report.checks.find((c) => c.name === "python_interpreter");
     expect(py?.status).toBe("ok");
   });
 
-  it("fails (and is unhealthy) when no Python interpreter resolves", () => {
-    pythonInfoMock.mockReturnValue(null);
-    checkMock.mockReturnValue({ ok: false, message: "osxphotos not installed" });
+  it("fails (and is unhealthy) when no Python interpreter resolves", async () => {
+    pythonInfoMock.mockResolvedValue(null);
+    checkMock.mockResolvedValue({ ok: false, message: "osxphotos not installed" });
     const manager = fakeManager(() => healthyLibrary);
 
-    const report = runDoctor(manager);
+    const report = await runDoctor(manager);
 
     expect(report.healthy).toBe(false);
     const py = report.checks.find((c) => c.name === "python_interpreter");
@@ -120,27 +124,27 @@ describe("runDoctor", () => {
     expect(py?.detail).toContain("brew install python@3.12");
   });
 
-  it("only warns on python_interpreter when getPythonInfo itself throws", () => {
+  it("only warns on python_interpreter when getPythonInfo itself throws", async () => {
     pythonInfoMock.mockImplementation(() => {
       throw new Error("weird");
     });
-    checkMock.mockReturnValue({ ok: true, message: "osxphotos 0.76.1 available" });
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
     const manager = fakeManager(() => healthyLibrary);
 
-    const report = runDoctor(manager);
+    const report = await runDoctor(manager);
 
     const py = report.checks.find((c) => c.name === "python_interpreter");
     expect(py?.status).toBe("warn");
     expect(report.healthy).toBe(true);
   });
 
-  it("flags Full Disk Access when the library throws a permission error", () => {
-    checkMock.mockReturnValue({ ok: true, message: "osxphotos 0.76.1 available" });
+  it("flags Full Disk Access when the library throws a permission error", async () => {
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
     const manager = fakeManager(() => {
       throw new Error("Operation not permitted");
     });
 
-    const report = runDoctor(manager);
+    const report = await runDoctor(manager);
 
     expect(report.healthy).toBe(false);
 
@@ -155,13 +159,13 @@ describe("runDoctor", () => {
     );
   });
 
-  it("warns (not fails) on full_disk_access when the library error is unrelated to permissions", () => {
-    checkMock.mockReturnValue({ ok: true, message: "osxphotos 0.76.1 available" });
+  it("warns (not fails) on full_disk_access when the library error is unrelated to permissions", async () => {
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
     const manager = fakeManager(() => {
       throw new Error("library locked");
     });
 
-    const report = runDoctor(manager);
+    const report = await runDoctor(manager);
 
     const lib = report.checks.find((c) => c.name === "photos_library");
     expect(lib?.status).toBe("fail");
@@ -170,13 +174,37 @@ describe("runDoctor", () => {
     expect(fda?.status).toBe("warn");
   });
 
-  it("never throws even if getLibraryInfo throws a non-Error value", () => {
-    checkMock.mockReturnValue({ ok: true, message: "osxphotos 0.76.1 available" });
+  it("never throws even if getLibraryInfo throws a non-Error value", async () => {
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
     const manager = fakeManager(() => {
       throw "boom";
     });
 
-    expect(() => runDoctor(manager)).not.toThrow();
+    await expect(runDoctor(manager)).resolves.toBeDefined();
+  });
+
+  it("skips the library probe (warn, not queue) while a sidecar operation is in flight", async () => {
+    busyMock.mockReturnValue(true);
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
+    const getLibraryInfo = vi.fn(async () => healthyLibrary);
+    const manager = { getLibraryInfo } as unknown as PhotosManager;
+
+    const report = await runDoctor(manager);
+
+    // The light interpreter probes still ran…
+    expect(report.checks.find((c) => c.name === "python_interpreter")?.status).toBe("ok");
+    expect(report.checks.find((c) => c.name === "osxphotos")?.status).toBe("ok");
+    // …but the DB-touching probe was skipped, NOT enqueued behind the gate.
+    expect(getLibraryInfo).not.toHaveBeenCalled();
+
+    const lib = report.checks.find((c) => c.name === "photos_library");
+    expect(lib?.status).toBe("warn");
+    expect(lib?.detail).toMatch(/in flight/i);
+
+    const fda = report.checks.find((c) => c.name === "full_disk_access");
+    expect(fda?.status).toBe("warn");
+    // Warns never flip healthy to false.
+    expect(report.healthy).toBe(true);
   });
 });
 
@@ -184,17 +212,19 @@ describe("formatDoctorReport", () => {
   beforeEach(() => {
     checkMock.mockReset();
     pythonInfoMock.mockReset();
-    pythonInfoMock.mockReturnValue({
+    busyMock.mockReset();
+    busyMock.mockReturnValue(false);
+    pythonInfoMock.mockResolvedValue({
       path: "/repo/venv/bin/python3",
       version: "Python 3.12.4",
     });
   });
 
-  it("renders icons and check names", () => {
-    checkMock.mockReturnValue({ ok: true, message: "osxphotos 0.76.1 available" });
+  it("renders icons and check names", async () => {
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
     const manager = fakeManager(() => healthyLibrary);
 
-    const text = formatDoctorReport(runDoctor(manager));
+    const text = formatDoctorReport(await runDoctor(manager));
 
     expect(text).toContain("✅");
     expect(text).toContain("apple-photos-mcp doctor");
@@ -204,11 +234,11 @@ describe("formatDoctorReport", () => {
     expect(text).toContain("full_disk_access");
   });
 
-  it("shows the failure icon and ISSUES FOUND header when unhealthy", () => {
-    checkMock.mockReturnValue({ ok: false, message: "osxphotos not installed" });
+  it("shows the failure icon and ISSUES FOUND header when unhealthy", async () => {
+    checkMock.mockResolvedValue({ ok: false, message: "osxphotos not installed" });
     const manager = fakeManager(() => healthyLibrary);
 
-    const text = formatDoctorReport(runDoctor(manager));
+    const text = formatDoctorReport(await runDoctor(manager));
 
     expect(text).toContain("❌");
     expect(text).toContain("ISSUES FOUND");

@@ -17,33 +17,36 @@ const json = (uri: URL, data: unknown) => ({
 
 export function registerResourcesAndPrompts(server: McpServer, manager: PhotosManager): void {
   // --- Resources ---
-  server.resource("library", "photos://library", (uri) => {
+  // Async callbacks: the manager's sidecar calls are awaited (and serialized
+  // through the same gate as the tools), so a resource read never blocks the
+  // event loop either.
+  server.resource("library", "photos://library", async (uri) => {
     try {
-      return json(uri, manager.getLibraryInfo());
+      return json(uri, await manager.getLibraryInfo());
     } catch (err) {
       return json(uri, { error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  server.resource("albums", "photos://albums", (uri) => {
+  server.resource("albums", "photos://albums", async (uri) => {
     try {
-      return json(uri, manager.listAlbums());
+      return json(uri, await manager.listAlbums());
     } catch (err) {
       return json(uri, { error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  server.resource("persons", "photos://persons", (uri) => {
+  server.resource("persons", "photos://persons", async (uri) => {
     try {
-      return json(uri, manager.listPersons());
+      return json(uri, await manager.listPersons());
     } catch (err) {
       return json(uri, { error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  server.resource("keywords", "photos://keywords", (uri) => {
+  server.resource("keywords", "photos://keywords", async (uri) => {
     try {
-      return json(uri, manager.listKeywords());
+      return json(uri, await manager.listKeywords());
     } catch (err) {
       return json(uri, { error: err instanceof Error ? err.message : String(err) });
     }
@@ -52,10 +55,10 @@ export function registerResourcesAndPrompts(server: McpServer, manager: PhotosMa
   server.resource(
     "photo",
     new ResourceTemplate("photos://photo/{uuid}", { list: undefined }),
-    (uri, variables) => {
+    async (uri, variables) => {
       try {
         const uuid = decodeURIComponent(String(variables.uuid));
-        return json(uri, manager.getPhoto(uuid));
+        return json(uri, await manager.getPhoto(uuid));
       } catch (err) {
         return json(uri, { error: err instanceof Error ? err.message : String(err) });
       }

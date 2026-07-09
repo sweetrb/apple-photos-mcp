@@ -39,16 +39,17 @@ export function textResponse(text: string): ToolResponse {
 }
 
 /**
- * Wrap a tool handler so any thrown error becomes a clean error response with a
- * consistent prefix, instead of crashing the tool call.
+ * Wrap a tool handler so any thrown error (or rejected promise) becomes a
+ * clean error response with a consistent prefix, instead of crashing the tool
+ * call. Handlers may be sync or async — the result is awaited either way.
  */
 export function withErrorHandling<T>(
-  handler: (params: T) => ToolResponse,
+  handler: (params: T) => ToolResponse | Promise<ToolResponse>,
   prefix: string
-): (params: T) => ToolResponse {
-  return (params: T) => {
+): (params: T) => Promise<ToolResponse> {
+  return async (params: T) => {
     try {
-      return handler(params);
+      return await handler(params);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       return errorResponse(`${prefix}: ${msg}`);
