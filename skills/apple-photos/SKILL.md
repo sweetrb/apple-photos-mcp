@@ -22,7 +22,7 @@ Use this skill when the user:
 | Tool | Purpose |
 |------|---------|
 | `health-check` | Verify osxphotos is installed and the library can be opened |
-| `doctor` | Full diagnostic — four checks: Python interpreter version, osxphotos install, library readability, and Full Disk Access (ok/warn/fail with advice) |
+| `doctor` | Full diagnostic — five checks: Python interpreter version, osxphotos install, sidecar mode (persistent vs one-shot), library readability, and Full Disk Access (ok/warn/fail with advice) |
 | `library-info` | High-level stats: counts of photos, movies, albums, folders, keywords, persons |
 | `query` | Search the library with combinable filters; returns photo summaries with UUIDs |
 | `get-photo` | Full metadata for one photo by UUID (location, dimensions, type flags, etc.) |

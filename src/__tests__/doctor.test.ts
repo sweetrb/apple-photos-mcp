@@ -3,16 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../utils/python.js", () => ({
   checkDependencies: vi.fn(),
   getPythonInfo: vi.fn(),
+  getSidecarInfo: vi.fn(),
   sidecarBusy: vi.fn(() => false),
 }));
 
 import { runDoctor, formatDoctorReport } from "../tools/doctor.js";
-import { checkDependencies, getPythonInfo, sidecarBusy } from "../utils/python.js";
+import { checkDependencies, getPythonInfo, getSidecarInfo, sidecarBusy } from "../utils/python.js";
 import type { PhotosManager } from "../services/photosManager.js";
 import type { LibraryInfo } from "../types.js";
 
 const checkMock = vi.mocked(checkDependencies);
 const pythonInfoMock = vi.mocked(getPythonInfo);
+const sidecarInfoMock = vi.mocked(getSidecarInfo);
 const busyMock = vi.mocked(sidecarBusy);
 
 /** Build a fake PhotosManager exposing just what runDoctor touches. */
@@ -33,10 +35,21 @@ const healthyLibrary: LibraryInfo = {
   personCount: 9,
 };
 
+/** Default sidecar-mode info: persistent, healthy, already serving. */
+const persistentInfo = {
+  mode: "persistent" as const,
+  running: true,
+  pid: 4242,
+  spawnCount: 1,
+  lastSpawnAt: "2026-07-09T12:00:00.000Z",
+};
+
 describe("runDoctor", () => {
   beforeEach(() => {
     checkMock.mockReset();
     pythonInfoMock.mockReset();
+    sidecarInfoMock.mockReset();
+    sidecarInfoMock.mockReturnValue(persistentInfo);
     busyMock.mockReset();
     busyMock.mockReturnValue(false);
     pythonInfoMock.mockResolvedValue({
@@ -69,6 +82,52 @@ describe("runDoctor", () => {
     const fda = report.checks.find((c) => c.name === "full_disk_access");
     expect(fda?.status).toBe("ok");
     expect(fda?.detail).toContain("readable");
+
+    const sidecar = report.checks.find((c) => c.name === "sidecar_mode");
+    expect(sidecar?.status).toBe("ok");
+    expect(sidecar?.detail).toContain("persistent");
+    expect(sidecar?.detail).toContain("4242");
+    expect(sidecar?.detail).toContain("2026-07-09T12:00:00.000Z");
+  });
+
+  it("reports one-shot mode as ok when disabled deliberately via env", async () => {
+    sidecarInfoMock.mockReturnValue({
+      mode: "one-shot",
+      reason: "disabled via APPLE_PHOTOS_MCP_PERSISTENT_SIDECAR",
+      running: false,
+      spawnCount: 0,
+      lastSpawnAt: null,
+    });
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
+    const manager = fakeManager(() => healthyLibrary);
+
+    const report = await runDoctor(manager);
+
+    const sidecar = report.checks.find((c) => c.name === "sidecar_mode");
+    expect(sidecar?.status).toBe("ok");
+    expect(sidecar?.detail).toContain("one-shot");
+    expect(sidecar?.detail).toContain("APPLE_PHOTOS_MCP_PERSISTENT_SIDECAR");
+    expect(report.healthy).toBe(true);
+  });
+
+  it("warns on one-shot mode when the serve handshake failed (unplanned fallback)", async () => {
+    sidecarInfoMock.mockReturnValue({
+      mode: "one-shot",
+      reason: "serve handshake failed: unexpected handshake line: garbage",
+      running: false,
+      spawnCount: 1,
+      lastSpawnAt: "2026-07-09T12:00:00.000Z",
+    });
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
+    const manager = fakeManager(() => healthyLibrary);
+
+    const report = await runDoctor(manager);
+
+    const sidecar = report.checks.find((c) => c.name === "sidecar_mode");
+    expect(sidecar?.status).toBe("warn");
+    expect(sidecar?.detail).toContain("handshake failed");
+    // A warn never flips healthy.
+    expect(report.healthy).toBe(true);
   });
 
   it("fails and is unhealthy when osxphotos is missing", async () => {
@@ -212,6 +271,8 @@ describe("formatDoctorReport", () => {
   beforeEach(() => {
     checkMock.mockReset();
     pythonInfoMock.mockReset();
+    sidecarInfoMock.mockReset();
+    sidecarInfoMock.mockReturnValue(persistentInfo);
     busyMock.mockReset();
     busyMock.mockReturnValue(false);
     pythonInfoMock.mockResolvedValue({
@@ -230,6 +291,7 @@ describe("formatDoctorReport", () => {
     expect(text).toContain("apple-photos-mcp doctor");
     expect(text).toContain("python_interpreter");
     expect(text).toContain("osxphotos");
+    expect(text).toContain("sidecar_mode");
     expect(text).toContain("photos_library");
     expect(text).toContain("full_disk_access");
   });

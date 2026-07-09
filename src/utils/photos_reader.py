@@ -3,8 +3,27 @@
 Bridge script: queries the Apple Photos library using osxphotos and outputs JSON.
 Called by the TypeScript MCP server via child_process.
 
-All commands write a single JSON object to stdout. On error, the object has
-an "error" key with a human-readable message.
+Two modes:
+
+- **One-shot (argv)**: `photos_reader.py <command> [--flags]` — runs one command
+  and writes a single JSON object to stdout. On error, the object has an
+  "error" key with a human-readable message (printed to stdout, exit 1).
+  Used by CI, doctor probes, manual debugging, and as the TS layer's fallback.
+
+- **Serve (persistent)**: `photos_reader.py --serve` — reads line-delimited
+  JSON requests from stdin ({"id", "command", "args": [argv tokens]}) and
+  writes line-delimited JSON responses to stdout:
+      {"type": "ready", "protocol": 1}                     (handshake, once)
+      {"id", "type": "result", "data": {...}, "dbCached"}  (per request)
+      {"id", "type": "error", "error": "..."}              (per request)
+      {"id", "type": "progress", "done", "total", ...}     (export, 0..n times)
+  Exactly one request is in flight at a time (the Node serial gate guarantees
+  it; the id echo is belt-and-braces). The PhotosDB instance is cached per
+  library path and re-parsed only when the library's Photos.sqlite mtime
+  changes — amortizing the multi-second full-database parse that otherwise
+  dominates every call. Stdout is exclusively protocol lines; diagnostics go
+  to stderr. The loop exits cleanly on stdin EOF, so a dying parent can never
+  orphan a serving sidecar.
 """
 
 from __future__ import annotations
@@ -35,6 +54,16 @@ except ImportError:
 # can't swamp the JSON pipe / MCP response. The true match total is still
 # reported as "count" (the page size is "returned").
 DEFAULT_QUERY_LIMIT = 500
+
+# Serve-mode protocol version, echoed in the ready handshake line so the Node
+# client can refuse to talk to a future incompatible script.
+PROTOCOL_VERSION = 1
+
+# Serve mode: at most this many PhotosDB instances stay resident (one per
+# library path). A resident PhotosDB for a large library holds hundreds of MB,
+# so the cache is deliberately tiny; the Node side's idle timeout bounds how
+# long even these live.
+MAX_DB_CACHE_ENTRIES = 2
 
 
 # ---------------------------------------------------------------------------
@@ -74,12 +103,76 @@ def _normalize_count(value) -> int:
     return value if isinstance(value, int) else len(value)
 
 
+# Per-library-path PhotosDB cache (serve mode). Each entry remembers the
+# library's Photos.sqlite path and the mtime observed when the DB was parsed;
+# _open_db revalidates the mtime on EVERY call and re-parses on change. The
+# staleness witness is deliberately the same file the Node-side metadata cache
+# stats (<library>/database/Photos.sqlite) so the two layers agree on what
+# "changed" means. In one-shot mode the cache is populated but the process
+# exits after one command, so it has no effect.
+_db_cache: dict[str, dict] = {}
+
+# Whether the most recent _open_db call was served from the cache — reported
+# in serve-mode response envelopes as "dbCached" so the reuse is observable.
+_db_cache_hit = False
+
+# Progress sink: None in one-shot mode; serve mode points it at a function
+# that writes an {"id", "type": "progress", ...} line for the current request.
+_progress_sink = None
+
+
+def _emit_progress(**payload) -> None:
+    if _progress_sink is not None:
+        _progress_sink(payload)
+
+
+def _library_cache_key(library: str | None) -> str:
+    if library:
+        return str(Path(library).expanduser().resolve())
+    return ""
+
+
+def _sqlite_mtime(sqlite_path: Path | None) -> float | None:
+    if sqlite_path is None:
+        return None
+    try:
+        return sqlite_path.stat().st_mtime
+    except OSError:
+        return None
+
+
 def _open_db(library: str | None) -> PhotosDB:
-    """Open the Photos library. None = system default library."""
+    """Open the Photos library (None = system default), reusing a cached
+    PhotosDB when the library's Photos.sqlite mtime is unchanged."""
+    global _db_cache_hit
+    key = _library_cache_key(library)
+
+    entry = _db_cache.get(key)
+    if entry is not None:
+        mtime = _sqlite_mtime(entry["sqlite"])
+        if mtime is not None and mtime == entry["mtime"]:
+            _db_cache_hit = True
+            return entry["db"]
+        # Library changed (or became unstatable) — drop and re-parse.
+        del _db_cache[key]
+
+    _db_cache_hit = False
     if library:
         path = Path(library).expanduser().resolve()
-        return PhotosDB(dbfile=str(path))
-    return PhotosDB()
+        db = PhotosDB(dbfile=str(path))
+    else:
+        db = PhotosDB()
+
+    # Cache only when the staleness witness is statable; otherwise caching
+    # quietly stays out of the way (mirrors the Node-side cache's behavior).
+    library_path = db.library_path
+    sqlite_path = Path(library_path) / "database" / "Photos.sqlite" if library_path else None
+    mtime = _sqlite_mtime(sqlite_path)
+    if mtime is not None:
+        _db_cache[key] = {"db": db, "sqlite": sqlite_path, "mtime": mtime}
+        while len(_db_cache) > MAX_DB_CACHE_ENTRIES:
+            _db_cache.pop(next(iter(_db_cache)))
+    return db
 
 
 def _photo_summary(p) -> dict:
@@ -399,7 +492,13 @@ def cmd_export(args):
             return "raw component not on disk (Photos.app fallback cannot fetch raw originals)"
         return None
 
-    for p in matches:
+    total = len(matches)
+    for i, p in enumerate(matches):
+        # Serve mode: one progress line per photo (no-op in one-shot mode).
+        # done = photos completed so far; current = the photo being exported.
+        _emit_progress(
+            done=i, total=total, current=p.original_filename or p.uuid, uuid=p.uuid
+        )
         try:
             paths = _do_export(p, use_photos_export=False)
             if not paths:
@@ -439,6 +538,7 @@ def cmd_export(args):
         except Exception as exc:  # noqa: BLE001 - report any export failure
             skipped.append({"uuid": p.uuid, "error": str(exc)})
 
+    _emit_progress(done=total, total=total)
     return {
         "destination": str(dest),
         "exportedCount": len(exported),
@@ -474,7 +574,7 @@ def _add_query_filters(p: argparse.ArgumentParser) -> None:
     p.add_argument("--limit", type=int, help="Max number of results")
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="photos_reader")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -515,22 +615,86 @@ def main() -> int:
     p.add_argument("--raw", action="store_true", help="Include raw image")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
 
-    args = parser.parse_args()
+    return parser
 
-    handlers = {
-        "health": cmd_health,
-        "library-info": cmd_library_info,
-        "query": cmd_query,
-        "get-photo": cmd_get_photo,
-        "list-albums": cmd_list_albums,
-        "list-folders": cmd_list_folders,
-        "list-keywords": cmd_list_keywords,
-        "list-persons": cmd_list_persons,
-        "export": cmd_export,
-    }
+
+HANDLERS = {
+    "health": cmd_health,
+    "library-info": cmd_library_info,
+    "query": cmd_query,
+    "get-photo": cmd_get_photo,
+    "list-albums": cmd_list_albums,
+    "list-folders": cmd_list_folders,
+    "list-keywords": cmd_list_keywords,
+    "list-persons": cmd_list_persons,
+    "export": cmd_export,
+}
+
+
+def _write_line(obj: dict) -> None:
+    """Write one protocol line to stdout and flush (serve mode is interactive)."""
+    print(json.dumps(obj, default=str), flush=True)
+
+
+def serve() -> int:
+    """Persistent mode: line-delimited JSON requests on stdin, responses on
+    stdout. One request in flight at a time; exits 0 on stdin EOF."""
+    global _progress_sink
+    parser = _build_parser()
+    _write_line({
+        "type": "ready",
+        "protocol": PROTOCOL_VERSION,
+        "osxphotosVersion": osxphotos.__version__,
+    })
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        rid = None
+        try:
+            req = json.loads(line)
+            rid = req.get("id")
+            command = req.get("command")
+            argv = req.get("args") or []
+            if not isinstance(command, str) or not isinstance(argv, list):
+                raise ValueError("malformed request: expected {id, command, args[]}")
+            try:
+                # Same argparse surface as one-shot mode — a single source of
+                # truth for flags, defaults, and types. argparse exits on bad
+                # input; in serve mode that must become an error response.
+                args = parser.parse_args([command, *[str(a) for a in argv]])
+            except (SystemExit, argparse.ArgumentError):
+                _write_line({
+                    "id": rid,
+                    "type": "error",
+                    "error": f"invalid arguments for {command} (argparse rejected the request)",
+                })
+                continue
+
+            _progress_sink = lambda payload, _rid=rid: _write_line(
+                {"id": _rid, "type": "progress", **payload}
+            )
+            try:
+                result = HANDLERS[args.cmd](args)
+            finally:
+                _progress_sink = None
+            _write_line({"id": rid, "type": "result", "data": result, "dbCached": _db_cache_hit})
+        except FileNotFoundError as exc:
+            _write_line({"id": rid, "type": "error", "error": f"Library not found: {exc}"})
+        except Exception as exc:  # noqa: BLE001 - same message contract as one-shot
+            _write_line({"id": rid, "type": "error", "error": str(exc)})
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:2] == ["--serve"]:
+        return serve()
+
+    args = _build_parser().parse_args()
 
     try:
-        result = handlers[args.cmd](args)
+        result = HANDLERS[args.cmd](args)
     except FileNotFoundError as exc:
         print(json.dumps({"error": f"Library not found: {exc}"}))
         return 1

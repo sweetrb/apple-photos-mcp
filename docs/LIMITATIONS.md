@@ -42,6 +42,29 @@ step-by-step instructions are in
 its dedicated Full Disk Access check reports ok / warn / fail with remediation
 (`health-check` also works as a quick smoke test).
 
+## The first (cold) call is slow — warm calls are fast
+
+**Why:** Opening a Photos library means starting Python, importing osxphotos,
+and parsing the entire library database — about 4 seconds on a ~30k-photo
+library, and it scales with library size (a 100k+ photo library can take much
+longer, potentially past the default 60 s timeout — raise
+`APPLE_PHOTOS_MCP_TIMEOUT` if so). Since 1.4.0 the sidecar is a **persistent
+process**, so this cost is paid **once**: the parsed library stays resident
+and follow-up calls complete in milliseconds. The cold cost recurs only when
+the sidecar has to (re)start — the first call after server startup, after
+`APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS` (default 5 min) of inactivity, after a
+crash, or when the library changed on disk (the sidecar re-checks
+`Photos.sqlite`'s modification time before every request, so cached results
+are never stale).
+
+**What to do:** Nothing, usually — chain as many calls as you like; only the
+first pays the parse. If even the cold call times out on a very large library,
+raise `APPLE_PHOTOS_MCP_TIMEOUT` (ms). To keep the sidecar resident longer (or
+forever), raise `APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS` or set it to `0` — at the
+price of a few hundred MB of resident memory for large libraries. `doctor`'s
+`sidecar_mode` check shows whether the persistent sidecar is active and when
+it last (re)started.
+
 ## iCloud-only originals are slow to export (and may be skipped)
 
 **Why:** When Photos uses **Optimize Mac Storage**, the full-resolution original
@@ -57,7 +80,10 @@ Photos via Automation (see [FULL-DISK-ACCESS.md](./FULL-DISK-ACCESS.md)). If a
 download fails (no connectivity, not signed in, excluded by a sync setting), that
 photo is **skipped** with a per-UUID reason in the export result; the rest of the
 export still succeeds. To prefetch, you can also select the photos in Photos.app
-and choose **File → Download Originals to this Mac** before exporting.
+and choose **File → Download Originals to this Mac** before exporting. Batch
+exports emit one MCP progress notification per photo (when the client sends a
+`progressToken`), so a long iCloud-heavy export shows a live counter in hosts
+that surface progress instead of appearing hung.
 
 ## Person / face filtering depends on Photos having named the people
 

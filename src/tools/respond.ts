@@ -42,14 +42,19 @@ export function textResponse(text: string): ToolResponse {
  * Wrap a tool handler so any thrown error (or rejected promise) becomes a
  * clean error response with a consistent prefix, instead of crashing the tool
  * call. Handlers may be sync or async — the result is awaited either way.
+ *
+ * The SDK invokes tool callbacks as (args, extra); `extra` is passed through
+ * untouched so handlers that need request context (progress notifications via
+ * `extra.sendNotification` + `extra._meta.progressToken`) can take it, while
+ * one-argument handlers simply ignore it.
  */
-export function withErrorHandling<T>(
-  handler: (params: T) => ToolResponse | Promise<ToolResponse>,
+export function withErrorHandling<T, E = unknown>(
+  handler: (params: T, extra: E) => ToolResponse | Promise<ToolResponse>,
   prefix: string
-): (params: T) => Promise<ToolResponse> {
-  return async (params: T) => {
+): (params: T, extra: E) => Promise<ToolResponse> {
+  return async (params: T, extra: E) => {
     try {
-      return await handler(params);
+      return await handler(params, extra);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       return errorResponse(`${prefix}: ${msg}`);

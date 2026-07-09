@@ -155,7 +155,7 @@ Auto-setup needs Python 3, `pip`, and network access. If any are missing — or 
 | Feature | Description |
 |---------|-------------|
 | **Health Check** | Verify osxphotos is installed and the library can be opened |
-| **Doctor** | Richer setup diagnostic — four checks: Python interpreter (path + version), osxphotos install, Photos library readability, and Full Disk Access, each reported ok / warn / fail with actionable advice |
+| **Doctor** | Richer setup diagnostic — five checks: Python interpreter (path + version), osxphotos install, sidecar mode (persistent vs one-shot fallback), Photos library readability, and Full Disk Access, each reported ok / warn / fail with actionable advice |
 
 Read tools also return **structured JSON** (`structuredContent`) alongside the human-readable text, so agents can consume results without parsing prose.
 
@@ -375,6 +375,8 @@ Export one or more photos by UUID to a destination directory.
 
 **iCloud-only originals:** If a photo's original isn't on disk (Photos is using "Optimize Mac Storage"), the export automatically falls back to Photos.app via AppleScript, which downloads the original on demand — same behavior as opening the photo in Photos. This is slower than a direct file copy; expect waits proportional to download size for large batches. Photos that genuinely can't be exported (e.g. `edited=true` requested but no edits exist) are still skipped with a per-UUID reason.
 
+**Progress notifications:** For batch exports, the server emits one MCP progress notification per photo (`progress`/`total` plus a `message` naming the file being exported) when the client's request includes a `progressToken` — so hosts that surface progress can show a live counter instead of a silent multi-minute call. Clients that don't send a token simply get the final result, as before. (Progress requires the persistent sidecar; in the rare one-shot fallback mode the export still works but reports no intermediate progress.)
+
 ---
 
 ## Usage Patterns
@@ -530,7 +532,9 @@ All configuration is optional — the server works out of the box.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `APPLE_PHOTOS_MCP_MAX_BUFFER` | `104857600` (100 MB) | Max bytes captured from the Python sidecar's stdout. Raise it if a very large library/query is truncated; lower it to cap memory. |
-| `APPLE_PHOTOS_MCP_TIMEOUT` | `60000` (60 s) | Default per-command timeout, in milliseconds, for the Python sidecar. Every call re-opens the Photos database, and on very large libraries (100k+ photos) the load alone can exceed 60 s — raise this if tools report "Operation timed out". `export` keeps its own 30-minute window. |
+| `APPLE_PHOTOS_MCP_TIMEOUT` | `60000` (60 s) | Default per-command timeout, in milliseconds, for the Python sidecar. The first (cold) call parses the whole Photos database, and on very large libraries (100k+ photos) that load alone can exceed 60 s — raise this if tools report "Operation timed out". `export` keeps its own 30-minute window. |
+| `APPLE_PHOTOS_MCP_PERSISTENT_SIDECAR` | unset (persistent mode on) | Set to `0` (or `false`) to disable the long-lived serve-mode sidecar and spawn a fresh Python process per call (pre-1.4.0 behavior). Every call then re-pays the full library parse — only useful for debugging. |
+| `APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS` | `300000` (5 min) | How long the persistent sidecar may sit idle before it's killed to free memory (a resident parsed library holds hundreds of MB for large libraries). The next call transparently respawns it, re-paying the one-time parse. `0` = never kill on idle. |
 | `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` | unset (auto-setup on) | Set to `1` (or any truthy value) to disable the automatic first-use venv bootstrap. With it on, you must run `pnpm run setup` (or `pip3 install osxphotos`) yourself. |
 | `APPLE_PHOTOS_MCP_SETUP_TIMEOUT` | `300000` (5 min) | Max time, in milliseconds, the automatic venv bootstrap may run before it's aborted. Raise it on slow networks where the `osxphotos` install needs longer. Also bounds how long a second server instance waits on the cross-process setup lock for a concurrent bootstrap to finish (simultaneous first calls can't corrupt the venv). |
 | `APPLE_PHOTOS_MCP_CONFIG_FILE` | `~/Library/Application Support/apple-photos-mcp/config.json` | Path to the JSON config file (see below). |
@@ -562,9 +566,24 @@ This package is a **TypeScript MCP server with a Python sidecar**:
 
 - The MCP server (Node) speaks the Model Context Protocol over stdio.
 - A bundled Python script (`src/utils/photos_reader.py`) uses `osxphotos` to read the Photos library and returns JSON.
-- The TypeScript side spawns the Python script asynchronously (`child_process.execFile`) behind a serial gate: exactly one sidecar runs at a time, but the Node event loop stays free — so the server keeps answering MCP traffic (pings, `health-check`, `doctor`) even during a long `query` or a minutes-long iCloud `export`.
+- The sidecar runs as a **persistent process** (`photos_reader.py --serve`): the TypeScript side spawns it once on first use and sends it line-delimited JSON requests over stdin, behind a serial gate (exactly one request in flight at a time). The Node event loop stays free, so the server keeps answering MCP traffic (pings, `health-check`, `doctor`) even during a long `query` or a minutes-long iCloud `export`.
+- If serve mode is unavailable (old script, broken environment), the server transparently falls back to spawning a fresh one-shot Python process per call — same results, same error messages, just slower. `doctor`'s `sidecar_mode` check reports which mode is active.
 
-This is the same pattern used by [apple-numbers-mcp](https://github.com/sweetrb/apple-numbers-mcp) for the `numbers-parser` Python library.
+### Performance
+
+Opening a Photos library is expensive: python startup + `import osxphotos` + a
+full parse of the library database — about **4 seconds on a ~30k-photo
+library**, and it grows with library size. The persistent sidecar pays that
+cost **once**: the parsed library stays resident, and follow-up calls complete
+in **milliseconds** (measured: ~4.5 s cold, then 6–160 ms warm on a 31k-photo
+library). Freshness is preserved — before every request the sidecar checks the
+library's `Photos.sqlite` modification time and re-parses automatically the
+moment the library changes (an import, an edit, an album rename). An idle
+sidecar is killed after `APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS` (default 5 min) to
+free memory, and the next call respawns it — so the ~4 s cost recurs only on
+the first call after a quiet period or a library change.
+
+This is the same TS + Python-sidecar pattern used by [apple-numbers-mcp](https://github.com/sweetrb/apple-numbers-mcp) for the `numbers-parser` Python library.
 
 ---
 

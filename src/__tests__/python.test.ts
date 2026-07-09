@@ -1,8 +1,17 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
+// These tests pin the ONE-SHOT execution path (execFile per call) — the
+// persistent serve-mode routing is unit-tested separately in
+// pythonPersistent.test.ts and sidecarClient.test.ts. Force one-shot mode so
+// runPhotosReader never touches the (unmocked) spawn-based client.
+process.env.APPLE_PHOTOS_MCP_PERSISTENT_SIDECAR = "0";
+
 vi.mock("node:child_process", () => ({
   execSync: vi.fn(() => "0.69.0\n"),
   execFile: vi.fn(),
+  // Imported by utils/sidecarClient.ts (never called here — persistent mode
+  // is disabled above); present so the ESM named import resolves.
+  spawn: vi.fn(),
 }));
 
 // existsSync/readFileSync are controllable per-test so we can simulate a venv
