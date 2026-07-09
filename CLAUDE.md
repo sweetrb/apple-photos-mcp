@@ -18,6 +18,9 @@ modify the library itself.
   when tools fail with permission errors.
 - **[docs/LIMITATIONS.md](./docs/LIMITATIONS.md)** — what the server can and
   can't do (read-only, iCloud export caveats, face/album behavior, library lag).
+- **[docs/QUERY-GUIDE.md](./docs/QUERY-GUIDE.md)** — `query` filter syntax in
+  detail: accepted date forms, AND/OR combination semantics, exact-vs-substring
+  matching, result ordering, and what is *not* filterable.
 
 ## First-run requirements
 
@@ -28,10 +31,10 @@ Before any tool works, two things must be in place:
    `./venv` is built automatically on the first tool call (a one-time setup that
    can take ~a minute; progress logs to stderr), then the call proceeds. The venv
    is also picked up without a restart once it exists, and rebuilt automatically
-   if a package update changes its requirements. Pre-warm it with `npm run setup`
+   if a package update changes its requirements. Pre-warm it with `pnpm run setup`
    to skip the first-call delay. Auto-setup needs Python 3, `pip`, and network
    access; it can be disabled with `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1` (then you
-   must run `npm run setup` or `pip3 install osxphotos` yourself).
+   must run `pnpm run setup` or `pip3 install osxphotos` yourself).
 2. **Full Disk Access granted** to the host app (Claude/Terminal/iTerm/VS Code),
    then the host app **fully restarted**. The Photos library database is in a
    protected directory; without FDA, *every* tool fails. See
@@ -91,7 +94,11 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
   `overwrite: true` as needed. Without `overwrite`, a photo whose file already
   exists at `dest` is skipped with a per-UUID reason (never duplicated), and
   unknown/trashed UUIDs are reported as skipped too — every requested UUID is
-  accounted for. Confirm `dest` before running on shared machines.
+  accounted for. Note the asymmetry: `get-photo` DOES resolve photos in
+  Recently Deleted (it falls back to the trash), while `query` and `export`
+  read the main library only — so a UUID `get-photo` just returned can still be
+  skipped by `export` as "UUID not found (deleted or in trash)". Confirm `dest`
+  before running on shared machines.
 - **iCloud-only originals are slow.** If an original isn't on disk, `export`
   falls back to Photos.app to download it on demand — slower for large batches,
   and skipped (with a per-UUID reason) if the download fails. See
