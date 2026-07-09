@@ -85,7 +85,10 @@ export interface PersonCount {
 }
 
 export interface QueryResult {
+  /** Total number of photos matching the query (before the limit is applied). */
   count: number;
+  /** Number of photo summaries actually returned (post-limit page size). */
+  returned: number;
   photos: PhotoSummary[];
 }
 

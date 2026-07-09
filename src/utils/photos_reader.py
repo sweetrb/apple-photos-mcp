@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 try:
@@ -20,9 +20,21 @@ try:
     from osxphotos import PhotosDB, QueryOptions
 except ImportError:
     print(json.dumps({
-        "error": "osxphotos not installed. Run: pnpm run setup"
+        "error": (
+            "osxphotos not installed. Install it with: pip3 install osxphotos "
+            "(requires Python >= 3.11; stock macOS ships 3.9 — "
+            "brew install python@3.12), or run scripts/setup.sh from a repo "
+            "checkout. Run the doctor tool to diagnose, or see "
+            "https://github.com/sweetrb/apple-photos-mcp#troubleshooting"
+        )
     }))
     sys.exit(1)
+
+
+# Applied when a query omits --limit, so a filterless query over a huge library
+# can't swamp the JSON pipe / MCP response. The true match total is still
+# reported as "count" (the page size is "returned").
+DEFAULT_QUERY_LIMIT = 500
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +49,24 @@ def _parse_date(value: str) -> datetime:
     """
     # datetime.fromisoformat accepts both "YYYY-MM-DD" and full ISO 8601 in 3.11+.
     return datetime.fromisoformat(value)
+
+
+def _parse_to_date(value: str) -> datetime:
+    """Parse the query's to-date upper bound.
+
+    osxphotos treats to_date as an EXCLUSIVE bound (imageDate < to_date), so a
+    bare date like "2025-06-30" — which parses to midnight — would silently
+    exclude every photo taken ON that day. A bare date therefore rolls forward
+    one day, making the named day inclusive (the intuitive reading). A full
+    datetime (e.g. "2025-06-30T18:00:00") is passed through unchanged and
+    remains a precise exclusive bound.
+    """
+    dt = _parse_date(value)
+    try:
+        date.fromisoformat(value)  # succeeds only for a bare date
+    except ValueError:
+        return dt
+    return dt + timedelta(days=1)
 
 
 def _normalize_count(value) -> int:
@@ -140,14 +170,18 @@ def _query_options(args) -> QueryOptions:
     if args.from_date:
         kwargs["from_date"] = _parse_date(args.from_date)
     if args.to_date:
-        kwargs["to_date"] = _parse_date(args.to_date)
+        kwargs["to_date"] = _parse_to_date(args.to_date)
     if args.favorite:
         kwargs["favorite"] = True
     if args.not_favorite:
         kwargs["not_favorite"] = True
+    # Privacy contract: hidden photos are EXCLUDED unless explicitly requested
+    # with --hidden. (osxphotos includes hidden photos when neither flag is
+    # set, so not_hidden must be the active default. hidden/not_hidden are a
+    # mutually-exclusive pair in QueryOptions — never set both.)
     if args.hidden:
         kwargs["hidden"] = True
-    if args.not_hidden:
+    else:
         kwargs["not_hidden"] = True
     if args.movies and not args.photos:
         kwargs["movies"] = True
@@ -203,14 +237,18 @@ def cmd_query(args):
 
     # db.query() returns lightweight PhotoInfo handles; the expensive work is the
     # per-photo property access in _photo_summary (albums/keywords/persons/etc.).
-    # Slice to the requested limit *before* projecting so large libraries don't pay
-    # the full-projection cost for a small page. When no limit is set, project all.
-    if args.limit and args.limit > 0:
-        photos = photos[: args.limit]
+    # Slice to the limit *before* projecting so large libraries don't pay the
+    # full-projection cost for a small page. The total match count is captured
+    # BEFORE the slice so callers can tell when results were truncated; when no
+    # limit is given, DEFAULT_QUERY_LIMIT applies.
+    total = len(photos)
+    limit = args.limit if args.limit and args.limit > 0 else DEFAULT_QUERY_LIMIT
+    page = photos[:limit]
 
     return {
-        "count": len(photos),
-        "photos": [_photo_summary(p) for p in photos],
+        "count": total,
+        "returned": len(page),
+        "photos": [_photo_summary(p) for p in page],
     }
 
 
@@ -228,17 +266,36 @@ def cmd_get_photo(args):
 
 
 def cmd_list_albums(args):
-    """List all albums (and optionally folders)."""
+    """List all albums, including iCloud Shared Albums."""
     db = _open_db(args.library)
     items = []
-    for album in db.album_info:
+
+    def _append(album, is_shared: bool) -> None:
+        try:
+            folder = list(album.folder_names)
+        except Exception:  # noqa: BLE001 - shared albums have no folder path
+            folder = []
         items.append({
             "uuid": album.uuid,
             "title": album.title,
-            "folder": list(album.folder_names),
+            "folder": folder,
             "photoCount": len(album),
-            "isShared": getattr(album, "shared", False),
+            "isShared": is_shared,
         })
+
+    for album in db.album_info:
+        _append(album, False)
+
+    # iCloud Shared Albums live in a separate list — AlbumInfo has no "shared"
+    # attribute, so they must be enumerated explicitly. Photos <= 4 has no
+    # shared-album support (osxphotos warns and returns []).
+    try:
+        shared_albums = db.album_info_shared
+    except Exception:  # noqa: BLE001
+        shared_albums = []
+    for album in shared_albums:
+        _append(album, True)
+
     return {"count": len(items), "albums": items}
 
 
@@ -287,32 +344,59 @@ def cmd_export(args):
     """Export one or more photos to a destination directory."""
     db = _open_db(args.library)
     matches = db.photos(uuid=args.uuid, intrash=False)
-    if not matches:
-        return {"error": f"No photos found for UUIDs: {args.uuid}"}
-
-    dest = Path(args.dest).expanduser().resolve()
-    dest.mkdir(parents=True, exist_ok=True)
 
     exported: list[str] = []
     skipped: list[dict] = []
 
+    # PhotosDB.photos() silently drops UUIDs it doesn't know (and photos in
+    # Recently Deleted, since intrash=False). Report every requested UUID that
+    # produced no match so exported + skipped always accounts for the request.
+    found = {p.uuid for p in matches}
+    seen: set[str] = set()
+    for u in args.uuid:
+        if u not in found and u not in seen:
+            seen.add(u)
+            skipped.append({"uuid": u, "error": "UUID not found (deleted or in trash)"})
+
+    if not matches:
+        return {
+            "destination": str(Path(args.dest).expanduser().resolve()),
+            "exportedCount": 0,
+            "skippedCount": len(skipped),
+            "exported": [],
+            "skipped": skipped,
+        }
+
+    dest = Path(args.dest).expanduser().resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+
     def _do_export(p, use_photos_export: bool):
+        # increment=False: with overwrite unset, a name collision raises
+        # FileExistsError (mapped to a per-UUID skip below) instead of
+        # osxphotos' default of silently writing an "IMG_1234 (1).jpg"
+        # duplicate — matching the tool's documented "existing files are
+        # skipped" contract.
         return p.export(
             str(dest),
             edited=args.edited,
             live_photo=args.live,
             raw_photo=args.raw,
             overwrite=args.overwrite,
+            increment=False,
             use_photos_export=use_photos_export,
             timeout=300 if use_photos_export else 120,
         )
 
     def _unrecoverable_reason(p):
-        # Reasons retrying via Photos.app cannot fix.
-        if args.edited and not p.hasadjustments:
-            return "no edited version exists"
-        if args.raw and not p.path_raw:
-            return "no raw sidecar exists"
+        # Reasons retrying via Photos.app cannot fix. Note: export(edited=True)
+        # on a photo without adjustments RAISES ValueError (caught per-photo
+        # below), so no edited check belongs here. And raw_photo=True on a
+        # photo with no raw component still exports the original, so an empty
+        # result only implicates the raw file when the photo actually HAS one
+        # — anything else (e.g. an iCloud-only original) must fall through to
+        # the Photos.app download fallback.
+        if args.raw and p.has_raw and not p.path_raw:
+            return "raw component not on disk (Photos.app fallback cannot fetch raw originals)"
         return None
 
     for p in matches:
@@ -328,6 +412,8 @@ def cmd_export(args):
                 # same behavior as opening the photo in Photos.
                 try:
                     paths = _do_export(p, use_photos_export=True)
+                except FileExistsError:
+                    raise  # handled by the per-photo FileExistsError below
                 except Exception as exc:  # noqa: BLE001
                     skipped.append(
                         {"uuid": p.uuid, "error": f"iCloud download failed: {exc}"}
@@ -343,6 +429,13 @@ def cmd_export(args):
                         "error": "original not downloaded from iCloud (download attempt returned no files)",
                     }
                 )
+        except FileExistsError:
+            skipped.append(
+                {
+                    "uuid": p.uuid,
+                    "error": "already exists at destination (pass overwrite=true to replace)",
+                }
+            )
         except Exception as exc:  # noqa: BLE001 - report any export failure
             skipped.append({"uuid": p.uuid, "error": str(exc)})
 

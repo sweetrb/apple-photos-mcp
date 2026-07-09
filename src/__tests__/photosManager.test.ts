@@ -61,17 +61,12 @@ describe("PhotosManager", () => {
       });
       const [, args] = runMock.mock.calls[0];
       expect(args).toEqual([
-        "--album",
-        "Vacation",
-        "--album",
-        "Family",
-        "--keyword",
-        "sunset",
-        "--from-date",
-        "2025-01-01",
+        "--album=Vacation",
+        "--album=Family",
+        "--keyword=sunset",
+        "--from-date=2025-01-01",
         "--favorite",
-        "--limit",
-        "50",
+        "--limit=50",
       ]);
     });
 
@@ -79,7 +74,7 @@ describe("PhotosManager", () => {
       runMock.mockReturnValue({ data: { count: 0, photos: [] } });
       manager.query({}, "/tmp/Other.photoslibrary");
       const [, args] = runMock.mock.calls[0];
-      expect(args.slice(0, 2)).toEqual(["--library", "/tmp/Other.photoslibrary"]);
+      expect(args.slice(0, 1)).toEqual(["--library=/tmp/Other.photoslibrary"]);
     });
 
     it("throws when the python script returns an error", () => {
@@ -87,11 +82,20 @@ describe("PhotosManager", () => {
       expect(() => manager.query({})).toThrow("library locked");
     });
 
+    it("passes leading-dash filter values safely via the joined --flag=value form", () => {
+      // argparse would reject ["--keyword", "-summer"] with "expected one
+      // argument"; the joined form survives values that start with a dash.
+      runMock.mockReturnValue({ data: { count: 0, returned: 0, photos: [] } });
+      manager.query({ keyword: ["-summer"], title: "-2020" });
+      const [, args] = runMock.mock.calls[0];
+      expect(args).toEqual(["--keyword=-summer", "--title=-2020"]);
+    });
+
     it("forwards date filters in ISO 8601 form", () => {
       runMock.mockReturnValue({ data: { count: 0, photos: [] } });
       manager.query({ fromDate: "2025-01-01", toDate: "2025-12-31T23:59:59" });
       const [, args] = runMock.mock.calls[0];
-      expect(args).toEqual(["--from-date", "2025-01-01", "--to-date", "2025-12-31T23:59:59"]);
+      expect(args).toEqual(["--from-date=2025-01-01", "--to-date=2025-12-31T23:59:59"]);
     });
 
     it("forwards mutually-exclusive media type flags", () => {
@@ -123,10 +127,9 @@ describe("PhotosManager", () => {
       });
       manager.exportPhotos(["A", "B"], "/tmp/out", { edited: true });
       const [, args] = runMock.mock.calls[0];
-      expect(args).toContain("--uuid");
-      expect(args.filter((a) => a === "--uuid")).toHaveLength(2);
-      expect(args).toContain("A");
-      expect(args).toContain("B");
+      expect(args.filter((a) => a.startsWith("--uuid="))).toHaveLength(2);
+      expect(args).toContain("--uuid=A");
+      expect(args).toContain("--uuid=B");
       expect(args).toContain("--edited");
     });
 
@@ -170,7 +173,7 @@ describe("PhotosManager", () => {
       runMock.mockReturnValue({ data: { count: 0, keywords: [] } });
       manager.listKeywords(20);
       const [, args] = runMock.mock.calls[0];
-      expect(args).toEqual(["--limit", "20"]);
+      expect(args).toEqual(["--limit=20"]);
     });
   });
 
@@ -189,7 +192,7 @@ describe("PhotosManager", () => {
       runMock.mockReturnValue({ data: { photoCount: 0 } });
       manager.getLibraryInfo("/tmp/Other.photoslibrary");
       const [, args] = runMock.mock.calls[0];
-      expect(args).toEqual(["--library", "/tmp/Other.photoslibrary"]);
+      expect(args).toEqual(["--library=/tmp/Other.photoslibrary"]);
     });
   });
 
@@ -201,14 +204,14 @@ describe("PhotosManager", () => {
       expect(result).toBe(photo);
       const [command, args] = runMock.mock.calls[0];
       expect(command).toBe("get-photo");
-      expect(args).toEqual(["--uuid", "ABC-123"]);
+      expect(args).toEqual(["--uuid=ABC-123"]);
     });
 
     it("includes --library before the uuid flag when provided", () => {
       runMock.mockReturnValue({ data: { photo: { uuid: "X" } } });
       manager.getPhoto("X", "/tmp/Other.photoslibrary");
       const [, args] = runMock.mock.calls[0];
-      expect(args).toEqual(["--library", "/tmp/Other.photoslibrary", "--uuid", "X"]);
+      expect(args).toEqual(["--library=/tmp/Other.photoslibrary", "--uuid=X"]);
     });
   });
 
@@ -227,7 +230,7 @@ describe("PhotosManager", () => {
       runMock.mockReturnValue({ data: { count: 0, albums: [] } });
       manager.listAlbums("/tmp/Other.photoslibrary");
       const [, args] = runMock.mock.calls[0];
-      expect(args).toEqual(["--library", "/tmp/Other.photoslibrary"]);
+      expect(args).toEqual(["--library=/tmp/Other.photoslibrary"]);
     });
   });
 
@@ -246,7 +249,7 @@ describe("PhotosManager", () => {
       runMock.mockReturnValue({ data: { count: 0, folders: [] } });
       manager.listFolders("/tmp/Other.photoslibrary");
       const [, args] = runMock.mock.calls[0];
-      expect(args).toEqual(["--library", "/tmp/Other.photoslibrary"]);
+      expect(args).toEqual(["--library=/tmp/Other.photoslibrary"]);
     });
   });
 
@@ -265,14 +268,14 @@ describe("PhotosManager", () => {
       runMock.mockReturnValue({ data: { count: 0, persons: [] } });
       manager.listPersons(15);
       const [, args] = runMock.mock.calls[0];
-      expect(args).toEqual(["--limit", "15"]);
+      expect(args).toEqual(["--limit=15"]);
     });
 
     it("combines --library and --limit when both are given", () => {
       runMock.mockReturnValue({ data: { count: 0, persons: [] } });
       manager.listPersons(15, "/tmp/Other.photoslibrary");
       const [, args] = runMock.mock.calls[0];
-      expect(args).toEqual(["--library", "/tmp/Other.photoslibrary", "--limit", "15"]);
+      expect(args).toEqual(["--library=/tmp/Other.photoslibrary", "--limit=15"]);
     });
   });
 

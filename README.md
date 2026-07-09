@@ -219,7 +219,7 @@ Search the library with combinable filters. Returns photo summaries with UUIDs �
 | `keyword` | string[] | No | Keyword(s); ANY-match |
 | `person` | string[] | No | Person name(s); ANY-match |
 | `fromDate` | string | No | ISO 8601 lower bound on photo date (e.g. `"2025-06-01"`) |
-| `toDate` | string | No | ISO 8601 upper bound on photo date |
+| `toDate` | string | No | ISO 8601 upper bound on photo date. A bare date (e.g. `"2025-06-30"`) includes that whole day; a full datetime (e.g. `"2025-06-30T18:00:00"`) is a precise exclusive bound |
 | `favorite` | boolean | No | Only favorites |
 | `notFavorite` | boolean | No | Exclude favorites |
 | `hidden` | boolean | No | Only hidden photos |
@@ -228,7 +228,7 @@ Search the library with combinable filters. Returns photo summaries with UUIDs �
 | `movies` | boolean | No | Include movies |
 | `title` | string | No | Substring match on title |
 | `description` | string | No | Substring match on description |
-| `limit` | number | No | Cap the number of results |
+| `limit` | number | No | Cap the number of results returned (default `500` when omitted) |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
 **Example - Recent favorites of Sarah:**
@@ -249,7 +249,7 @@ Search the library with combinable filters. Returns photo summaries with UUIDs �
 }
 ```
 
-**Returns:** Photo summaries (UUID, filename, date, dimensions, favorite/hidden flags, albums, keywords, persons).
+**Returns:** `count` (the **total** number of matches), `returned` (the number of summaries in this response — capped at `limit`, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden flags, albums, keywords, persons).
 
 ---
 
@@ -283,7 +283,7 @@ List all albums in the library.
 |-----------|------|----------|-------------|
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
-**Returns:** Each album's title, folder path, photo count, shared status, and UUID.
+**Returns:** Each album's title, folder path, photo count, shared status, and UUID. iCloud Shared Albums are included and flagged `isShared: true`.
 
 ---
 
@@ -338,7 +338,7 @@ Export one or more photos by UUID to a destination directory.
 | `edited` | boolean | No | Export the edited version instead of the original |
 | `live` | boolean | No | Also export the live-photo video |
 | `raw` | boolean | No | Also export the raw image |
-| `overwrite` | boolean | No | Overwrite existing files at the destination |
+| `overwrite` | boolean | No | Overwrite existing files at the destination. Without it, a photo whose file already exists is **skipped** (reported per-UUID) — never duplicated |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
 **Example - Originals to a folder:**
@@ -361,7 +361,9 @@ Export one or more photos by UUID to a destination directory.
 }
 ```
 
-**Returns:** Destination path, count of files exported, count skipped, list of exported file paths, and any errors per UUID.
+**Returns:** Destination path, count of files exported, count skipped, list of exported file paths, and a per-UUID reason for every skip (file already exists, UUID not found / in Recently Deleted, iCloud download failed, ...). Every requested UUID is accounted for in `exported` + `skipped`.
+
+**Filename collisions:** Files keep the photo's original filename. If a file of that name already exists at the destination and `overwrite` is not set, the photo is skipped with reason `already exists at destination` — re-running an export never creates `IMG_1234 (1).jpg`-style duplicates. Pass `overwrite: true` to replace in place.
 
 **iCloud-only originals:** If a photo's original isn't on disk (Photos is using "Optimize Mac Storage"), the export automatically falls back to Photos.app via AppleScript, which downloads the original on demand — same behavior as opening the photo in Photos. This is slower than a direct file copy; expect waits proportional to download size for large batches. Photos that genuinely can't be exported (e.g. `edited=true` requested but no edits exist) are still skipped with a per-UUID reason.
 
@@ -518,6 +520,7 @@ All configuration is optional — the server works out of the box.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `APPLE_PHOTOS_MCP_MAX_BUFFER` | `104857600` (100 MB) | Max bytes captured from the Python sidecar's stdout. Raise it if a very large library/query is truncated; lower it to cap memory. |
+| `APPLE_PHOTOS_MCP_TIMEOUT` | `60000` (60 s) | Default per-command timeout, in milliseconds, for the Python sidecar. Every call re-opens the Photos database, and on very large libraries (100k+ photos) the load alone can exceed 60 s — raise this if tools report "Operation timed out". `export` keeps its own 30-minute window. |
 | `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` | unset (auto-setup on) | Set to `1` (or any truthy value) to disable the automatic first-use venv bootstrap. With it on, you must run `pnpm run setup` (or `pip3 install osxphotos`) yourself. |
 | `APPLE_PHOTOS_MCP_SETUP_TIMEOUT` | `300000` (5 min) | Max time, in milliseconds, the automatic venv bootstrap may run before it's aborted. Raise it on slow networks where the `osxphotos` install needs longer. |
 | `APPLE_PHOTOS_MCP_CONFIG_FILE` | `~/Library/Application Support/apple-photos-mcp/config.json` | Path to the JSON config file (see below). |

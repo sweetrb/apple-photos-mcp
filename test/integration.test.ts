@@ -86,10 +86,13 @@ describe("live Photos library", { timeout: 120_000 }, () => {
   it("queries a small page of well-formed photo summaries", (ctx) => {
     if (!live) ctx.skip();
     const result = mgr.query({ limit: 3 });
+    // count is the TOTAL match count; returned is the post-limit page size.
     expect(typeof result.count).toBe("number");
-    expect(result.count).toBeLessThanOrEqual(3);
+    expect(typeof result.returned).toBe("number");
+    expect(result.returned).toBeLessThanOrEqual(3);
+    expect(result.count).toBeGreaterThanOrEqual(result.returned);
     expect(Array.isArray(result.photos)).toBe(true);
-    expect(result.photos.length).toBe(result.count);
+    expect(result.photos.length).toBe(result.returned);
     for (const p of result.photos) {
       expect(typeof p.uuid).toBe("string");
       expect(p.uuid.length).toBeGreaterThan(0);
@@ -127,7 +130,7 @@ describe("live Photos library", { timeout: 120_000 }, () => {
   it("fetches a single photo's detail by uuid (matching round-trip)", (ctx) => {
     if (!live) ctx.skip();
     const result = mgr.query({ limit: 1 });
-    if (result.count < 1) {
+    if (result.returned < 1) {
       // Empty library — nothing to round-trip, but the query itself worked.
       ctx.skip();
       return;

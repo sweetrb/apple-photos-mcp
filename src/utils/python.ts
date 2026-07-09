@@ -249,15 +249,45 @@ function execReader<T>(command: string, args: string[], timeoutMs: number): Pyth
     }
     return { data: result as T };
   } catch (err: unknown) {
-    const error = err as Error & { stderr?: string | Buffer; status?: number };
+    const error = err as Error & {
+      stdout?: string | Buffer;
+      stderr?: string | Buffer;
+      status?: number;
+    };
+    const stdout = error.stdout?.toString().trim() ?? "";
     const stderr = error.stderr?.toString().trim() ?? "";
+
+    // The sidecar reports every handled failure as {"error": ...} JSON on
+    // STDOUT before exiting 1 (missing osxphotos, unreadable/locked library,
+    // Full-Disk-Access denials, bad arguments). Prefer that structured message
+    // — it's what augmentPermissionError / doctor / the bootstrap retry match
+    // against — and only fall back to stderr/message noise when absent.
+    if (stdout) {
+      try {
+        const parsed: unknown = JSON.parse(stdout);
+        const structured =
+          parsed && typeof (parsed as { error?: unknown }).error === "string"
+            ? (parsed as { error: string }).error
+            : null;
+        if (structured) {
+          if (structured.includes(`${PACKAGE} not installed`) || looksLikeMissingDep(structured)) {
+            return { error: `${PACKAGE} not installed. ${setupHint()}` };
+          }
+          return { error: structured };
+        }
+      } catch {
+        // stdout wasn't JSON — fall through to the stderr/message paths.
+      }
+    }
 
     if (stderr.includes(`${PACKAGE} not installed`) || looksLikeMissingDep(stderr)) {
       return { error: `${PACKAGE} not installed. ${setupHint()}` };
     }
     if (error.message?.includes("ETIMEDOUT") || error.message?.includes("timed out")) {
       return {
-        error: `Operation timed out after ${timeoutMs}ms. Library may be very large.`,
+        error:
+          `Operation timed out after ${timeoutMs}ms. Library may be very large. ` +
+          `Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`,
       };
     }
     // Surface the Python traceback when there is one — without it the user just
@@ -281,13 +311,32 @@ function getMaxBuffer(): number {
   return DEFAULT_MAX_BUFFER_BYTES;
 }
 
+const DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
+ * Default per-command sidecar timeout in ms, overridable via env. Every call
+ * re-opens the Photos DB, and on very large libraries (100k+ photos) that load
+ * alone can exceed the 60s default — the override is the escape hatch.
+ * Commands that pass an explicit timeout (export's 30-minute iCloud window)
+ * are unaffected.
+ */
+function getDefaultTimeout(): number {
+  const raw = process.env[`${ENV_PREFIX}_TIMEOUT`];
+  if (raw !== undefined) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
+
 export function runPhotosReader<T = unknown>(
   command: string,
   args: string[],
-  timeoutMs = 60000
+  timeoutMs?: number
 ): PythonResult<T> {
   ensureReady();
-  const result = execReader<T>(command, args, timeoutMs);
+  const timeout = timeoutMs ?? getDefaultTimeout();
+  const result = execReader<T>(command, args, timeout);
 
   // Belt-and-suspenders: if the deps still look missing and we haven't tried a
   // bootstrap yet, attempt it once and retry — covers a venv that exists but is
@@ -299,7 +348,7 @@ export function runPhotosReader<T = unknown>(
     !autoSetupDisabled()
   ) {
     if (bootstrapVenv()) {
-      return execReader<T>(command, args, timeoutMs);
+      return execReader<T>(command, args, timeout);
     }
   }
   return result;
