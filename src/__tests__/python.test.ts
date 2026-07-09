@@ -73,7 +73,66 @@ describe("runPhotosReader", () => {
     expect(result.error).toContain("ValueError: bad date");
   });
 
-  it("maps the missing-osxphotos stderr to a setup hint", () => {
+  it("maps the sidecar's missing-osxphotos JSON error (stdout + exit 1) to a setup hint", () => {
+    // The real sidecar prints {"error": "osxphotos not installed. ..."} to
+    // STDOUT before sys.exit(1) — stderr stays empty. This is the channel that
+    // must trigger the setup hint (and the missing-dep bootstrap retry).
+    const err = Object.assign(new Error("Command failed: python3 photos_reader.py health"), {
+      stdout: JSON.stringify({ error: "osxphotos not installed. Install it with: ..." }),
+      stderr: "",
+      status: 1,
+    });
+    execFileMock.mockImplementation(() => {
+      throw err;
+    });
+    const result = runPhotosReader("health", []);
+    expect(result.error).toContain("osxphotos not installed");
+    expect(result.error).toContain("pip3 install osxphotos");
+  });
+
+  it("surfaces the sidecar's structured JSON error from stdout when python exits non-zero", () => {
+    // Every handled sidecar failure (bad args, unreadable library, FDA denial)
+    // is {"error": ...} JSON on stdout + exit(1). The structured message must
+    // surface verbatim — NOT a bare "Command failed: <python> <args>".
+    const err = Object.assign(new Error("Command failed: python3 photos_reader.py query"), {
+      stdout: JSON.stringify({ error: "unable to open database file" }),
+      stderr: "",
+      status: 1,
+    });
+    execFileMock.mockImplementation(() => {
+      throw err;
+    });
+    const result = runPhotosReader("query", []);
+    expect(result.error).toBe("unable to open database file");
+  });
+
+  it("prefers the stdout JSON error over stderr noise on non-zero exit", () => {
+    const err = Object.assign(new Error("Command failed"), {
+      stdout: JSON.stringify({ error: "Library not found: /nope.photoslibrary" }),
+      stderr: "some low-level warning\n",
+      status: 1,
+    });
+    execFileMock.mockImplementation(() => {
+      throw err;
+    });
+    const result = runPhotosReader("query", []);
+    expect(result.error).toBe("Library not found: /nope.photoslibrary");
+  });
+
+  it("falls back to stderr when stdout on a failed exit isn't JSON", () => {
+    const err = Object.assign(new Error("Command failed"), {
+      stdout: "not json at all",
+      stderr: "Traceback (most recent call last):\nRuntimeError: boom\n",
+      status: 1,
+    });
+    execFileMock.mockImplementation(() => {
+      throw err;
+    });
+    const result = runPhotosReader("query", []);
+    expect(result.error).toContain("RuntimeError: boom");
+  });
+
+  it("still maps a missing-dep message on stderr to the setup hint (non-sidecar failures)", () => {
     const err = Object.assign(new Error("Command failed"), {
       stderr: "ImportError: osxphotos not installed",
       status: 1,
@@ -164,6 +223,55 @@ describe("runPhotosReader", () => {
     } finally {
       if (prev === undefined) delete process.env.APPLE_PHOTOS_MCP_MAX_BUFFER;
       else process.env.APPLE_PHOTOS_MCP_MAX_BUFFER = prev;
+    }
+  });
+
+  it("defaults the sidecar timeout to 60s when no explicit timeout is passed", () => {
+    execFileMock.mockReturnValue("{}");
+    runPhotosReader("query", []);
+    const options = execFileMock.mock.calls[0]?.[2] as { timeout?: unknown };
+    expect(options.timeout).toBe(60_000);
+  });
+
+  it("honors APPLE_PHOTOS_MCP_TIMEOUT for the default sidecar timeout", () => {
+    const prev = process.env.APPLE_PHOTOS_MCP_TIMEOUT;
+    process.env.APPLE_PHOTOS_MCP_TIMEOUT = "300000";
+    try {
+      execFileMock.mockReturnValue("{}");
+      runPhotosReader("query", []);
+      const options = execFileMock.mock.calls[0]?.[2] as { timeout?: unknown };
+      expect(options.timeout).toBe(300_000);
+    } finally {
+      if (prev === undefined) delete process.env.APPLE_PHOTOS_MCP_TIMEOUT;
+      else process.env.APPLE_PHOTOS_MCP_TIMEOUT = prev;
+    }
+  });
+
+  it("an explicit per-call timeout wins over APPLE_PHOTOS_MCP_TIMEOUT", () => {
+    const prev = process.env.APPLE_PHOTOS_MCP_TIMEOUT;
+    process.env.APPLE_PHOTOS_MCP_TIMEOUT = "300000";
+    try {
+      execFileMock.mockReturnValue("{}");
+      runPhotosReader("export", [], 30 * 60 * 1000);
+      const options = execFileMock.mock.calls[0]?.[2] as { timeout?: unknown };
+      expect(options.timeout).toBe(30 * 60 * 1000);
+    } finally {
+      if (prev === undefined) delete process.env.APPLE_PHOTOS_MCP_TIMEOUT;
+      else process.env.APPLE_PHOTOS_MCP_TIMEOUT = prev;
+    }
+  });
+
+  it("ignores an invalid APPLE_PHOTOS_MCP_TIMEOUT and uses the default", () => {
+    const prev = process.env.APPLE_PHOTOS_MCP_TIMEOUT;
+    process.env.APPLE_PHOTOS_MCP_TIMEOUT = "not-a-number";
+    try {
+      execFileMock.mockReturnValue("{}");
+      runPhotosReader("query", []);
+      const options = execFileMock.mock.calls[0]?.[2] as { timeout?: unknown };
+      expect(options.timeout).toBe(60_000);
+    } finally {
+      if (prev === undefined) delete process.env.APPLE_PHOTOS_MCP_TIMEOUT;
+      else process.env.APPLE_PHOTOS_MCP_TIMEOUT = prev;
     }
   });
 

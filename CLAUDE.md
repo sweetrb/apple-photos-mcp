@@ -63,11 +63,17 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 ## Conventions and behaviors to know
 
 - **Dates are ISO 8601.** `fromDate` / `toDate` on `query` take ISO 8601 strings
-  (e.g. `"2025-06-01"`). Dates returned by the tools are ISO 8601 too.
+  (e.g. `"2025-06-01"`). A bare `toDate` (no time part) includes that whole day;
+  a full datetime (e.g. `"2025-06-30T18:00:00"`) is a precise exclusive upper
+  bound. Dates returned by the tools are ISO 8601 too.
 - **Hidden photos are excluded by default.** `query` does not return hidden
   photos unless you pass `hidden: true` (only hidden) — `notHidden` is the
   default behavior. Likewise use `favorite` / `notFavorite` to narrow on
   favorites.
+- **Results are paged: `count` vs `returned`.** `query` reports `count` (the
+  TOTAL number of matches) and `returned` (how many summaries are in the
+  response). When `limit` is omitted, a default limit of 500 applies — check
+  `count > returned` to detect truncation and raise `limit` if you need more.
 - **Filters are ANY-match and combinable.** `album`, `keyword`, `person`, and
   `uuid` are arrays; within one filter the match is ANY (OR). Combining
   different filters narrows the result (AND across filter types).
@@ -78,7 +84,10 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
   writes file copies to the `dest` directory (created if missing). It never
   modifies the Photos library. By default it exports the original; use
   `edited: true`, `live: true` (live-photo video), `raw: true`, and
-  `overwrite: true` as needed. Confirm `dest` before running on shared machines.
+  `overwrite: true` as needed. Without `overwrite`, a photo whose file already
+  exists at `dest` is skipped with a per-UUID reason (never duplicated), and
+  unknown/trashed UUIDs are reported as skipped too — every requested UUID is
+  accounted for. Confirm `dest` before running on shared machines.
 - **iCloud-only originals are slow.** If an original isn't on disk, `export`
   falls back to Photos.app to download it on demand — slower for large batches,
   and skipped (with a per-UUID reason) if the download fails. See
@@ -105,11 +114,14 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 
 | Error | Likely cause | What to do |
 |-------|--------------|------------|
-| "osxphotos not installed. Run: npm run setup" | Auto-setup couldn't run — disabled via `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1`, or Python 3 / `pip` / network unavailable (normally the venv self-installs on first use) | Run `npm run setup` (source clone) or `pip3 install osxphotos` (global), or unset `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` |
+| "osxphotos not installed. Install it with: pip3 install osxphotos ..." | Auto-setup couldn't run — disabled via `APPLE_PHOTOS_MCP_NO_AUTO_SETUP=1`, or Python 3 / `pip` / network unavailable (normally the venv self-installs on first use) | Run the `doctor` tool to diagnose; `pip3 install osxphotos` (needs Python >= 3.11) or `scripts/setup.sh` from a checkout, or unset `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` |
 | "operation not permitted" / "unable to open database" / permission error | Full Disk Access not granted (or granted to the wrong app) | Grant FDA to the **host** app and fully restart it — see [docs/FULL-DISK-ACCESS.md](./docs/FULL-DISK-ACCESS.md) |
 | "Photo not found: <uuid>" | Wrong/stale UUID, or photo deleted | Re-run `query` to get current UUIDs, then retry |
 | Export skipped: "original not downloaded from iCloud" | iCloud-only original couldn't be fetched | Check iCloud connectivity / signed-in state; ensure Photos.app automation is allowed |
-| Export skipped: "no edited version exists" / "no raw sidecar exists" | `edited`/`raw` requested but none exists | Retry without that flag |
+| Export skipped: "Photo does not have adjustments..." / "raw component not on disk..." | `edited` requested but the photo has no edits / `raw` requested but the raw file isn't downloaded | Retry without that flag |
+| Export skipped: "already exists at destination" | A file with that name is already at `dest` and `overwrite` wasn't set | Pass `overwrite: true` to replace, or export to a fresh directory |
+| Export skipped: "UUID not found (deleted or in trash)" | Stale UUID — photo deleted or moved to Recently Deleted since the query | Re-run `query` to get current UUIDs |
+| "Operation timed out after 60000ms" | Very large library — every call re-opens the Photos DB | Set `APPLE_PHOTOS_MCP_TIMEOUT` (ms) higher |
 | Database-lock error | Photos.app is mid-write | Close Photos.app and retry (queries only — iCloud export needs Photos) |
 
 ## Quick reference: getting the most from a request

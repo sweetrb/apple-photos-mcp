@@ -21514,13 +21514,27 @@ function execReader(command, args, timeoutMs) {
     return { data: result };
   } catch (err) {
     const error2 = err;
+    const stdout = error2.stdout?.toString().trim() ?? "";
     const stderr = error2.stderr?.toString().trim() ?? "";
+    if (stdout) {
+      try {
+        const parsed = JSON.parse(stdout);
+        const structured = parsed && typeof parsed.error === "string" ? parsed.error : null;
+        if (structured) {
+          if (structured.includes(`${PACKAGE} not installed`) || looksLikeMissingDep(structured)) {
+            return { error: `${PACKAGE} not installed. ${setupHint()}` };
+          }
+          return { error: structured };
+        }
+      } catch {
+      }
+    }
     if (stderr.includes(`${PACKAGE} not installed`) || looksLikeMissingDep(stderr)) {
       return { error: `${PACKAGE} not installed. ${setupHint()}` };
     }
     if (error2.message?.includes("ETIMEDOUT") || error2.message?.includes("timed out")) {
       return {
-        error: `Operation timed out after ${timeoutMs}ms. Library may be very large.`
+        error: `Operation timed out after ${timeoutMs}ms. Library may be very large. Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`
       };
     }
     if (stderr) {
@@ -21538,12 +21552,22 @@ function getMaxBuffer() {
   }
   return DEFAULT_MAX_BUFFER_BYTES;
 }
-function runPhotosReader(command, args, timeoutMs = 6e4) {
+var DEFAULT_TIMEOUT_MS = 6e4;
+function getDefaultTimeout() {
+  const raw = process.env[`${ENV_PREFIX}_TIMEOUT`];
+  if (raw !== void 0) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
+function runPhotosReader(command, args, timeoutMs) {
   ensureReady();
-  const result = execReader(command, args, timeoutMs);
+  const timeout = timeoutMs ?? getDefaultTimeout();
+  const result = execReader(command, args, timeout);
   if (result.error && looksLikeMissingDep(result.error) && !bootstrapAttempted && !autoSetupDisabled()) {
     if (bootstrapVenv()) {
-      return execReader(command, args, timeoutMs);
+      return execReader(command, args, timeout);
     }
   }
   return result;
@@ -21578,13 +21602,16 @@ This looks like a macOS permission issue: grant Full Disk Access to the HOST app
   }
   return message;
 }
+function flagArg(flag, value) {
+  return `${flag}=${value}`;
+}
 var PhotosManager = class {
   /**
    * Build the CLI args common to every subcommand.
    * Library path is optional; when omitted, osxphotos uses the system library.
    */
   libraryArgs(library) {
-    return library ? ["--library", library] : [];
+    return library ? [flagArg("--library", library)] : [];
   }
   run(command, args, timeoutMs) {
     const result = runPhotosReader(command, args, timeoutMs);
@@ -21627,28 +21654,27 @@ var PhotosManager = class {
       const values = filters[key];
       if (values) {
         for (const v of values) {
-          args.push(flag, v);
+          args.push(flagArg(flag, v));
         }
       }
     }
-    if (filters.fromDate) args.push("--from-date", filters.fromDate);
-    if (filters.toDate) args.push("--to-date", filters.toDate);
+    if (filters.fromDate) args.push(flagArg("--from-date", filters.fromDate));
+    if (filters.toDate) args.push(flagArg("--to-date", filters.toDate));
     if (filters.favorite) args.push("--favorite");
     if (filters.notFavorite) args.push("--not-favorite");
     if (filters.hidden) args.push("--hidden");
     if (filters.notHidden) args.push("--not-hidden");
     if (filters.photos) args.push("--photos");
     if (filters.movies) args.push("--movies");
-    if (filters.title) args.push("--title", filters.title);
-    if (filters.description) args.push("--description", filters.description);
-    if (filters.limit !== void 0) args.push("--limit", String(filters.limit));
+    if (filters.title) args.push(flagArg("--title", filters.title));
+    if (filters.description) args.push(flagArg("--description", filters.description));
+    if (filters.limit !== void 0) args.push(flagArg("--limit", filters.limit));
     return this.run("query", args);
   }
   getPhoto(uuid2, library) {
     const result = this.run("get-photo", [
       ...this.libraryArgs(library),
-      "--uuid",
-      uuid2
+      flagArg("--uuid", uuid2)
     ]);
     return result.photo;
   }
@@ -21660,12 +21686,12 @@ var PhotosManager = class {
   }
   listKeywords(limit, library) {
     const args = this.libraryArgs(library);
-    if (limit !== void 0) args.push("--limit", String(limit));
+    if (limit !== void 0) args.push(flagArg("--limit", limit));
     return this.run("list-keywords", args);
   }
   listPersons(limit, library) {
     const args = this.libraryArgs(library);
-    if (limit !== void 0) args.push("--limit", String(limit));
+    if (limit !== void 0) args.push(flagArg("--limit", limit));
     return this.run("list-persons", args);
   }
   exportPhotos(uuids, dest, options = {}) {
@@ -21674,9 +21700,9 @@ var PhotosManager = class {
     }
     const args = this.libraryArgs(options.library);
     for (const uuid2 of uuids) {
-      args.push("--uuid", uuid2);
+      args.push(flagArg("--uuid", uuid2));
     }
-    args.push("--dest", dest);
+    args.push(flagArg("--dest", dest));
     if (options.edited) args.push("--edited");
     if (options.live) args.push("--live");
     if (options.raw) args.push("--raw");
@@ -21991,7 +22017,7 @@ Persons:   ${info.personCount}`,
 server.registerTool(
   "query",
   {
-    description: "Use when: you need to find photos matching one or more filters \u2014 album, keyword, person, ISO date range, favorite/hidden flags, photo/movie type, or title/description substrings \u2014 and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID.\nReturns: a count plus photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) \u2014 feed a UUID into get-photo for full metadata or into export to copy files.\nDo not use when: you already have a UUID and want full metadata for that one photo \u2014 use get-photo; or you just want the catalog of album/keyword/person names \u2014 use list-albums / list-keywords / list-persons.",
+    description: "Use when: you need to find photos matching one or more filters \u2014 album, keyword, person, ISO date range, favorite/hidden flags, photo/movie type, or title/description substrings \u2014 and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID. Hidden photos are excluded unless hidden=true.\nReturns: count (the TOTAL number of matches), returned (the number of summaries in this response \u2014 capped at limit, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) \u2014 feed a UUID into get-photo for full metadata or into export to copy files.\nDo not use when: you already have a UUID and want full metadata for that one photo \u2014 use get-photo; or you just want the catalog of album/keyword/person names \u2014 use list-albums / list-keywords / list-persons.",
     inputSchema: {
       ...libraryArg,
       uuid: external_exports.array(external_exports.string().max(256)).max(1e3).optional().describe("Specific UUIDs to fetch"),
@@ -21999,7 +22025,9 @@ server.registerTool(
       keyword: external_exports.array(external_exports.string().max(1024)).max(100).optional().describe("Keyword(s); ANY-match"),
       person: external_exports.array(external_exports.string().max(1024)).max(100).optional().describe("Person name(s); ANY-match"),
       fromDate: external_exports.string().max(64).optional().describe("ISO 8601 lower bound on photo date"),
-      toDate: external_exports.string().max(64).optional().describe("ISO 8601 upper bound on photo date"),
+      toDate: external_exports.string().max(64).optional().describe(
+        "ISO 8601 upper bound on photo date. A bare date (e.g. 2025-06-30) includes that whole day; pass a full datetime (e.g. 2025-06-30T18:00:00) for a precise exclusive bound"
+      ),
       favorite: external_exports.boolean().optional().describe("Only favorites"),
       notFavorite: external_exports.boolean().optional().describe("Exclude favorites"),
       hidden: external_exports.boolean().optional().describe("Only hidden photos"),
@@ -22008,17 +22036,24 @@ server.registerTool(
       movies: external_exports.boolean().optional().describe("Include movies"),
       title: external_exports.string().max(1024).optional().describe("Substring match on title"),
       description: external_exports.string().max(2048).optional().describe("Substring match on description"),
-      limit: external_exports.number().int().positive().max(1e5).optional().describe("Cap the number of results")
+      limit: external_exports.number().int().positive().max(1e5).optional().describe(
+        "Cap the number of results returned (default 500 when omitted; count still reports the total matches)"
+      )
     },
     outputSchema: {
       count: external_exports.number().optional(),
+      returned: external_exports.number().optional(),
       photos: external_exports.array(external_exports.object({}).passthrough()).optional()
     }
   },
   withErrorHandling(({ library, ...filters }) => {
     const result = manager.query(filters, library);
     if (result.count === 0) {
-      return successResponse("No photos matched the query.", { count: 0, photos: [] });
+      return successResponse("No photos matched the query.", {
+        count: 0,
+        returned: 0,
+        photos: []
+      });
     }
     const lines = result.photos.map((p) => {
       const flags = [];
@@ -22029,10 +22064,13 @@ server.registerTool(
       const dims = p.width && p.height ? ` ${p.width}\xD7${p.height}` : "";
       return `${p.date ?? "?"} ${p.uuid} \u2014 ${p.filename}${dims}${flagStr}`;
     });
-    return successResponse(`Found ${result.count} photo(s):
+    const returned = result.returned ?? result.photos.length;
+    const header = result.count > returned ? `Found ${result.count} photo(s), returning the first ${returned} (raise limit for more):` : `Found ${result.count} photo(s):`;
+    return successResponse(`${header}
 
 ${lines.join("\n")}`, {
       count: result.count,
+      returned,
       photos: result.photos
     });
   }, "query")
@@ -22165,7 +22203,7 @@ ${lines.join("\n")}`, { count, persons });
 server.registerTool(
   "export",
   {
-    description: "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\nReturns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. edited=true requested but no edits exist).\nDo not use when: you only need metadata or file paths rather than copies on disk \u2014 use get-photo; or you're still figuring out which photos to export \u2014 use query first.\nSafety: this is the only side-effecting tool \u2014 it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand \u2014 this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
+    description: "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\nReturns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\nDo not use when: you only need metadata or file paths rather than copies on disk \u2014 use get-photo; or you're still figuring out which photos to export \u2014 use query first.\nSafety: this is the only side-effecting tool \u2014 it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand \u2014 this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
     inputSchema: {
       ...libraryArg,
       uuid: external_exports.array(external_exports.string().max(256)).min(1).max(1e3).describe("Photo UUID(s) to export"),

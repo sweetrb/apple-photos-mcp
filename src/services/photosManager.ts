@@ -30,13 +30,24 @@ function augmentPermissionError(message: string): string {
   return message;
 }
 
+/**
+ * Join a flag and its user-supplied value into a single "--flag=value" token.
+ * argparse treats a separate value token that starts with "-" as a new option
+ * ("expected one argument" usage error), so a keyword like "-archive" or a
+ * title search for "-2020" would crash the sidecar if passed as two tokens;
+ * the joined form is parsed correctly regardless of leading dashes.
+ */
+function flagArg(flag: string, value: string | number): string {
+  return `${flag}=${value}`;
+}
+
 export class PhotosManager {
   /**
    * Build the CLI args common to every subcommand.
    * Library path is optional; when omitted, osxphotos uses the system library.
    */
   private libraryArgs(library?: string): string[] {
-    return library ? ["--library", library] : [];
+    return library ? [flagArg("--library", library)] : [];
   }
 
   private run<T>(command: string, args: string[], timeoutMs?: number): T {
@@ -89,22 +100,22 @@ export class PhotosManager {
       const values = filters[key] as string[] | undefined;
       if (values) {
         for (const v of values) {
-          args.push(flag, v);
+          args.push(flagArg(flag, v));
         }
       }
     }
 
-    if (filters.fromDate) args.push("--from-date", filters.fromDate);
-    if (filters.toDate) args.push("--to-date", filters.toDate);
+    if (filters.fromDate) args.push(flagArg("--from-date", filters.fromDate));
+    if (filters.toDate) args.push(flagArg("--to-date", filters.toDate));
     if (filters.favorite) args.push("--favorite");
     if (filters.notFavorite) args.push("--not-favorite");
     if (filters.hidden) args.push("--hidden");
     if (filters.notHidden) args.push("--not-hidden");
     if (filters.photos) args.push("--photos");
     if (filters.movies) args.push("--movies");
-    if (filters.title) args.push("--title", filters.title);
-    if (filters.description) args.push("--description", filters.description);
-    if (filters.limit !== undefined) args.push("--limit", String(filters.limit));
+    if (filters.title) args.push(flagArg("--title", filters.title));
+    if (filters.description) args.push(flagArg("--description", filters.description));
+    if (filters.limit !== undefined) args.push(flagArg("--limit", filters.limit));
 
     return this.run<QueryResult>("query", args);
   }
@@ -112,8 +123,7 @@ export class PhotosManager {
   getPhoto(uuid: string, library?: string): PhotoDetail {
     const result = this.run<{ photo: PhotoDetail }>("get-photo", [
       ...this.libraryArgs(library),
-      "--uuid",
-      uuid,
+      flagArg("--uuid", uuid),
     ]);
     return result.photo;
   }
@@ -128,13 +138,13 @@ export class PhotosManager {
 
   listKeywords(limit?: number, library?: string): { count: number; keywords: KeywordCount[] } {
     const args = this.libraryArgs(library);
-    if (limit !== undefined) args.push("--limit", String(limit));
+    if (limit !== undefined) args.push(flagArg("--limit", limit));
     return this.run("list-keywords", args);
   }
 
   listPersons(limit?: number, library?: string): { count: number; persons: PersonCount[] } {
     const args = this.libraryArgs(library);
-    if (limit !== undefined) args.push("--limit", String(limit));
+    if (limit !== undefined) args.push(flagArg("--limit", limit));
     return this.run("list-persons", args);
   }
 
@@ -154,9 +164,9 @@ export class PhotosManager {
     }
     const args = this.libraryArgs(options.library);
     for (const uuid of uuids) {
-      args.push("--uuid", uuid);
+      args.push(flagArg("--uuid", uuid));
     }
-    args.push("--dest", dest);
+    args.push(flagArg("--dest", dest));
     if (options.edited) args.push("--edited");
     if (options.live) args.push("--live");
     if (options.raw) args.push("--raw");

@@ -72,10 +72,12 @@ before filtering a `query` by `person`.
 
 **Why:** Photos has two kinds of albums: **regular** albums (you add photos
 manually) and **smart** albums (auto-populated by a rule). osxphotos surfaces
-albums and their contents, but smart-album membership is computed by Photos from
-its rules, and what osxphotos sees reflects Photos' last evaluation — not a live
-re-run of the smart-album query. There is no tool to read or edit a smart album's
-rule.
+regular albums (and, as of 1.2.0, iCloud Shared Albums — flagged
+`isShared: true` in `list-albums`), but **smart albums are not surfaced at
+all**: they never appear in `list-albums` and never match `query`'s `album`
+filter, because smart-album membership is computed by Photos from its rules
+rather than stored as an album record osxphotos can read. There is no tool to
+read or edit a smart album's rule.
 
 **What to do:** Treat `list-albums` and album-filtered queries as a snapshot of
 what Photos currently has in each album. For precise, reproducible filtering,

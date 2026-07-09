@@ -137,8 +137,8 @@ server.registerTool(
   "query",
   {
     description:
-      "Use when: you need to find photos matching one or more filters — album, keyword, person, ISO date range, favorite/hidden flags, photo/movie type, or title/description substrings — and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID.\n" +
-      "Returns: a count plus photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) — feed a UUID into get-photo for full metadata or into export to copy files.\n" +
+      "Use when: you need to find photos matching one or more filters — album, keyword, person, ISO date range, favorite/hidden flags, photo/movie type, or title/description substrings — and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID. Hidden photos are excluded unless hidden=true.\n" +
+      "Returns: count (the TOTAL number of matches), returned (the number of summaries in this response — capped at limit, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) — feed a UUID into get-photo for full metadata or into export to copy files.\n" +
       "Do not use when: you already have a UUID and want full metadata for that one photo — use get-photo; or you just want the catalog of album/keyword/person names — use list-albums / list-keywords / list-persons.",
     inputSchema: {
       ...libraryArg,
@@ -151,7 +151,15 @@ server.registerTool(
         .optional()
         .describe("Person name(s); ANY-match"),
       fromDate: z.string().max(64).optional().describe("ISO 8601 lower bound on photo date"),
-      toDate: z.string().max(64).optional().describe("ISO 8601 upper bound on photo date"),
+      toDate: z
+        .string()
+        .max(64)
+        .optional()
+        .describe(
+          "ISO 8601 upper bound on photo date. A bare date (e.g. 2025-06-30) includes that " +
+            "whole day; pass a full datetime (e.g. 2025-06-30T18:00:00) for a precise " +
+            "exclusive bound"
+        ),
       favorite: z.boolean().optional().describe("Only favorites"),
       notFavorite: z.boolean().optional().describe("Exclude favorites"),
       hidden: z.boolean().optional().describe("Only hidden photos"),
@@ -166,17 +174,25 @@ server.registerTool(
         .positive()
         .max(100000)
         .optional()
-        .describe("Cap the number of results"),
+        .describe(
+          "Cap the number of results returned (default 500 when omitted; " +
+            "count still reports the total matches)"
+        ),
     },
     outputSchema: {
       count: z.number().optional(),
+      returned: z.number().optional(),
       photos: z.array(z.object({}).passthrough()).optional(),
     },
   },
   withErrorHandling(({ library, ...filters }) => {
     const result = manager.query(filters, library);
     if (result.count === 0) {
-      return successResponse("No photos matched the query.", { count: 0, photos: [] });
+      return successResponse("No photos matched the query.", {
+        count: 0,
+        returned: 0,
+        photos: [],
+      });
     }
     const lines = result.photos.map((p) => {
       const flags: string[] = [];
@@ -187,8 +203,14 @@ server.registerTool(
       const dims = p.width && p.height ? ` ${p.width}×${p.height}` : "";
       return `${p.date ?? "?"} ${p.uuid} — ${p.filename}${dims}${flagStr}`;
     });
-    return successResponse(`Found ${result.count} photo(s):\n\n${lines.join("\n")}`, {
+    const returned = result.returned ?? result.photos.length;
+    const header =
+      result.count > returned
+        ? `Found ${result.count} photo(s), returning the first ${returned} (raise limit for more):`
+        : `Found ${result.count} photo(s):`;
+    return successResponse(`${header}\n\n${lines.join("\n")}`, {
       count: result.count,
+      returned,
       photos: result.photos,
     });
   }, "query")
@@ -346,9 +368,9 @@ server.registerTool(
   {
     description:
       "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image.\n" +
-      "Returns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. edited=true requested but no edits exist).\n" +
+      "Returns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\n" +
       "Do not use when: you only need metadata or file paths rather than copies on disk — use get-photo; or you're still figuring out which photos to export — use query first.\n" +
-      "Safety: this is the only side-effecting tool — it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand — this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
+      "Safety: this is the only side-effecting tool — it writes files into the destination directory (created if missing). With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand — this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
     inputSchema: {
       ...libraryArg,
       uuid: z.array(z.string().max(256)).min(1).max(1000).describe("Photo UUID(s) to export"),
