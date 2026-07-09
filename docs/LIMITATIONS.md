@@ -38,7 +38,9 @@ database`).
 
 **What to do:** Grant FDA to the host app and fully restart it. Full
 step-by-step instructions are in
-[FULL-DISK-ACCESS.md](./FULL-DISK-ACCESS.md). Verify with `health-check`.
+[FULL-DISK-ACCESS.md](./FULL-DISK-ACCESS.md). Verify with the `doctor` tool —
+its dedicated Full Disk Access check reports ok / warn / fail with remediation
+(`health-check` also works as a quick smoke test).
 
 ## iCloud-only originals are slow to export (and may be skipped)
 
@@ -82,7 +84,8 @@ read or edit a smart album's rule.
 **What to do:** Treat `list-albums` and album-filtered queries as a snapshot of
 what Photos currently has in each album. For precise, reproducible filtering,
 prefer explicit `query` filters (keyword, person, date range) over relying on a
-smart album's rule.
+smart album's rule — see [QUERY-GUIDE.md](./QUERY-GUIDE.md) for the filter
+syntax and combination semantics.
 
 ## The library view may lag very recent edits
 

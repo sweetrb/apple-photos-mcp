@@ -22,7 +22,7 @@ Use this skill when the user:
 | Tool | Purpose |
 |------|---------|
 | `health-check` | Verify osxphotos is installed and the library can be opened |
-| `doctor` | Full diagnostic: osxphotos install, library readability, and Full Disk Access (ok/warn/fail with advice) |
+| `doctor` | Full diagnostic — four checks: Python interpreter version, osxphotos install, library readability, and Full Disk Access (ok/warn/fail with advice) |
 | `library-info` | High-level stats: counts of photos, movies, albums, folders, keywords, persons |
 | `query` | Search the library with combinable filters; returns photo summaries with UUIDs |
 | `get-photo` | Full metadata for one photo by UUID (location, dimensions, type flags, etc.) |
@@ -73,17 +73,19 @@ User: "I want the edited versions, not the originals"
 
 1. **Two-step workflow:** Use `query` to find UUIDs, then `get-photo` or `export` for details/files. Don't ask the user for UUIDs — derive them from a search first.
 
-2. **Hidden photos are excluded by default.** Pass `hidden=true` if the user is looking for them specifically.
+2. **Query results are paged: `count` vs `returned`.** `count` is the TOTAL number of matches; `returned` is how many summaries are in the response (a default limit of 500 applies when `limit` is omitted). If `count > returned`, raise `limit`. Results are not sorted — `limit` is NOT "the N most recent".
 
-3. **System library is the default.** Pass `library` only when the user names a non-default `.photoslibrary` path.
+3. **Hidden photos are excluded by default.** Pass `hidden=true` if the user is looking for them specifically (it returns ONLY hidden photos).
 
-4. **Date format is ISO 8601** (`2025-06-01` or `2025-06-01T00:00:00`).
+4. **System library is the default.** Pass `library` only when the user names a non-default `.photoslibrary` path.
 
-5. **Export creates the destination directory** if it doesn't exist, and the destination must resolve (after `~` expansion and symlink resolution) to a path under the home directory, `/tmp`, `/private/tmp`, or `/Volumes` — anything else is rejected. Use `overwrite=true` only when the user has confirmed they want to replace existing files.
+5. **Date format is ISO 8601** (`2025-06-01` or `2025-06-01T00:00:00`). A bare `toDate` includes that whole day.
 
-6. **macOS only.** The Photos library only exists on macOS.
+6. **Export creates the destination directory** if it doesn't exist, and the destination must resolve (after `~` expansion and symlink resolution) to a path under the home directory, `/tmp`, `/private/tmp`, or `/Volumes` — anything else is rejected. Use `overwrite=true` only when the user has confirmed they want to replace existing files.
 
-7. **First-run setup is automatic.** The server auto-bootstraps a Python venv with `osxphotos` on the first tool call — the venv lives inside the plugin's own clone (under `~/.claude/plugins/` for a marketplace install), not in the user's project. If a tool still reports "osxphotos not installed", run the `doctor` tool FIRST to diagnose why auto-setup failed — the most common cause is `python3` older than 3.11 (stock macOS ships 3.9): have the user run `brew install python@3.12`, then simply retry the tool call (the venv rebuilds automatically).
+7. **macOS only.** The Photos library only exists on macOS.
+
+8. **First-run setup is automatic.** The server auto-bootstraps a Python venv with `osxphotos` on the first tool call — the venv lives inside the plugin's own clone (under `~/.claude/plugins/` for a marketplace install), not in the user's project. If a tool still reports "osxphotos not installed", run the `doctor` tool FIRST to diagnose why auto-setup failed — the most common cause is `python3` older than 3.11 (stock macOS ships 3.9): have the user run `brew install python@3.12`, then simply retry the tool call (the venv rebuilds automatically).
 
 ## Error Handling
 
