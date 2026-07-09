@@ -9,7 +9,7 @@
  * @module tools/doctor
  */
 import type { PhotosManager } from "../services/photosManager.js";
-import { checkDependencies, getPythonInfo } from "../utils/python.js";
+import { checkDependencies, getPythonInfo, sidecarBusy } from "../utils/python.js";
 import { FDA_REMEDIATION, TROUBLESHOOTING_URL } from "../utils/docsUrls.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
@@ -31,8 +31,15 @@ function looksLikePermissionError(message: string): boolean {
 /**
  * Run all diagnostic checks. This function NEVER throws — every probe is wrapped
  * in try/catch and converted to a fail/warn check.
+ *
+ * Gate interaction: checks 1–2 are light interpreter probes (python --version,
+ * `import osxphotos`) that never open the Photos DB, so they always run —
+ * even while a long sidecar operation (query/export) holds the serial gate.
+ * Check 3 (and the Full-Disk-Access check derived from it) needs a real
+ * DB-touching sidecar call; when the gate is busy it is SKIPPED with a warn
+ * instead of queueing doctor behind an operation that can run for minutes.
  */
-export function runDoctor(manager: PhotosManager): DoctorReport {
+export async function runDoctor(manager: PhotosManager): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
 
   // 1. Python interpreter — the same resolution the sidecar uses (project venv
@@ -41,7 +48,7 @@ export function runDoctor(manager: PhotosManager): DoctorReport {
   //    >= 3.11 — is diagnosed instead of surfacing as "osxphotos not installed".
   //    Mirrors apple-numbers-mcp's python_interpreter check.
   try {
-    const info = getPythonInfo();
+    const info = await getPythonInfo();
     if (info) {
       const m = /Python (\d+)\.(\d+)/.exec(info.version);
       const tooOld = m !== null && (Number(m[1]) < 3 || (Number(m[1]) === 3 && Number(m[2]) < 11));
@@ -74,7 +81,7 @@ export function runDoctor(manager: PhotosManager): DoctorReport {
 
   // 2. osxphotos installation.
   try {
-    const dep = checkDependencies();
+    const dep = await checkDependencies();
     checks.push({
       name: "osxphotos",
       status: dep.ok ? "ok" : "fail",
@@ -89,11 +96,29 @@ export function runDoctor(manager: PhotosManager): DoctorReport {
   }
 
   // 3. Photos library reachability. We remember whether it was a permission
-  //    error so the full_disk_access check can be derived from it.
+  //    error so the full_disk_access check can be derived from it. Skipped
+  //    (warn) while another sidecar operation holds the gate — doctor must
+  //    respond promptly, not queue behind a minutes-long query/export.
   let libraryOk = false;
   let libraryPermissionError = false;
+  if (sidecarBusy()) {
+    checks.push({
+      name: "photos_library",
+      status: "warn",
+      detail:
+        "skipped — another sidecar operation (a long query or export) is in flight; " +
+        "re-run doctor when it completes",
+    });
+    checks.push({
+      name: "full_disk_access",
+      status: "warn",
+      detail: "could not verify — the library probe was skipped while a sidecar operation runs",
+    });
+    const healthy = !checks.some((c) => c.status === "fail");
+    return { healthy, checks };
+  }
   try {
-    const info = manager.getLibraryInfo();
+    const info = await manager.getLibraryInfo();
     libraryOk = true;
     checks.push({
       name: "photos_library",

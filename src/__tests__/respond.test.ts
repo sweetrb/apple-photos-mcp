@@ -31,24 +31,38 @@ describe("respond helpers", () => {
     expect(r).toEqual({ content: [{ type: "text", text: "plain" }] });
   });
 
-  it("withErrorHandling passes through a successful result", () => {
+  it("withErrorHandling passes through a successful result", async () => {
     const wrapped = withErrorHandling(() => successResponse("ok"), "ctx");
-    expect(wrapped({}).content[0].text).toBe("ok");
+    expect((await wrapped({})).content[0].text).toBe("ok");
   });
 
-  it("withErrorHandling converts a thrown error into a prefixed error response", () => {
+  it("withErrorHandling awaits an async handler", async () => {
+    const wrapped = withErrorHandling(async () => successResponse("async ok"), "ctx");
+    expect((await wrapped({})).content[0].text).toBe("async ok");
+  });
+
+  it("withErrorHandling converts a thrown error into a prefixed error response", async () => {
     const wrapped = withErrorHandling(() => {
       throw new Error("nope");
     }, "doing thing");
-    const r = wrapped({});
+    const r = await wrapped({});
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toBe("doing thing: nope");
   });
 
-  it("withErrorHandling stringifies non-Error throws", () => {
+  it("withErrorHandling converts a rejected async handler into a prefixed error response", async () => {
+    const wrapped = withErrorHandling(async () => {
+      throw new Error("async nope");
+    }, "doing thing");
+    const r = await wrapped({});
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("doing thing: async nope");
+  });
+
+  it("withErrorHandling stringifies non-Error throws", async () => {
     const wrapped = withErrorHandling(() => {
       throw "raw string";
     }, "ctx");
-    expect(wrapped({}).content[0].text).toBe("ctx: raw string");
+    expect((await wrapped({})).content[0].text).toBe("ctx: raw string");
   });
 });

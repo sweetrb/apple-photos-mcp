@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PhotosManager } from "./services/photosManager.js";
+import { killActiveSidecars } from "./utils/python.js";
 import { successResponse, withErrorHandling } from "./tools/respond.js";
 import { runDoctor, formatDoctorReport } from "./tools/doctor.js";
 import { registerResourcesAndPrompts } from "./tools/resourcesAndPrompts.js";
@@ -47,7 +48,7 @@ server.registerTool(
   {
     description:
       "Use when: you want a quick smoke test that osxphotos is installed and the Photos library can be opened.\n" +
-      "Returns: ok/fail plus the osxphotos version, library path, and total photo count.\n" +
+      "Returns: ok/fail plus the osxphotos version, library path, and total photo count. While another operation (a long query or export) is running, it responds immediately with a liveness summary instead of queueing behind it — re-run after the operation completes for the full result.\n" +
       "Do not use when: you need a full setup diagnostic that pinpoints whether the failure is a missing osxphotos, an unreadable library, or denied Full Disk Access — use doctor instead.",
     inputSchema: {},
     outputSchema: {
@@ -55,8 +56,8 @@ server.registerTool(
       message: z.string().optional(),
     },
   },
-  withErrorHandling(() => {
-    const result = manager.healthCheck();
+  withErrorHandling(async () => {
+    const result = await manager.healthCheck();
     return successResponse(result.ok ? `OK ${result.message}` : `FAIL ${result.message}`, {
       ...result,
     });
@@ -87,8 +88,8 @@ server.registerTool(
         .optional(),
     },
   },
-  withErrorHandling(() => {
-    const report = runDoctor(manager);
+  withErrorHandling(async () => {
+    const report = await runDoctor(manager);
     return successResponse(formatDoctorReport(report), { ...report });
   }, "doctor")
 );
@@ -115,8 +116,8 @@ server.registerTool(
       personCount: z.number().optional(),
     },
   },
-  withErrorHandling(({ library }) => {
-    const info = manager.getLibraryInfo(library);
+  withErrorHandling(async ({ library }) => {
+    const info = await manager.getLibraryInfo(library);
     return successResponse(
       `Library: ${info.libraryPath}\n` +
         `Photos DB version: ${info.dbVersion} (Photos.app ${info.photosVersion})\n\n` +
@@ -185,8 +186,8 @@ server.registerTool(
       photos: z.array(z.object({}).passthrough()).optional(),
     },
   },
-  withErrorHandling(({ library, ...filters }) => {
-    const result = manager.query(filters, library);
+  withErrorHandling(async ({ library, ...filters }) => {
+    const result = await manager.query(filters, library);
     if (result.count === 0) {
       return successResponse("No photos matched the query.", {
         count: 0,
@@ -240,8 +241,8 @@ server.registerTool(
       photo: z.object({}).passthrough().optional(),
     },
   },
-  withErrorHandling(({ library, uuid }) => {
-    const p = manager.getPhoto(uuid, library);
+  withErrorHandling(async ({ library, uuid }) => {
+    const p = await manager.getPhoto(uuid, library);
     const lines = [
       `UUID:        ${p.uuid}`,
       `Filename:    ${p.filename}`,
@@ -283,8 +284,8 @@ server.registerTool(
       albums: z.array(z.object({}).passthrough()).optional(),
     },
   },
-  withErrorHandling(({ library }) => {
-    const { count, albums } = manager.listAlbums(library);
+  withErrorHandling(async ({ library }) => {
+    const { count, albums } = await manager.listAlbums(library);
     if (count === 0) return successResponse("No albums.", { count: 0, albums: [] });
     const lines = albums.map((a) => {
       const path = a.folder.length ? `${a.folder.join(" / ")} / ` : "";
@@ -309,8 +310,8 @@ server.registerTool(
       folders: z.array(z.object({}).passthrough()).optional(),
     },
   },
-  withErrorHandling(({ library }) => {
-    const { count, folders } = manager.listFolders(library);
+  withErrorHandling(async ({ library }) => {
+    const { count, folders } = await manager.listFolders(library);
     if (count === 0) return successResponse("No folders.", { count: 0, folders: [] });
     const lines = folders.map(
       (f) =>
@@ -337,8 +338,8 @@ server.registerTool(
       keywords: z.array(z.object({}).passthrough()).optional(),
     },
   },
-  withErrorHandling(({ library, limit }) => {
-    const { count, keywords } = manager.listKeywords(limit, library);
+  withErrorHandling(async ({ library, limit }) => {
+    const { count, keywords } = await manager.listKeywords(limit, library);
     if (count === 0) return successResponse("No keywords.", { count: 0, keywords: [] });
     const lines = keywords.map((k) => `${k.count.toString().padStart(6)}  ${k.keyword}`);
     return successResponse(`${count} keyword(s):\n\n${lines.join("\n")}`, { count, keywords });
@@ -362,8 +363,8 @@ server.registerTool(
       persons: z.array(z.object({}).passthrough()).optional(),
     },
   },
-  withErrorHandling(({ library, limit }) => {
-    const { count, persons } = manager.listPersons(limit, library);
+  withErrorHandling(async ({ library, limit }) => {
+    const { count, persons } = await manager.listPersons(limit, library);
     if (count === 0) return successResponse("No persons.", { count: 0, persons: [] });
     const lines = persons.map((p) => `${p.count.toString().padStart(6)}  ${p.name}`);
     return successResponse(`${count} person(s):\n\n${lines.join("\n")}`, { count, persons });
@@ -403,8 +404,8 @@ server.registerTool(
       skipped: z.array(z.object({}).passthrough()).optional(),
     },
   },
-  withErrorHandling(({ library, uuid, dest, edited, live, raw, overwrite }) => {
-    const result = manager.exportPhotos(uuid, dest, {
+  withErrorHandling(async ({ library, uuid, dest, edited, live, raw, overwrite }) => {
+    const result = await manager.exportPhotos(uuid, dest, {
       edited,
       live,
       raw,
@@ -435,22 +436,28 @@ async function main() {
   // must never take down this long-lived MCP server. EPIPE on stdout means the
   // MCP client disconnected — exit cleanly rather than crash.
   process.on("uncaughtException", (err) => {
-    if ((err as NodeJS.ErrnoException)?.code === "EPIPE") process.exit(0);
+    if ((err as NodeJS.ErrnoException)?.code === "EPIPE") {
+      killActiveSidecars();
+      process.exit(0);
+    }
     console.error("[uncaughtException]", err);
   });
   process.on("unhandledRejection", (reason) => {
     console.error("[unhandledRejection]", reason);
   });
 
-  // Deterministic shutdown: every osxphotos/AppleScript child is spawned
-  // synchronously (execFileSync), so there is nothing to await — exit cleanly on
-  // the usual termination signals and when the client closes stdin (EOF), rather
-  // than lingering as an orphan after the MCP host goes away.
+  // Deterministic shutdown: sidecar children run asynchronously (execFile), so
+  // these handlers actually fire mid-operation — with the old execFileSync
+  // layer, signal callbacks queued behind the blocked event loop and the host
+  // had to escalate to SIGKILL during long exports. Kill any in-flight python
+  // child before exiting so an exiting server can't orphan a sidecar that
+  // could otherwise keep running (an iCloud export can take many minutes).
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error(`[shutdown] ${signal} received, exiting`);
+    killActiveSidecars();
     process.exit(0);
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));

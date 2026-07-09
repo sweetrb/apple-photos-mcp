@@ -7,12 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  acquireSetupLock,
-  releaseSetupLock,
-  sleepSyncMs,
-  waitForCompletion,
-} from "../utils/setupLock.js";
+import { acquireSetupLock, releaseSetupLock, waitForCompletion } from "../utils/setupLock.js";
 
 const STALE_MS = 60_000;
 
@@ -78,15 +73,15 @@ describe("releaseSetupLock", () => {
 });
 
 describe("waitForCompletion", () => {
-  it("returns true immediately when already complete (no sleeping)", () => {
+  it("resolves true immediately when already complete (no sleeping)", async () => {
     const start = Date.now();
-    expect(waitForCompletion(() => true, 5_000, 1_000)).toBe(true);
+    await expect(waitForCompletion(() => true, 5_000, 1_000)).resolves.toBe(true);
     expect(Date.now() - start).toBeLessThan(500);
   });
 
-  it("polls until the condition flips true", () => {
+  it("polls until the condition flips true", async () => {
     let calls = 0;
-    const ok = waitForCompletion(
+    const ok = await waitForCompletion(
       () => {
         calls += 1;
         return calls >= 3;
@@ -98,18 +93,25 @@ describe("waitForCompletion", () => {
     expect(calls).toBe(3);
   });
 
-  it("returns false when the condition never completes within the timeout", () => {
+  it("resolves false when the condition never completes within the timeout", async () => {
     const start = Date.now();
-    expect(waitForCompletion(() => false, 100, 10)).toBe(false);
+    await expect(waitForCompletion(() => false, 100, 10)).resolves.toBe(false);
     // Bounded: it gave up around the timeout, not much later.
     expect(Date.now() - start).toBeLessThan(2_000);
   });
-});
 
-describe("sleepSyncMs", () => {
-  it("blocks for at least the requested duration", () => {
-    const start = Date.now();
-    sleepSyncMs(30);
-    expect(Date.now() - start).toBeGreaterThanOrEqual(25);
+  it("does NOT block the event loop while polling (awaitable, not Atomics.wait)", async () => {
+    // A timer scheduled before the wait must fire DURING the wait — with the
+    // old synchronous Atomics.wait sleep it could only fire after.
+    let timerFired = false;
+    const timer = new Promise<void>((r) =>
+      setTimeout(() => {
+        timerFired = true;
+        r();
+      }, 30)
+    );
+    await waitForCompletion(() => timerFired, 5_000, 10);
+    await timer;
+    expect(timerFired).toBe(true);
   });
 });

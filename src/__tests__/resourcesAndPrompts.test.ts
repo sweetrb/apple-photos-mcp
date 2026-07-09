@@ -50,27 +50,27 @@ describe("registerResourcesAndPrompts", () => {
     ]);
   });
 
-  it("library resource returns the manager's library info as JSON", () => {
+  it("library resource returns the manager's library info as JSON", async () => {
     const server = fakeServer();
     registerResourcesAndPrompts(server as never, mockManager());
-    const out = server.resources.get("library")!(new URL("photos://library")) as {
+    const out = (await server.resources.get("library")!(new URL("photos://library"))) as {
       contents: { text: string }[];
     };
     expect(JSON.parse(out.contents[0].text)).toEqual({ libraryPath: "/L", photoCount: 3 });
   });
 
-  it("photo template resource decodes the uuid variable", () => {
+  it("photo template resource decodes the uuid variable", async () => {
     const server = fakeServer();
-    const getPhoto = vi.fn((uuid: string) => ({ uuid, filename: "p.jpg" }));
+    const getPhoto = vi.fn(async (uuid: string) => ({ uuid, filename: "p.jpg" }));
     registerResourcesAndPrompts(server as never, mockManager({ getPhoto }));
-    const out = server.resources.get("photo")!(new URL("photos://photo/ABC%20123"), {
+    const out = (await server.resources.get("photo")!(new URL("photos://photo/ABC%20123"), {
       uuid: "ABC%20123",
-    }) as { contents: { text: string }[] };
+    })) as { contents: { text: string }[] };
     expect(getPhoto).toHaveBeenCalledWith("ABC 123");
     expect(JSON.parse(out.contents[0].text).uuid).toBe("ABC 123");
   });
 
-  it("a failing resource returns a JSON error payload instead of throwing", () => {
+  it("a failing resource returns a JSON error payload instead of rejecting", async () => {
     const server = fakeServer();
     registerResourcesAndPrompts(
       server as never,
@@ -80,7 +80,7 @@ describe("registerResourcesAndPrompts", () => {
         },
       })
     );
-    const out = server.resources.get("library")!(new URL("photos://library")) as {
+    const out = (await server.resources.get("library")!(new URL("photos://library"))) as {
       contents: { text: string }[];
     };
     expect(JSON.parse(out.contents[0].text).error).toContain("not permitted");

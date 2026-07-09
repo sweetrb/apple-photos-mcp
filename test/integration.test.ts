@@ -28,10 +28,10 @@ let mgr: PhotosManager;
 // every test in the live block skips itself.
 let live = false;
 
-beforeAll(() => {
+beforeAll(async () => {
   mgr = new PhotosManager();
   try {
-    const health = mgr.healthCheck();
+    const health = await mgr.healthCheck();
     live = health.ok === true;
   } catch {
     // osxphotos / Photos unavailable — every live test will skip
@@ -65,27 +65,27 @@ describe("PhotosManager construction", () => {
 // ===========================================================================
 
 describe("live Photos library", { timeout: 120_000 }, () => {
-  it("reports a healthy health-check with version + photo count", (ctx) => {
+  it("reports a healthy health-check with version + photo count", async (ctx) => {
     if (!live) ctx.skip();
-    const health = mgr.healthCheck();
+    const health = await mgr.healthCheck();
     expect(health.ok).toBe(true);
     // Message embeds "osxphotos <version>, library <path> (<n> photos)".
     expect(health.message).toMatch(/osxphotos/i);
     expect(health.message).toMatch(/\d+\s+photos/i);
   });
 
-  it("returns library info with a path and a non-negative photo count", (ctx) => {
+  it("returns library info with a path and a non-negative photo count", async (ctx) => {
     if (!live) ctx.skip();
-    const info = mgr.getLibraryInfo();
+    const info = await mgr.getLibraryInfo();
     expect(typeof info.libraryPath).toBe("string");
     expect(info.libraryPath.length).toBeGreaterThan(0);
     expect(typeof info.photoCount).toBe("number");
     expect(info.photoCount).toBeGreaterThanOrEqual(0);
   });
 
-  it("queries a small page of well-formed photo summaries", (ctx) => {
+  it("queries a small page of well-formed photo summaries", async (ctx) => {
     if (!live) ctx.skip();
-    const result = mgr.query({ limit: 3 });
+    const result = await mgr.query({ limit: 3 });
     // count is the TOTAL match count; returned is the post-limit page size.
     expect(typeof result.count).toBe("number");
     expect(typeof result.returned).toBe("number");
@@ -101,42 +101,42 @@ describe("live Photos library", { timeout: 120_000 }, () => {
     }
   });
 
-  it("lists albums with a count and an array", (ctx) => {
+  it("lists albums with a count and an array", async (ctx) => {
     if (!live) ctx.skip();
-    const res = mgr.listAlbums();
+    const res = await mgr.listAlbums();
     expect(typeof res.count).toBe("number");
     expect(res.count).toBeGreaterThanOrEqual(0);
     expect(Array.isArray(res.albums)).toBe(true);
   });
 
-  it("lists keywords with a count and an array", (ctx) => {
+  it("lists keywords with a count and an array", async (ctx) => {
     if (!live) ctx.skip();
-    const res = mgr.listKeywords(5);
+    const res = await mgr.listKeywords(5);
     expect(typeof res.count).toBe("number");
     expect(res.count).toBeGreaterThanOrEqual(0);
     expect(Array.isArray(res.keywords)).toBe(true);
     expect(res.keywords.length).toBeLessThanOrEqual(5);
   });
 
-  it("lists persons with a count and an array", (ctx) => {
+  it("lists persons with a count and an array", async (ctx) => {
     if (!live) ctx.skip();
-    const res = mgr.listPersons(5);
+    const res = await mgr.listPersons(5);
     expect(typeof res.count).toBe("number");
     expect(res.count).toBeGreaterThanOrEqual(0);
     expect(Array.isArray(res.persons)).toBe(true);
     expect(res.persons.length).toBeLessThanOrEqual(5);
   });
 
-  it("fetches a single photo's detail by uuid (matching round-trip)", (ctx) => {
+  it("fetches a single photo's detail by uuid (matching round-trip)", async (ctx) => {
     if (!live) ctx.skip();
-    const result = mgr.query({ limit: 1 });
+    const result = await mgr.query({ limit: 1 });
     if (result.returned < 1) {
       // Empty library — nothing to round-trip, but the query itself worked.
       ctx.skip();
       return;
     }
     const uuid = result.photos[0].uuid;
-    const detail = mgr.getPhoto(uuid);
+    const detail = await mgr.getPhoto(uuid);
     expect(detail.uuid).toBe(uuid);
   });
 });

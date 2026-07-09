@@ -102,7 +102,11 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 - **iCloud-only originals are slow.** If an original isn't on disk, `export`
   falls back to Photos.app to download it on demand — slower for large batches,
   and skipped (with a per-UUID reason) if the download fails. See
-  [docs/LIMITATIONS.md](./docs/LIMITATIONS.md).
+  [docs/LIMITATIONS.md](./docs/LIMITATIONS.md). The server stays responsive
+  while a long export (or query) runs: operations are serialized one-at-a-time,
+  and a concurrent `health-check` returns a quick liveness summary — while
+  `doctor` still reports the interpreter/osxphotos checks and marks the
+  library probe as skipped — instead of hanging until the operation finishes.
 - **Non-default libraries.** Every tool accepts an optional `library` path to
   target a `.photoslibrary` other than the system one.
 
@@ -110,7 +114,7 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 
 | Tool | Purpose |
 |------|---------|
-| `health-check` | Verify osxphotos is installed and the library opens |
+| `health-check` | Verify osxphotos is installed and the library opens (while another operation is running it answers immediately with a liveness summary instead of queueing behind it) |
 | `doctor` | Full setup diagnostic — Python interpreter version, osxphotos install, library readability, and Full Disk Access, each ok/warn/fail with advice (richer than `health-check`) |
 | `library-info` | High-level counts (photos, movies, albums, folders, keywords, persons) |
 | `query` | Find photos by date/album/keyword/person/flags → returns UUIDs |

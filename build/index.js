@@ -21359,7 +21359,7 @@ import { homedir as homedir2 } from "node:os";
 import { join as join4, resolve as resolve2 } from "node:path";
 
 // src/utils/python.ts
-import { execSync, execFileSync } from "node:child_process";
+import { execSync, execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join as join2, parse as parse3 } from "node:path";
@@ -21413,17 +21413,44 @@ function releaseSetupLock(lockDir) {
   } catch {
   }
 }
-function sleepSyncMs(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function sleepMs(ms) {
+  return new Promise((resolve3) => setTimeout(resolve3, ms));
 }
-function waitForCompletion(isComplete, timeoutMs, pollMs = 1e3) {
+async function waitForCompletion(isComplete, timeoutMs, pollMs = 1e3) {
   const deadline = Date.now() + timeoutMs;
   for (; ; ) {
     if (isComplete()) return true;
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;
-    sleepSyncMs(Math.min(pollMs, remaining));
+    await sleepMs(Math.min(pollMs, remaining));
   }
+}
+
+// src/utils/serialize.ts
+function createSerialGate(settleMs = 0) {
+  let tail = Promise.resolve();
+  let pending = 0;
+  const gate = (task) => {
+    pending += 1;
+    const result = tail.then(task);
+    tail = result.then(
+      () => {
+        pending -= 1;
+        return settle(settleMs);
+      },
+      () => {
+        pending -= 1;
+        return settle(settleMs);
+      }
+    );
+    return result;
+  };
+  Object.defineProperty(gate, "pending", { get: () => pending });
+  return gate;
+}
+function settle(ms) {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve3) => setTimeout(resolve3, ms));
 }
 
 // src/utils/python.ts
@@ -21479,9 +21506,13 @@ function venvIsReady() {
   const marker = readIfExists(depsMarkerPath());
   return marker !== null && marker.trim() === reqs.trim();
 }
+function isVenvReady() {
+  return venvIsReady();
+}
 var cachedPython = null;
 var readyConfirmed = false;
 var bootstrapAttempted = false;
+var bootstrapPromise = null;
 function findSystemPython() {
   for (const cmd of ["python3", "python"]) {
     try {
@@ -21523,7 +21554,38 @@ function bootstrapTimeoutMs() {
 function lockStaleMs() {
   return Math.max(2 * bootstrapTimeoutMs(), 10 * 60 * 1e3);
 }
-function bootstrapVenv() {
+var activeChildren = /* @__PURE__ */ new Set();
+function killActiveSidecars() {
+  for (const child of activeChildren) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+    }
+  }
+  activeChildren.clear();
+}
+function execFileAsync(file, args, options = {}) {
+  return new Promise((resolve3, reject) => {
+    const child = execFile(
+      file,
+      args,
+      { encoding: "utf-8", killSignal: "SIGKILL", ...options },
+      (error2, stdout, stderr) => {
+        activeChildren.delete(child);
+        if (error2) {
+          const e = error2;
+          e.stdout = stdout;
+          e.stderr = stderr;
+          reject(e);
+        } else {
+          resolve3(stdout);
+        }
+      }
+    );
+    activeChildren.add(child);
+  });
+}
+async function bootstrapVenv() {
   bootstrapAttempted = true;
   const setup = setupScriptPath();
   if (!existsSync(setup)) return false;
@@ -21532,7 +21594,7 @@ function bootstrapVenv() {
     console.error(
       `[photos-mcp] Another process is already setting up the Python venv (lock: ${lockDir}) \u2014 waiting for it to finish\u2026`
     );
-    if (waitForCompletion(() => venvIsReady(), bootstrapTimeoutMs())) {
+    if (await waitForCompletion(() => venvIsReady(), bootstrapTimeoutMs())) {
       console.error("[photos-mcp] Python venv ready (set up by another process).");
       cachedPython = null;
       readyConfirmed = false;
@@ -21547,10 +21609,8 @@ function bootstrapVenv() {
     `[photos-mcp] ${PACKAGE} not ready \u2014 setting up the Python venv (one-time; this can take a minute)\u2026`
   );
   try {
-    const out = execFileSync("bash", [setup], {
-      encoding: "utf-8",
+    const out = await execFileAsync("bash", [setup], {
       timeout: bootstrapTimeoutMs(),
-      stdio: ["ignore", "pipe", "pipe"],
       // The lock is already held by this process — tell setup.sh not to
       // re-acquire (it would deadlock waiting on its own parent).
       env: { ...process.env, [`${ENV_PREFIX}_SETUP_LOCK_HELD`]: "1" }
@@ -21571,14 +21631,21 @@ function bootstrapVenv() {
     releaseSetupLock(lockDir);
   }
 }
-function ensureReady() {
+function attemptBootstrap() {
+  if (bootstrapPromise === null) {
+    bootstrapPromise = bootstrapVenv();
+  }
+  return bootstrapPromise;
+}
+async function ensureReady() {
   if (readyConfirmed) return;
   if (venvIsReady()) {
     readyConfirmed = true;
     return;
   }
-  if (bootstrapAttempted || autoSetupDisabled()) return;
-  if (bootstrapVenv() && venvIsReady()) {
+  if (autoSetupDisabled()) return;
+  if (bootstrapAttempted && bootstrapPromise === null) return;
+  if (await attemptBootstrap() && venvIsReady()) {
     readyConfirmed = true;
   }
 }
@@ -21588,7 +21655,7 @@ function looksLikeMissingDep(message) {
 function setupHint() {
   return `Install it with: pip3 install osxphotos (requires Python >= 3.11; stock macOS ships 3.9 \u2014 brew install python@3.12), or run scripts/setup.sh from a repo checkout. Run the doctor tool to diagnose, or see ${TROUBLESHOOTING_URL} (set ${ENV_PREFIX}_NO_AUTO_SETUP=0 to allow automatic setup).`;
 }
-function execReader(command, args, timeoutMs) {
+async function execReader(command, args, timeoutMs) {
   const python = resolvePython();
   const scriptPath = getScriptPath();
   const fullArgs = [scriptPath, command, ...args];
@@ -21596,11 +21663,9 @@ function execReader(command, args, timeoutMs) {
     console.error(`[photos-mcp] ${python} ${fullArgs.join(" ")}`);
   }
   try {
-    const stdout = execFileSync(python, fullArgs, {
-      encoding: "utf-8",
+    const stdout = await execFileAsync(python, fullArgs, {
       timeout: timeoutMs,
-      maxBuffer: getMaxBuffer(),
-      stdio: ["pipe", "pipe", "pipe"]
+      maxBuffer: getMaxBuffer()
     });
     const result = JSON.parse(stdout.trim());
     if (result.error) {
@@ -21627,7 +21692,8 @@ function execReader(command, args, timeoutMs) {
     if (stderr.includes(`${PACKAGE} not installed`) || looksLikeMissingDep(stderr)) {
       return { error: `${PACKAGE} not installed. ${setupHint()}` };
     }
-    if (error2.message?.includes("ETIMEDOUT") || error2.message?.includes("timed out")) {
+    const bufferExceeded = /maxBuffer.*exceeded/i.test(error2.message ?? "");
+    if (error2.killed === true && !bufferExceeded || error2.message?.includes("ETIMEDOUT") || error2.message?.includes("timed out")) {
       return {
         error: `Operation timed out after ${timeoutMs}ms. Library may be very large. Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`
       };
@@ -21656,41 +21722,37 @@ function getDefaultTimeout() {
   }
   return DEFAULT_TIMEOUT_MS;
 }
-function runPhotosReader(command, args, timeoutMs) {
-  ensureReady();
-  const timeout = timeoutMs ?? getDefaultTimeout();
-  const result = execReader(command, args, timeout);
-  if (result.error && looksLikeMissingDep(result.error) && !bootstrapAttempted && !autoSetupDisabled()) {
-    if (bootstrapVenv()) {
-      return execReader(command, args, timeout);
-    }
-  }
-  return result;
+var sidecarGate = createSerialGate(0);
+function sidecarBusy() {
+  return sidecarGate.pending > 0;
 }
-function getPythonInfo() {
+async function runPhotosReader(command, args, timeoutMs) {
+  return sidecarGate(async () => {
+    await ensureReady();
+    const timeout = timeoutMs ?? getDefaultTimeout();
+    const result = await execReader(command, args, timeout);
+    if (result.error && looksLikeMissingDep(result.error) && !bootstrapAttempted && !autoSetupDisabled()) {
+      if (await attemptBootstrap()) {
+        return execReader(command, args, timeout);
+      }
+    }
+    return result;
+  });
+}
+async function getPythonInfo() {
   try {
     const python = resolvePython();
-    const version3 = execFileSync(python, ["--version"], {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"]
-    }).trim();
+    const version3 = (await execFileAsync(python, ["--version"])).trim();
     return { path: python, version: version3 };
   } catch {
     return null;
   }
 }
-function checkDependencies() {
-  ensureReady();
+async function checkDependencies() {
+  await ensureReady();
   try {
     const python = resolvePython();
-    const version3 = execFileSync(
-      python,
-      ["-c", `import ${PACKAGE}; print(${PACKAGE}.__version__)`],
-      {
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"]
-      }
-    ).trim();
+    const version3 = (await execFileAsync(python, ["-c", `import ${PACKAGE}; print(${PACKAGE}.__version__)`])).trim();
     return { ok: true, message: `${PACKAGE} ${version3} available` };
   } catch {
     return {
@@ -21787,6 +21849,16 @@ var PhotosManager = class {
    */
   cache = /* @__PURE__ */ new Map();
   /**
+   * In-flight coalescing for the same catalog commands: now that calls are
+   * async, two concurrent same-key requests can overlap before either result
+   * lands in the mtime cache. The second joins the first's pending promise
+   * instead of queueing a duplicate sidecar spawn behind the serial gate.
+   * Entries are keyed like the cache and carry the mtime observed at spawn
+   * time, so a call that sees a *different* mtime (library changed mid-flight)
+   * never joins a stale in-flight result.
+   */
+  inFlight = /* @__PURE__ */ new Map();
+  /**
    * Build the CLI args common to every subcommand.
    * Library path is optional; when omitted, osxphotos uses the system library.
    */
@@ -21800,22 +21872,39 @@ var PhotosManager = class {
       return null;
     }
   }
-  run(command, args, timeoutMs, library) {
+  async run(command, args, timeoutMs, library) {
     const cacheable = CACHEABLE_COMMANDS.has(command);
     let cacheKey = null;
     let mtimeMs = null;
     if (cacheable) {
       mtimeMs = this.dbMtimeMs(library);
       if (mtimeMs !== null) {
-        cacheKey = `${command}\0${JSON.stringify(args)}\0${libraryDbFile(library)}`;
+        cacheKey = `${command} ${JSON.stringify(args)} ${libraryDbFile(library)}`;
         const hit = this.cache.get(cacheKey);
         if (hit && hit.mtimeMs === mtimeMs) {
           return hit.data;
         }
         if (hit) this.cache.delete(cacheKey);
+        const pending = this.inFlight.get(cacheKey);
+        if (pending && pending.mtimeMs === mtimeMs) {
+          return pending.promise;
+        }
       }
     }
-    const result = runPhotosReader(command, args, timeoutMs);
+    const promise = this.spawnAndCache(command, args, timeoutMs, cacheKey, mtimeMs);
+    if (cacheKey !== null && mtimeMs !== null) {
+      const key = cacheKey;
+      const entry = { mtimeMs, promise };
+      this.inFlight.set(key, entry);
+      const cleanup = () => {
+        if (this.inFlight.get(key) === entry) this.inFlight.delete(key);
+      };
+      void promise.then(cleanup, cleanup);
+    }
+    return promise;
+  }
+  async spawnAndCache(command, args, timeoutMs, cacheKey, mtimeMs) {
+    const result = await runPhotosReader(command, args, timeoutMs);
     if (result.error) {
       throw new Error(augmentPermissionError(result.error));
     }
@@ -21832,11 +21921,17 @@ var PhotosManager = class {
     }
     return result.data;
   }
-  healthCheck() {
-    const dep = checkDependencies();
+  async healthCheck() {
+    if (sidecarBusy()) {
+      return {
+        ok: true,
+        message: `server responsive; a sidecar operation is currently in flight, so the library probe was skipped (Python deps: ${isVenvReady() ? "venv ready" : "not verified"}). Re-run health-check after the operation completes for the full result.`
+      };
+    }
+    const dep = await checkDependencies();
     if (!dep.ok) return dep;
     try {
-      const result = this.run("health", []);
+      const result = await this.run("health", []);
       return {
         ok: true,
         message: `osxphotos ${result.osxphotosVersion}, library ${result.libraryPath} (${result.photoCount} photos)`
@@ -21848,10 +21943,10 @@ var PhotosManager = class {
       };
     }
   }
-  getLibraryInfo(library) {
+  async getLibraryInfo(library) {
     return this.run("library-info", this.libraryArgs(library), void 0, library);
   }
-  query(filters, library) {
+  async query(filters, library) {
     const args = this.libraryArgs(library);
     const repeatable = [
       ["uuid", "--uuid"],
@@ -21880,30 +21975,30 @@ var PhotosManager = class {
     if (filters.limit !== void 0) args.push(flagArg("--limit", filters.limit));
     return this.run("query", args);
   }
-  getPhoto(uuid2, library) {
-    const result = this.run("get-photo", [
+  async getPhoto(uuid2, library) {
+    const result = await this.run("get-photo", [
       ...this.libraryArgs(library),
       flagArg("--uuid", uuid2)
     ]);
     return result.photo;
   }
-  listAlbums(library) {
+  async listAlbums(library) {
     return this.run("list-albums", this.libraryArgs(library), void 0, library);
   }
-  listFolders(library) {
+  async listFolders(library) {
     return this.run("list-folders", this.libraryArgs(library), void 0, library);
   }
-  listKeywords(limit, library) {
+  async listKeywords(limit, library) {
     const args = this.libraryArgs(library);
     if (limit !== void 0) args.push(flagArg("--limit", limit));
     return this.run("list-keywords", args, void 0, library);
   }
-  listPersons(limit, library) {
+  async listPersons(limit, library) {
     const args = this.libraryArgs(library);
     if (limit !== void 0) args.push(flagArg("--limit", limit));
     return this.run("list-persons", args, void 0, library);
   }
-  exportPhotos(uuids, dest, options = {}) {
+  async exportPhotos(uuids, dest, options = {}) {
     if (uuids.length === 0) {
       throw new Error("At least one UUID is required to export");
     }
@@ -21936,9 +22031,9 @@ function errorResponse(message, structured) {
   return res;
 }
 function withErrorHandling(handler, prefix) {
-  return (params) => {
+  return async (params) => {
     try {
-      return handler(params);
+      return await handler(params);
     } catch (error2) {
       const msg = error2 instanceof Error ? error2.message : String(error2);
       return errorResponse(`${prefix}: ${msg}`);
@@ -21950,10 +22045,10 @@ function withErrorHandling(handler, prefix) {
 function looksLikePermissionError(message) {
   return /not permitted|permission|full disk|denied|unable to open/i.test(message);
 }
-function runDoctor(manager2) {
+async function runDoctor(manager2) {
   const checks = [];
   try {
-    const info = getPythonInfo();
+    const info = await getPythonInfo();
     if (info) {
       const m = /Python (\d+)\.(\d+)/.exec(info.version);
       const tooOld = m !== null && (Number(m[1]) < 3 || Number(m[1]) === 3 && Number(m[2]) < 11);
@@ -21977,7 +22072,7 @@ function runDoctor(manager2) {
     });
   }
   try {
-    const dep = checkDependencies();
+    const dep = await checkDependencies();
     checks.push({
       name: "osxphotos",
       status: dep.ok ? "ok" : "fail",
@@ -21992,8 +22087,22 @@ function runDoctor(manager2) {
   }
   let libraryOk = false;
   let libraryPermissionError = false;
+  if (sidecarBusy()) {
+    checks.push({
+      name: "photos_library",
+      status: "warn",
+      detail: "skipped \u2014 another sidecar operation (a long query or export) is in flight; re-run doctor when it completes"
+    });
+    checks.push({
+      name: "full_disk_access",
+      status: "warn",
+      detail: "could not verify \u2014 the library probe was skipped while a sidecar operation runs"
+    });
+    const healthy2 = !checks.some((c) => c.status === "fail");
+    return { healthy: healthy2, checks };
+  }
   try {
-    const info = manager2.getLibraryInfo();
+    const info = await manager2.getLibraryInfo();
     libraryOk = true;
     checks.push({
       name: "photos_library",
@@ -22043,30 +22152,30 @@ var json = (uri, data) => ({
   contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(data, null, 2) }]
 });
 function registerResourcesAndPrompts(server2, manager2) {
-  server2.resource("library", "photos://library", (uri) => {
+  server2.resource("library", "photos://library", async (uri) => {
     try {
-      return json(uri, manager2.getLibraryInfo());
+      return json(uri, await manager2.getLibraryInfo());
     } catch (err) {
       return json(uri, { error: err instanceof Error ? err.message : String(err) });
     }
   });
-  server2.resource("albums", "photos://albums", (uri) => {
+  server2.resource("albums", "photos://albums", async (uri) => {
     try {
-      return json(uri, manager2.listAlbums());
+      return json(uri, await manager2.listAlbums());
     } catch (err) {
       return json(uri, { error: err instanceof Error ? err.message : String(err) });
     }
   });
-  server2.resource("persons", "photos://persons", (uri) => {
+  server2.resource("persons", "photos://persons", async (uri) => {
     try {
-      return json(uri, manager2.listPersons());
+      return json(uri, await manager2.listPersons());
     } catch (err) {
       return json(uri, { error: err instanceof Error ? err.message : String(err) });
     }
   });
-  server2.resource("keywords", "photos://keywords", (uri) => {
+  server2.resource("keywords", "photos://keywords", async (uri) => {
     try {
-      return json(uri, manager2.listKeywords());
+      return json(uri, await manager2.listKeywords());
     } catch (err) {
       return json(uri, { error: err instanceof Error ? err.message : String(err) });
     }
@@ -22074,10 +22183,10 @@ function registerResourcesAndPrompts(server2, manager2) {
   server2.resource(
     "photo",
     new ResourceTemplate("photos://photo/{uuid}", { list: void 0 }),
-    (uri, variables) => {
+    async (uri, variables) => {
       try {
         const uuid2 = decodeURIComponent(String(variables.uuid));
-        return json(uri, manager2.getPhoto(uuid2));
+        return json(uri, await manager2.getPhoto(uuid2));
       } catch (err) {
         return json(uri, { error: err instanceof Error ? err.message : String(err) });
       }
@@ -22177,15 +22286,15 @@ var libraryArg = {
 server.registerTool(
   "health-check",
   {
-    description: "Use when: you want a quick smoke test that osxphotos is installed and the Photos library can be opened.\nReturns: ok/fail plus the osxphotos version, library path, and total photo count.\nDo not use when: you need a full setup diagnostic that pinpoints whether the failure is a missing osxphotos, an unreadable library, or denied Full Disk Access \u2014 use doctor instead.",
+    description: "Use when: you want a quick smoke test that osxphotos is installed and the Photos library can be opened.\nReturns: ok/fail plus the osxphotos version, library path, and total photo count. While another operation (a long query or export) is running, it responds immediately with a liveness summary instead of queueing behind it \u2014 re-run after the operation completes for the full result.\nDo not use when: you need a full setup diagnostic that pinpoints whether the failure is a missing osxphotos, an unreadable library, or denied Full Disk Access \u2014 use doctor instead.",
     inputSchema: {},
     outputSchema: {
       ok: external_exports.boolean().optional(),
       message: external_exports.string().optional()
     }
   },
-  withErrorHandling(() => {
-    const result = manager.healthCheck();
+  withErrorHandling(async () => {
+    const result = await manager.healthCheck();
     return successResponse(result.ok ? `OK ${result.message}` : `FAIL ${result.message}`, {
       ...result
     });
@@ -22207,8 +22316,8 @@ server.registerTool(
       ).optional()
     }
   },
-  withErrorHandling(() => {
-    const report = runDoctor(manager);
+  withErrorHandling(async () => {
+    const report = await runDoctor(manager);
     return successResponse(formatDoctorReport(report), { ...report });
   }, "doctor")
 );
@@ -22230,8 +22339,8 @@ server.registerTool(
       personCount: external_exports.number().optional()
     }
   },
-  withErrorHandling(({ library }) => {
-    const info = manager.getLibraryInfo(library);
+  withErrorHandling(async ({ library }) => {
+    const info = await manager.getLibraryInfo(library);
     return successResponse(
       `Library: ${info.libraryPath}
 Photos DB version: ${info.dbVersion} (Photos.app ${info.photosVersion})
@@ -22279,8 +22388,8 @@ server.registerTool(
       photos: external_exports.array(external_exports.object({}).passthrough()).optional()
     }
   },
-  withErrorHandling(({ library, ...filters }) => {
-    const result = manager.query(filters, library);
+  withErrorHandling(async ({ library, ...filters }) => {
+    const result = await manager.query(filters, library);
     if (result.count === 0) {
       return successResponse("No photos matched the query.", {
         count: 0,
@@ -22323,8 +22432,8 @@ server.registerTool(
       photo: external_exports.object({}).passthrough().optional()
     }
   },
-  withErrorHandling(({ library, uuid: uuid2 }) => {
-    const p = manager.getPhoto(uuid2, library);
+  withErrorHandling(async ({ library, uuid: uuid2 }) => {
+    const p = await manager.getPhoto(uuid2, library);
     const lines = [
       `UUID:        ${p.uuid}`,
       `Filename:    ${p.filename}`,
@@ -22358,8 +22467,8 @@ server.registerTool(
       albums: external_exports.array(external_exports.object({}).passthrough()).optional()
     }
   },
-  withErrorHandling(({ library }) => {
-    const { count, albums } = manager.listAlbums(library);
+  withErrorHandling(async ({ library }) => {
+    const { count, albums } = await manager.listAlbums(library);
     if (count === 0) return successResponse("No albums.", { count: 0, albums: [] });
     const lines = albums.map((a) => {
       const path = a.folder.length ? `${a.folder.join(" / ")} / ` : "";
@@ -22381,8 +22490,8 @@ server.registerTool(
       folders: external_exports.array(external_exports.object({}).passthrough()).optional()
     }
   },
-  withErrorHandling(({ library }) => {
-    const { count, folders } = manager.listFolders(library);
+  withErrorHandling(async ({ library }) => {
+    const { count, folders } = await manager.listFolders(library);
     if (count === 0) return successResponse("No folders.", { count: 0, folders: [] });
     const lines = folders.map(
       (f) => `${f.title}${f.parent ? ` (in ${f.parent})` : ""} \u2014 ${f.albumCount} albums, ${f.subfolderCount} subfolders`
@@ -22405,8 +22514,8 @@ server.registerTool(
       keywords: external_exports.array(external_exports.object({}).passthrough()).optional()
     }
   },
-  withErrorHandling(({ library, limit }) => {
-    const { count, keywords } = manager.listKeywords(limit, library);
+  withErrorHandling(async ({ library, limit }) => {
+    const { count, keywords } = await manager.listKeywords(limit, library);
     if (count === 0) return successResponse("No keywords.", { count: 0, keywords: [] });
     const lines = keywords.map((k) => `${k.count.toString().padStart(6)}  ${k.keyword}`);
     return successResponse(`${count} keyword(s):
@@ -22427,8 +22536,8 @@ server.registerTool(
       persons: external_exports.array(external_exports.object({}).passthrough()).optional()
     }
   },
-  withErrorHandling(({ library, limit }) => {
-    const { count, persons } = manager.listPersons(limit, library);
+  withErrorHandling(async ({ library, limit }) => {
+    const { count, persons } = await manager.listPersons(limit, library);
     if (count === 0) return successResponse("No persons.", { count: 0, persons: [] });
     const lines = persons.map((p) => `${p.count.toString().padStart(6)}  ${p.name}`);
     return successResponse(`${count} person(s):
@@ -22459,8 +22568,8 @@ server.registerTool(
       skipped: external_exports.array(external_exports.object({}).passthrough()).optional()
     }
   },
-  withErrorHandling(({ library, uuid: uuid2, dest, edited, live, raw, overwrite }) => {
-    const result = manager.exportPhotos(uuid2, dest, {
+  withErrorHandling(async ({ library, uuid: uuid2, dest, edited, live, raw, overwrite }) => {
+    const result = await manager.exportPhotos(uuid2, dest, {
       edited,
       live,
       raw,
@@ -22484,7 +22593,10 @@ server.registerTool(
 registerResourcesAndPrompts(server, manager);
 async function main() {
   process.on("uncaughtException", (err) => {
-    if (err?.code === "EPIPE") process.exit(0);
+    if (err?.code === "EPIPE") {
+      killActiveSidecars();
+      process.exit(0);
+    }
     console.error("[uncaughtException]", err);
   });
   process.on("unhandledRejection", (reason) => {
@@ -22495,6 +22607,7 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error(`[shutdown] ${signal} received, exiting`);
+    killActiveSidecars();
     process.exit(0);
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
