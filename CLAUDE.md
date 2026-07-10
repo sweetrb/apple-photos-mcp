@@ -30,6 +30,10 @@ workflow" below).
 - **[docs/QUERY-GUIDE.md](./docs/QUERY-GUIDE.md)** — `query` filter syntax in
   detail: accepted date forms, AND/OR combination semantics, exact-vs-substring
   matching, result ordering, and what is *not* filterable.
+- **[docs/WRITE-BACKEND.md](./docs/WRITE-BACKEND.md)** — why reads use osxphotos
+  (direct DB) and writes use photoscript/AppleScript, and why that split can't be
+  collapsed (no safe DB writes; osxphotos's own writes *are* AppleScript; PhotoKit
+  needs an app bundle). Read before proposing to "eliminate AppleScript" in writes.
 
 ## First-run requirements
 
