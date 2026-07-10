@@ -1,6 +1,6 @@
 # Apple Photos MCP Server
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI assistants like Claude to query, search, export, and inspect the macOS Apple Photos library, backed by the [osxphotos](https://github.com/RhetTbull/osxphotos) library.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI assistants like Claude to query, search, export, and inspect the macOS Apple Photos library — plus opt-in album and metadata write tools — backed by the [osxphotos](https://github.com/RhetTbull/osxphotos) library.
 
 [![npm version](https://img.shields.io/npm/v/apple-photos-mcp)](https://www.npmjs.com/package/apple-photos-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/apple-photos-mcp)](https://www.npmjs.com/package/apple-photos-mcp)
@@ -15,7 +15,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
   <img src="https://raw.githubusercontent.com/sweetrb/apple-photos-mcp/main/codex/assets/screenshot.png" alt="Apple Photos MCP — search, browse, and export the macOS Photos library from Codex, Claude, and other AI assistants" width="680">
 </p>
 
-> **Read-only against the Photos library.** Exports write files to a directory you choose, but the library itself is never modified.
+> **Read-only by default.** Out of the box the library is never modified — exports write files to a directory you choose, nothing more. A set of **opt-in [write tools](#write-tools-opt-in)** (albums, titles, descriptions, keywords, favorites — never deletion) unlocks only when you explicitly set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`; without that flag, 2.x behaves exactly like the read-only 1.x releases.
 
 ## What is This?
 
@@ -29,6 +29,7 @@ This server acts as a bridge between AI assistants and Apple Photos. Once config
 - "Do I have duplicate photos?" (`find-duplicates` groups exact duplicates)
 - "List my albums"
 - "Tell me everything about photo UUID ABC-123" — including EXIF camera data
+- With [writes enabled](#write-tools-opt-in): "File these into a Trailcam album", "Tag them all `deer`", "Favorite the best one and caption it"
 
 The AI assistant communicates with this server, which uses [osxphotos](https://github.com/RhetTbull/osxphotos) to read the Photos library SQLite database directly. All data stays local on your machine.
 
@@ -155,12 +156,24 @@ Auto-setup needs Python 3, `pip`, and network access. If any are missing — or 
 | **Multi-photo Export** | Export multiple UUIDs in a single call |
 | **Auto iCloud Download** | If an original isn't on disk, export falls back to Photos.app to download it on demand — no extra parameter needed |
 
+### Write tools (opt-in — read-only by default)
+
+| Feature | Description |
+|---------|-------------|
+| **Create Album** | `create-album` creates an album (optionally nested in a folder path); idempotent — an existing album of that name is returned instead of duplicated |
+| **Add to Album** | `add-to-album` files photos (by UUID) into an album; idempotent, reports added / already-present / not-found per UUID |
+| **Remove from Album** | `remove-from-album` takes photos out of an album — never out of the library (see [the caveats](#write-tools-opt-in)) |
+| **Set Metadata** | `set-photo-metadata` sets title / description / favorite, echoing before/after values so changes can be reverted |
+| **Set Keywords** | `set-keywords` adds/removes keywords with **union semantics** — existing keywords you don't mention are always preserved |
+
+All five are **disabled unless `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`** — see [Write tools (opt-in)](#write-tools-opt-in). None of them can delete a photo.
+
 ### Diagnostics
 
 | Feature | Description |
 |---------|-------------|
 | **Health Check** | Verify osxphotos is installed and the library can be opened |
-| **Doctor** | Richer setup diagnostic — five checks: Python interpreter (path + version), osxphotos install, sidecar mode (persistent vs one-shot fallback), Photos library readability, and Full Disk Access, each reported ok / warn / fail with actionable advice |
+| **Doctor** | Richer setup diagnostic — six checks: Python interpreter (path + version), osxphotos install, sidecar mode (persistent vs one-shot fallback), the write-tools gate (enabled/disabled + backend readiness), Photos library readability, and Full Disk Access, each reported ok / warn / fail with actionable advice |
 
 Read tools also return **structured JSON** (`structuredContent`) alongside the human-readable text, so agents can consume results without parsing prose.
 
@@ -170,6 +183,39 @@ Resources expose read-only context the client can attach without a tool call:
 `photos://library`, `photos://albums`, `photos://persons`, `photos://keywords`,
 and the `photos://photo/{uuid}` template (full metadata for one photo). Prompts
 package common workflows: `find-photos`, `export-photos`, `photo-summary`.
+
+---
+
+## Write tools (opt-in)
+
+**The server is read-only by default — nothing changes for existing users.** Version 2.0.0 adds five tools that can modify the Photos library (`create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`), and every one of them is refused with a clear error until you opt in:
+
+**Enable via environment variable** (e.g. in your MCP server config's `env` block, where the host honors it):
+
+```json
+{ "env": { "APPLE_PHOTOS_MCP_ENABLE_WRITES": "1" } }
+```
+
+**Or via the config file** (recommended for Claude Desktop, which strips `env`) — `~/Library/Application Support/apple-photos-mcp/config.json`:
+
+```json
+{
+  "APPLE_PHOTOS_MCP_ENABLE_WRITES": "1"
+}
+```
+
+Then **restart the MCP server** (restart the host app, or the conversation in hosts that spawn per-conversation servers). The `doctor` tool reports the gate state either way — run it first if a write tool returns "Write tools are disabled".
+
+The write tools stay **registered** even while disabled (MCP clients cache the tool list at startup, so hiding them would only hurt discoverability — a gated call returns the exact opt-in recipe instead).
+
+### Safety design
+
+- **No deletion, ever.** There is deliberately no tool that deletes a photo, an album, or a folder. `remove-from-album` changes album *membership* only — the photos stay in All Photos and every other album. For actual deletion, quarantine photos into an album (the [dedupe pattern](#duplicate-cleanup)) and delete inside Photos.app, where Recently Deleted gives you a 30-day safety net.
+- **Explicit targets only.** Every write takes explicit UUIDs or names — there are no "current selection" or wildcard/all-photos operations, and every target is validated to exist before anything is modified (unknown UUIDs come back as clear errors or per-UUID `notFound` lists).
+- **Bounded batches.** Album operations accept at most 100 UUIDs per call.
+- **Reversible by design.** Metadata writes echo before/after values so an agent can revert; `set-keywords` uses union semantics (read-merge-write) so keywords you don't mention are never clobbered; album adds are idempotent.
+- **The mechanism:** writes drive **Photos.app via AppleScript** (the [photoscript](https://github.com/RhetTbull/photoscript) library). Photos is launched if it isn't running, and macOS asks for **Automation permission** for the host app with a one-time system prompt on the first write. Writes always target the library **currently open in Photos.app** (normally the system library) — the `library` parameter of the read tools does not apply.
+- **One quirk to know:** Photos' AppleScript dictionary has no "remove from album" verb, so `remove-from-album` **rebuilds the album** (same name, remaining photos): the album's UUID changes (the response reports old and new) and any custom manual sort order is lost.
 
 ---
 
@@ -466,6 +512,72 @@ Export one or more photos by UUID to a destination directory.
 
 **Progress notifications:** For batch exports, the server emits one MCP progress notification per photo (`progress`/`total` plus a `message` naming the file being exported) when the client's request includes a `progressToken` — so hosts that surface progress can show a live counter instead of a silent multi-minute call. Clients that don't send a token simply get the final result, as before. (Progress requires the persistent sidecar; in the rare one-shot fallback mode the export still works but reports no intermediate progress.)
 
+### Write (opt-in — see [Write tools](#write-tools-opt-in))
+
+All five tools below require `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` and return a clear opt-in error otherwise. They drive Photos.app via AppleScript (macOS Automation permission; Photos is launched if needed), always target the library currently open in Photos.app (no `library` parameter), and can never delete photos.
+
+#### `create-album`
+
+Create an album — or return the existing one of that name (`created: false`), so re-running a filing workflow never piles up duplicates.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Album name (≤ 255 chars) |
+| `folder` | string | No | Folder path to nest the album under, `/`-separated for nesting (e.g. `"Trips/2026"`); folders are created as needed. (Folder names containing a literal `/` are not addressable.) |
+
+**Returns:** `album {uuid, name, path}` and `created`. Without `folder`, the idempotency check matches an album of that name anywhere in the library; with `folder`, only inside that folder.
+
+#### `add-to-album`
+
+Add photos (by UUID) to an album (by name or UUID). Idempotent — Photos albums are sets.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `album` | string | Yes | Album name or UUID (UUID-looking values try the id lookup first, then fall back to a name match) |
+| `uuid` | string[] | Yes | Photo UUID(s) to add (1–100) |
+
+**Returns:** `album {uuid, name, path}`, `addedCount`, `added`, `alreadyPresent` (members already in the album), and `notFound` (UUIDs that don't exist in the library). Fails only when the album doesn't exist or *no* requested photo exists.
+
+#### `remove-from-album`
+
+Remove photos from an album — **never from the library** (they remain in All Photos and every other album).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `album` | string | Yes | Album name or UUID |
+| `uuid` | string[] | Yes | Photo UUID(s) to remove from the album (1–100) |
+
+**Returns:** the album *after* the operation, `removedCount`, `removed`, `notInAlbum` (requested UUIDs that weren't members — harmless no-ops), `albumRecreated`, and `previousAlbumUuid`.
+
+**Album rebuild caveat:** Photos' AppleScript has no remove verb, so removal rebuilds the album (create replacement → copy the kept photos → delete the original → rename). The album's **UUID changes** (use `album.uuid` from the response) and custom manual sort order is lost. When none of the UUIDs are members, nothing is rebuilt (`albumRecreated: false`).
+
+#### `set-photo-metadata`
+
+Set a photo's title, description, and/or favorite flag. Only the fields you pass are touched.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `uuid` | string | Yes | Photo UUID |
+| `title` | string | No | New title (empty string clears it) |
+| `description` | string | No | New description (empty string clears it) |
+| `favorite` | boolean | No | Set or clear the favorite flag |
+
+**Returns:** `uuid`, `updated` (which fields were written), and full `before` / `after` values of all three fields — revert a change by writing the `before` values back.
+
+#### `set-keywords`
+
+Add and/or remove keywords on a photo with **union semantics**: the photo's current keywords are read first and the edits merged in, so keywords you don't mention are always preserved — never a blind replace.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `uuid` | string | Yes | Photo UUID |
+| `add` | string[] | No | Keywords to add (≤ 100; created in Photos if new) |
+| `remove` | string[] | No | Keywords to remove from this photo (≤ 100; exact match) |
+
+At least one of `add` / `remove` is required; a keyword in both is rejected.
+
+**Returns:** `uuid`, `before` / `after` keyword lists, `added` / `removed` (what actually changed — adding an existing keyword is a no-op), and `changed`. If the merge changes nothing, no write is performed.
+
 ---
 
 ## Usage Patterns
@@ -530,6 +642,28 @@ AI: [calls get-thumbnail on members of the first few groups to verify visually]
     "Each group is byte-identical — e.g. IMG_3588.HEIC appears twice..."
 AI: "I can't delete photos (read-only) — collect one copy of each into a
      quarantine album in Photos.app and delete from there."
+```
+
+With [writes enabled](#write-tools-opt-in), the AI can build that quarantine album itself — the **album-quarantine pattern** (deletion still happens only in Photos.app, with its 30-day Recently Deleted safety net):
+
+```
+User: "Quarantine the duplicate extras for me."
+AI: [calls create-album name="Duplicates — review & delete"]
+AI: [calls add-to-album with every group's extra copies (keeping the best of each)]
+    "312 extra copies are in 'Duplicates — review & delete'.
+     Review the album in Photos.app and delete from there."
+```
+
+### Tagging and Filing (write tools)
+
+```
+User: "Tag this week's trailcam imports and file them into the Trailcam album"
+AI: [calls query addedInLast="7d"] → UUIDs
+AI: [calls create-album name="Trailcam"]        (idempotent — returns the existing album)
+AI: [calls add-to-album album="Trailcam" uuid=[...]]
+AI: [calls set-keywords per photo, add=["trailcam"]]
+    "Filed 34 photos and tagged them 'trailcam' — existing keywords untouched
+     (set-keywords merges, never replaces)."
 ```
 
 ### Browsing Library Structure
@@ -654,6 +788,7 @@ All configuration is optional — the server works out of the box.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `APPLE_PHOTOS_MCP_ENABLE_WRITES` | unset (**read-only**) | Set to `1` to enable the [write tools](#write-tools-opt-in) (`create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`). Until then every write tool returns a clear opt-in error and the server cannot modify the library. Restart the server after changing it. |
 | `APPLE_PHOTOS_MCP_MAX_BUFFER` | `104857600` (100 MB) | Max bytes captured from the Python sidecar's stdout. Raise it if a very large library/query is truncated; lower it to cap memory. |
 | `APPLE_PHOTOS_MCP_TIMEOUT` | `60000` (60 s) | Default per-command timeout, in milliseconds, for the Python sidecar. The first (cold) call parses the whole Photos database, and on very large libraries (100k+ photos) that load alone can exceed 60 s — raise this if tools report "Operation timed out". `export` keeps its own 30-minute window. |
 | `APPLE_PHOTOS_MCP_PERSISTENT_SIDECAR` | unset (persistent mode on) | Set to `0` (or `false`) to disable the long-lived serve-mode sidecar and spawn a fresh Python process per call (pre-1.4.0 behavior). Every call then re-pays the full library parse — only useful for debugging. |
@@ -672,9 +807,12 @@ file the host doesn't manage — `APPLE_PHOTOS_MCP_CONFIG_FILE`, or by default
 
 ```json
 {
-  "APPLE_PHOTOS_MCP_MAX_BUFFER": "209715200"
+  "APPLE_PHOTOS_MCP_MAX_BUFFER": "209715200",
+  "APPLE_PHOTOS_MCP_ENABLE_WRITES": "1"
 }
 ```
+
+(The second line opts in to the [write tools](#write-tools-opt-in) — omit it to keep the server read-only.)
 
 The server reads it at startup and merges values into the environment **without
 overriding** anything already set there (so an explicit `env` still wins). This
@@ -713,7 +851,7 @@ This is the same TS + Python-sidecar pattern used by [apple-numbers-mcp](https:/
 ## Security and Privacy
 
 - **Local only** — All operations happen locally via osxphotos. No data is sent to external servers.
-- **Read-only** against the Photos library — the library is never modified.
+- **Read-only by default** — the library is never modified unless you explicitly set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (see [Write tools (opt-in)](#write-tools-opt-in)). Even with writes enabled, the tools are limited to album membership and photo metadata — **nothing can delete a photo** — and every write requires explicit UUIDs/names (no wildcard operations).
 - **Exports write to disk** — `export` writes files to the destination directory you specify, and only into an allowlisted location: the destination must resolve (symlinks included) to a path under your home directory, `/tmp`, `/private/tmp`, or `/Volumes`. Confirm destinations before running on shared machines.
 - **No credential storage** — The server doesn't store any passwords or authentication tokens.
 
@@ -726,7 +864,11 @@ For the full rundown — read-only scope, iCloud export caveats, face/album beha
 | Limitation | Reason |
 |------------|--------|
 | macOS only | Apple Photos and osxphotos are macOS-specific |
-| Read-only | osxphotos reads the Photos library; this server does not modify it |
+| Read-only by default | osxphotos reads the Photos library directly; the [write tools](#write-tools-opt-in) are opt-in (`APPLE_PHOTOS_MCP_ENABLE_WRITES=1`) and limited to albums + metadata |
+| No photo deletion | Deliberate: no tool deletes photos, albums, or folders — quarantine into an album and delete in Photos.app |
+| `remove-from-album` rebuilds the album | Photos' AppleScript has no remove verb — the album's UUID changes and manual sort order is lost |
+| Writes target the open library | AppleScript talks to whatever library Photos.app has open — the `library` parameter applies to read tools only |
+| Writes need Automation permission | Driving Photos.app via AppleScript triggers a one-time macOS Automation prompt for the host app |
 | Full Disk Access required | The Photos library SQLite database is in a protected directory |
 | iCloud-only export is slower | Originals that aren't on disk are downloaded on demand via Photos.app/AppleScript. The export still succeeds, but takes longer than a local copy and requires Photos.app to be installed and signed in to iCloud |
 | Photos.app may lock the library | If Photos.app is mid-write, opening the library can fail; close Photos.app and retry |
@@ -760,6 +902,15 @@ For the full rundown — read-only scope, iCloud export caveats, face/album beha
   - **"original not downloaded from iCloud (download attempt returned no files)"** — Photos.app couldn't fetch it. Check iCloud connectivity, that you're signed in, and that the photo isn't excluded by a Photos sync setting.
   - **"Photo does not have adjustments..."** — `edited=true` was requested but the photo has no edited version. Retry without that flag.
   - **"raw component not on disk (Photos.app fallback cannot fetch raw originals)"** — `raw=true` was requested but the raw file isn't downloaded locally. Retry without the flag, or download the original in Photos.app first (**File → Download Originals to this Mac**).
+
+### "Write tools are disabled — apple-photos-mcp is read-only by default"
+- Working as designed: the write tools require an explicit opt-in. Set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` in the server's environment or in `~/Library/Application Support/apple-photos-mcp/config.json`, then **restart the MCP server** — see [Write tools (opt-in)](#write-tools-opt-in).
+- Run the `doctor` tool to confirm the gate state (its `writes` check reports enabled/disabled and, when enabled, whether the photoscript backend and Photos.app look usable).
+
+### Write tools fail with an AppleScript / "not authorized" error
+- The host app needs **macOS Automation permission** to control Photos.app. The first write normally triggers a one-time system prompt — click OK. If it was denied, re-enable it under **System Settings → Privacy & Security → Automation → (your host app) → Photos**, then retry.
+- In headless contexts (no GUI session) the prompt can't be shown and the write fails with error `-1743`; run the first write from a normal GUI session once to grant it.
+- Writes launch Photos.app if it isn't running — the first write after a reboot can take noticeably longer while Photos starts.
 
 ### Photos.app errors when running
 - Closing Photos.app may resolve database-lock errors. osxphotos opens the library in read-only mode but still requires that no writer holds an exclusive lock.

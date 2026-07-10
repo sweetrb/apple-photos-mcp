@@ -1,1 +1,5 @@
 osxphotos>=0.69.0,<0.76
+# Direct dependency of the opt-in write tools (also an osxphotos transitive
+# dep). Pinned because photos_reader.py uses its script_loader.run_script for
+# bulk album-id calls — keep the floor/ceiling in step when bumping.
+photoscript>=0.5.3,<0.6

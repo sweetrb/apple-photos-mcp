@@ -5,8 +5,11 @@ import { runPhotosReader, checkDependencies, sidecarBusy, isVenvReady } from "..
 import type { SidecarProgress } from "../utils/sidecarClient.js";
 import { FDA_REMEDIATION } from "../utils/docsUrls.js";
 import { resolveExportDest } from "../utils/exportPath.js";
+import { assertWritesEnabled } from "../utils/writeGate.js";
 import type {
+  AddToAlbumResult,
   AlbumInfo,
+  CreateAlbumResult,
   DuplicateGroupsResult,
   ExportResult,
   FolderInfo,
@@ -17,6 +20,9 @@ import type {
   PhotoDetail,
   QueryFilters,
   QueryResult,
+  RemoveFromAlbumResult,
+  SetKeywordsResult,
+  SetPhotoMetadataResult,
   ThumbnailResult,
 } from "../types.js";
 
@@ -71,6 +77,16 @@ const CACHEABLE_COMMANDS = new Set([
 
 /** Keep the cache tiny — it only needs to absorb repeat catalog lookups. */
 const MAX_CACHE_ENTRIES = 8;
+
+/**
+ * Sidecar timeouts for the write commands. Generous because a write drives
+ * Photos.app over AppleScript — the first call may LAUNCH Photos (photoscript
+ * waits up to 300s for it) and every AppleScript round-trip is slow-ish.
+ * remove-from-album additionally REBUILDS the album (Photos has no remove
+ * verb), which scales with the album's size, so it gets the largest budget.
+ */
+const WRITE_TIMEOUT_MS = 5 * 60 * 1000;
+const ALBUM_REBUILD_TIMEOUT_MS = 10 * 60 * 1000;
 
 interface CacheEntry {
   mtimeMs: number;
@@ -376,6 +392,115 @@ export class PhotosManager {
     const args = this.libraryArgs(library);
     if (limit !== undefined) args.push(flagArg("--limit", limit));
     return this.run("list-persons", args, undefined, library);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Write tools (opt-in, gated behind APPLE_PHOTOS_MCP_ENABLE_WRITES)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Shared write path: enforce the opt-in gate BEFORE anything spawns, run the
+   * sidecar write command, and force-invalidate the metadata cache afterwards.
+   *
+   * The cache clear is unconditional (finally) and deliberately does NOT trust
+   * the Photos.sqlite mtime bust: Photos commits through SQLite WAL, so the
+   * main DB file's mtime may not change until a later checkpoint — an
+   * mtime-validated hit could serve a pre-write albums list. A failed write
+   * clears too (it may have partially mutated, e.g. a remove that died
+   * mid-rebuild). The Python sidecar drops its resident PhotosDB for the same
+   * reason, so the next read re-parses. Write commands are never in
+   * CACHEABLE_COMMANDS, so nothing here can populate the cache either.
+   */
+  private async runWrite<T>(command: string, args: string[], timeoutMs: number): Promise<T> {
+    assertWritesEnabled();
+    try {
+      return await this.run<T>(command, args, timeoutMs);
+    } finally {
+      this.cache.clear();
+    }
+  }
+
+  /**
+   * Create an album, or return the existing album of that name
+   * (created=false). folder is a "/"-separated folder path, created as needed.
+   */
+  async createAlbum(name: string, folder?: string): Promise<CreateAlbumResult> {
+    const args = [flagArg("--name", name)];
+    if (folder !== undefined) args.push(flagArg("--folder", folder));
+    return this.runWrite<CreateAlbumResult>("create-album", args, WRITE_TIMEOUT_MS);
+  }
+
+  /** Add photos (by UUID) to an album (by name or UUID). Idempotent. */
+  async addToAlbum(album: string, uuids: string[]): Promise<AddToAlbumResult> {
+    if (uuids.length === 0) {
+      throw new Error("At least one UUID is required");
+    }
+    const args = [flagArg("--album", album)];
+    for (const uuid of uuids) {
+      args.push(flagArg("--uuid", uuid));
+    }
+    return this.runWrite<AddToAlbumResult>("add-to-album", args, WRITE_TIMEOUT_MS);
+  }
+
+  /**
+   * Remove photos (by UUID) from an album — never from the library. The album
+   * is rebuilt to effect the removal (its UUID changes; see the tool docs).
+   */
+  async removeFromAlbum(album: string, uuids: string[]): Promise<RemoveFromAlbumResult> {
+    if (uuids.length === 0) {
+      throw new Error("At least one UUID is required");
+    }
+    const args = [flagArg("--album", album)];
+    for (const uuid of uuids) {
+      args.push(flagArg("--uuid", uuid));
+    }
+    return this.runWrite<RemoveFromAlbumResult>(
+      "remove-from-album",
+      args,
+      ALBUM_REBUILD_TIMEOUT_MS
+    );
+  }
+
+  /** Set title / description / favorite on one photo (only the fields given). */
+  async setPhotoMetadata(
+    uuid: string,
+    updates: { title?: string; description?: string; favorite?: boolean }
+  ): Promise<SetPhotoMetadataResult> {
+    const args = [flagArg("--uuid", uuid)];
+    if (updates.title !== undefined) args.push(flagArg("--title", updates.title));
+    if (updates.description !== undefined) {
+      args.push(flagArg("--description", updates.description));
+    }
+    if (updates.favorite !== undefined) {
+      args.push(flagArg("--favorite", updates.favorite ? "true" : "false"));
+    }
+    if (args.length === 1) {
+      throw new Error("Nothing to update: pass at least one of title, description, favorite");
+    }
+    return this.runWrite<SetPhotoMetadataResult>("set-photo-metadata", args, WRITE_TIMEOUT_MS);
+  }
+
+  /**
+   * Add/remove keywords on one photo with union semantics — existing keywords
+   * not mentioned are preserved (the sidecar merges against the live list).
+   */
+  async setKeywords(
+    uuid: string,
+    edits: { add?: string[]; remove?: string[] }
+  ): Promise<SetKeywordsResult> {
+    const add = edits.add ?? [];
+    const remove = edits.remove ?? [];
+    if (add.length === 0 && remove.length === 0) {
+      throw new Error("Nothing to do: pass add and/or remove");
+    }
+    const args = [flagArg("--uuid", uuid)];
+    for (const k of add) {
+      args.push(flagArg("--add", k));
+    }
+    for (const k of remove) {
+      args.push(flagArg("--remove", k));
+    }
+    return this.runWrite<SetKeywordsResult>("set-keywords", args, WRITE_TIMEOUT_MS);
   }
 
   async exportPhotos(

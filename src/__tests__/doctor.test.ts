@@ -2,17 +2,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../utils/python.js", () => ({
   checkDependencies: vi.fn(),
+  checkPhotoscript: vi.fn(),
   getPythonInfo: vi.fn(),
   getSidecarInfo: vi.fn(),
   sidecarBusy: vi.fn(() => false),
 }));
 
 import { runDoctor, formatDoctorReport } from "../tools/doctor.js";
-import { checkDependencies, getPythonInfo, getSidecarInfo, sidecarBusy } from "../utils/python.js";
+import {
+  checkDependencies,
+  checkPhotoscript,
+  getPythonInfo,
+  getSidecarInfo,
+  sidecarBusy,
+} from "../utils/python.js";
 import type { PhotosManager } from "../services/photosManager.js";
 import type { LibraryInfo } from "../types.js";
 
 const checkMock = vi.mocked(checkDependencies);
+const photoscriptMock = vi.mocked(checkPhotoscript);
 const pythonInfoMock = vi.mocked(getPythonInfo);
 const sidecarInfoMock = vi.mocked(getSidecarInfo);
 const busyMock = vi.mocked(sidecarBusy);
@@ -56,6 +64,9 @@ describe("runDoctor", () => {
       path: "/repo/venv/bin/python3",
       version: "Python 3.12.4",
     });
+    photoscriptMock.mockReset();
+    photoscriptMock.mockResolvedValue({ ok: true, message: "photoscript 0.5.3 available" });
+    delete process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
   });
 
   it("reports healthy when python, osxphotos, and the library are all fine", async () => {
@@ -279,6 +290,9 @@ describe("formatDoctorReport", () => {
       path: "/repo/venv/bin/python3",
       version: "Python 3.12.4",
     });
+    photoscriptMock.mockReset();
+    photoscriptMock.mockResolvedValue({ ok: true, message: "photoscript 0.5.3 available" });
+    delete process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
   });
 
   it("renders icons and check names", async () => {
@@ -304,5 +318,82 @@ describe("formatDoctorReport", () => {
 
     expect(text).toContain("❌");
     expect(text).toContain("ISSUES FOUND");
+  });
+});
+
+describe("runDoctor writes check", () => {
+  let savedGate: string | undefined;
+
+  beforeEach(() => {
+    checkMock.mockReset();
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
+    pythonInfoMock.mockReset();
+    pythonInfoMock.mockResolvedValue({
+      path: "/repo/venv/bin/python3",
+      version: "Python 3.12.4",
+    });
+    sidecarInfoMock.mockReset();
+    sidecarInfoMock.mockReturnValue(persistentInfo);
+    busyMock.mockReset();
+    busyMock.mockReturnValue(false);
+    photoscriptMock.mockReset();
+    photoscriptMock.mockResolvedValue({ ok: true, message: "photoscript 0.5.3 available" });
+    savedGate = process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
+    delete process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
+  });
+
+  afterEach(() => {
+    if (savedGate === undefined) {
+      delete process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
+    } else {
+      process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = savedGate;
+    }
+  });
+
+  it("reports disabled (ok — the read-only default) with the opt-in recipe, without probing photoscript", async () => {
+    const report = await runDoctor(fakeManager(() => healthyLibrary));
+
+    const writes = report.checks.find((c) => c.name === "writes");
+    expect(writes?.status).toBe("ok");
+    expect(writes?.detail).toContain("read-only");
+    expect(writes?.detail).toContain("APPLE_PHOTOS_MCP_ENABLE_WRITES=1");
+    expect(writes?.detail).toContain("#write-tools-opt-in");
+    // Disabled gate → no photoscript probe spawned at all.
+    expect(photoscriptMock).not.toHaveBeenCalled();
+    expect(report.healthy).toBe(true);
+  });
+
+  it("reports ENABLED with the photoscript version and the Automation-prompt note", async () => {
+    process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = "1";
+
+    const report = await runDoctor(fakeManager(() => healthyLibrary));
+
+    const writes = report.checks.find((c) => c.name === "writes");
+    expect(writes?.status).toBe("ok");
+    expect(writes?.detail).toContain("ENABLED");
+    expect(writes?.detail).toContain("photoscript 0.5.3");
+    expect(writes?.detail).toMatch(/Automation permission/);
+    expect(writes?.detail).toMatch(/never deleting photos/);
+  });
+
+  it("fails the writes check when the gate is enabled but photoscript is missing", async () => {
+    process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = "1";
+    photoscriptMock.mockResolvedValue({ ok: false, message: "photoscript not installed. …" });
+
+    const report = await runDoctor(fakeManager(() => healthyLibrary));
+
+    const writes = report.checks.find((c) => c.name === "writes");
+    expect(writes?.status).toBe("fail");
+    expect(writes?.detail).toContain("photoscript not installed");
+    expect(report.healthy).toBe(false);
+  });
+
+  it("still reports the writes check while a sidecar operation is in flight (light probe)", async () => {
+    busyMock.mockReturnValue(true);
+
+    const report = await runDoctor(fakeManager(() => healthyLibrary));
+
+    expect(report.checks.find((c) => c.name === "writes")?.status).toBe("ok");
+    expect(report.checks.find((c) => c.name === "photos_library")?.status).toBe("warn");
   });
 });

@@ -705,6 +705,34 @@ export async function getPythonInfo(): Promise<PythonInterpreterInfo | null> {
 }
 
 /**
+ * Probe that photoscript (the write-tools backend — it drives Photos.app over
+ * AppleScript) is importable by the resolved interpreter. Ungated and
+ * sub-second like checkDependencies; only the doctor's writes check calls it,
+ * and only when the write gate is enabled. The import alone runs no
+ * AppleScript, so it can never trigger a macOS Automation prompt.
+ */
+export async function checkPhotoscript(): Promise<{ ok: boolean; message: string }> {
+  try {
+    const python = resolvePython();
+    const version = (
+      await execFileAsync(python, [
+        "-c",
+        'import photoscript, importlib.metadata; print(importlib.metadata.version("photoscript"))',
+      ])
+    ).trim();
+    return { ok: true, message: `photoscript ${version} available` };
+  } catch {
+    return {
+      ok: false,
+      message:
+        `photoscript not installed. Install it with: pip3 install photoscript, or run ` +
+        `scripts/setup.sh from a repo checkout. Run the doctor tool to diagnose, or see ` +
+        `${TROUBLESHOOTING_URL}`,
+    };
+  }
+}
+
+/**
  * Probe that osxphotos is importable by the resolved interpreter. Ungated (no
  * Photos DB access; sub-second), so doctor/health-check can classify a missing
  * install even while a long sidecar operation holds the gate.

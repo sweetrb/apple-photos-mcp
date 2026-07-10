@@ -3,15 +3,28 @@
  * apple-photos-mcp setup — the resolved Python interpreter (path + version, so
  * an old stock Python is visible at a glance), osxphotos installation, the
  * sidecar execution mode (persistent serve process vs one-shot fallback, with
- * the last respawn), Photos library reachability, and Full Disk Access
- * (required for the host process to read the library) — each reported as
- * ok / warn / fail with an actionable message.
+ * the last respawn), the write-tools gate (read-only by default; reports how
+ * to opt in, and whether the photoscript backend looks usable when enabled),
+ * Photos library reachability, and Full Disk Access (required for the host
+ * process to read the library) — each reported as ok / warn / fail with an
+ * actionable message.
  *
  * @module tools/doctor
  */
+import { existsSync } from "node:fs";
 import type { PhotosManager } from "../services/photosManager.js";
-import { checkDependencies, getPythonInfo, getSidecarInfo, sidecarBusy } from "../utils/python.js";
-import { FDA_REMEDIATION, TROUBLESHOOTING_URL } from "../utils/docsUrls.js";
+import {
+  checkDependencies,
+  checkPhotoscript,
+  getPythonInfo,
+  getSidecarInfo,
+  sidecarBusy,
+} from "../utils/python.js";
+import { FDA_REMEDIATION, TROUBLESHOOTING_URL, WRITE_TOOLS_URL } from "../utils/docsUrls.js";
+import { writesEnabled, WRITES_ENV } from "../utils/writeGate.js";
+
+/** Where macOS installs Photos.app (the write tools drive it via AppleScript). */
+const PHOTOS_APP_PATH = "/System/Applications/Photos.app";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export interface DoctorCheck {
@@ -33,12 +46,13 @@ function looksLikePermissionError(message: string): boolean {
  * Run all diagnostic checks. This function NEVER throws — every probe is wrapped
  * in try/catch and converted to a fail/warn check.
  *
- * Gate interaction: checks 1–2 are light interpreter probes (python --version,
- * `import osxphotos`) that never open the Photos DB, so they always run —
- * even while a long sidecar operation (query/export) holds the serial gate.
- * Check 3 (and the Full-Disk-Access check derived from it) needs a real
- * DB-touching sidecar call; when the gate is busy it is SKIPPED with a warn
- * instead of queueing doctor behind an operation that can run for minutes.
+ * Gate interaction: checks 1–4 are light probes (python --version, `import
+ * osxphotos`/`import photoscript`, pure-TS state) that never open the Photos
+ * DB, so they always run — even while a long sidecar operation (query/export)
+ * holds the serial gate. Check 5 (and the Full-Disk-Access check derived from
+ * it) needs a real DB-touching sidecar call; when the gate is busy it is
+ * SKIPPED with a warn instead of queueing doctor behind an operation that can
+ * run for minutes.
  */
 export async function runDoctor(manager: PhotosManager): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
@@ -136,7 +150,47 @@ export async function runDoctor(manager: PhotosManager): Promise<DoctorReport> {
     });
   }
 
-  // 4. Photos library reachability. We remember whether it was a permission
+  // 4. Write-tools gate. Disabled is the healthy default (read-only server) —
+  //    reported ok with the opt-in recipe. When ENABLED, verify the parts that
+  //    can be checked without side effects: photoscript importable and
+  //    Photos.app present. macOS Automation permission is deliberately NOT
+  //    probed — any AppleScript sent to Photos would launch it and/or trigger
+  //    the TCC prompt, so doctor only explains that the first write prompts.
+  try {
+    if (!writesEnabled()) {
+      checks.push({
+        name: "writes",
+        status: "ok",
+        detail:
+          `disabled — server is read-only (the default). To enable the write tools ` +
+          `(create-album, add-to-album, remove-from-album, set-photo-metadata, ` +
+          `set-keywords), set ${WRITES_ENV}=1 in the server env or config.json and ` +
+          `restart. See ${WRITE_TOOLS_URL}`,
+      });
+    } else {
+      const ps = await checkPhotoscript();
+      const photosAppPresent = existsSync(PHOTOS_APP_PATH);
+      checks.push({
+        name: "writes",
+        status: !ps.ok ? "fail" : photosAppPresent ? "ok" : "warn",
+        detail:
+          `ENABLED — the write tools can modify this Photos library (album membership, ` +
+          `titles, descriptions, keywords, favorites; never deleting photos). ` +
+          `${ps.message}; Photos.app ${photosAppPresent ? "present" : `NOT found at ${PHOTOS_APP_PATH}`}. ` +
+          `Writes drive Photos.app via AppleScript and need macOS Automation permission ` +
+          `for the host app — macOS asks via a one-time prompt on the first write ` +
+          `(not verifiable here without triggering that prompt).`,
+      });
+    }
+  } catch (e) {
+    checks.push({
+      name: "writes",
+      status: "warn",
+      detail: `could not determine the write-tools state: ${String(e)}`,
+    });
+  }
+
+  // 5. Photos library reachability. We remember whether it was a permission
   //    error so the full_disk_access check can be derived from it. Skipped
   //    (warn) while another sidecar operation holds the gate — doctor must
   //    respond promptly, not queue behind a minutes-long query/export.
@@ -176,7 +230,7 @@ export async function runDoctor(manager: PhotosManager): Promise<DoctorReport> {
     });
   }
 
-  // 5. Full Disk Access — derived from the photos_library check.
+  // 6. Full Disk Access — derived from the photos_library check.
   if (libraryOk) {
     checks.push({
       name: "full_disk_access",

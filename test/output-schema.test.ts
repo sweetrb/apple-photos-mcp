@@ -32,7 +32,14 @@ describe("outputSchema contract (real server over stdio)", () => {
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [SERVER],
-      env: { ...process.env, APPLE_PHOTOS_MCP_NO_AUTO_SETUP: "1" } as Record<string, string>,
+      // ENABLE_WRITES is pinned to "0" (an explicit env var also beats any
+      // config.json on the host machine) so the write-gate assertions below
+      // are deterministic everywhere.
+      env: {
+        ...process.env,
+        APPLE_PHOTOS_MCP_NO_AUTO_SETUP: "1",
+        APPLE_PHOTOS_MCP_ENABLE_WRITES: "0",
+      } as Record<string, string>,
     });
     client = new Client({ name: "outputschema-contract-test", version: "0.0.0" });
     await client.connect(transport);
@@ -87,4 +94,51 @@ describe("outputSchema contract (real server over stdio)", () => {
       void Promise.resolve(call).catch(() => {});
     }
   }, 30_000);
+
+  // --- write tools: registration + gate contract (2.0.0 design decision) ---
+  //
+  // The write tools are ALWAYS REGISTERED — even with the gate closed — and a
+  // gated call returns an isError result carrying the opt-in recipe. This is
+  // deliberate: MCP clients cache the tool list at startup, so hiding the
+  // tools adds no safety (a gate flip needs a restart either way) but destroys
+  // discoverability. These tests pin that contract through a real server.
+
+  const WRITE_TOOLS = [
+    "create-album",
+    "add-to-album",
+    "remove-from-album",
+    "set-photo-metadata",
+    "set-keywords",
+  ];
+
+  it("registers all five write tools even while the gate is closed", async () => {
+    const { tools } = await client.listTools();
+    const names = new Set(tools.map((t) => t.name));
+    for (const tool of WRITE_TOOLS) {
+      expect(names.has(tool), `missing write tool: ${tool}`).toBe(true);
+    }
+  });
+
+  it("every write tool's description carries a Safety: line naming the gate", async () => {
+    const { tools } = await client.listTools();
+    for (const tool of tools.filter((t) => WRITE_TOOLS.includes(t.name))) {
+      expect(tool.description, `${tool.name} description`).toMatch(/Safety:/);
+      expect(tool.description, `${tool.name} description`).toContain(
+        "APPLE_PHOTOS_MCP_ENABLE_WRITES"
+      );
+    }
+  });
+
+  it("a gated write call returns a clear isError result with the opt-in recipe (not a protocol error)", async () => {
+    const result = (await client.callTool({
+      name: "create-album",
+      arguments: { name: "Gate Contract Test" },
+    })) as { isError?: boolean; content?: Array<{ type: string; text?: string }> };
+
+    expect(result.isError).toBe(true);
+    const text = result.content?.map((c) => c.text ?? "").join("\n") ?? "";
+    expect(text).toMatch(/read-only by default/);
+    expect(text).toContain("APPLE_PHOTOS_MCP_ENABLE_WRITES=1");
+    expect(text).toContain("config.json");
+  }, 15_000);
 });

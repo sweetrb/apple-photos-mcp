@@ -23,6 +23,9 @@ export const TROUBLESHOOTING_URL = `${REPO_URL}#troubleshooting`;
 /** Step-by-step Full Disk Access walkthrough with screenshots. */
 export const FDA_GUIDE_URL = `${REPO_URL}/blob/main/docs/FULL-DISK-ACCESS.md`;
 
+/** README section documenting the opt-in write tools and their gate. */
+export const WRITE_TOOLS_URL = `${REPO_URL}#write-tools-opt-in`;
+
 /**
  * Shared Full-Disk-Access remediation prose. Used verbatim by both the
  * per-tool permission-error augmentation (photosManager) and the doctor's
