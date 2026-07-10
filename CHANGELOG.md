@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.0.0] - 2026-07-10
+
+**New: opt-in write tools — the server stays read-only by default, with behavior unchanged from 1.x unless you set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`.**
+
+This is the first release that *can* modify the Photos library, which is why it's a major version: the read-only guarantee is now an opt-in default rather than an absolute. Nothing changes for existing users — without the gate variable, every write tool returns a clear "how to enable" error and the library cannot be touched.
+
+### Added
+- **Five write tools** (gated behind `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`, settable via env or the `config.json` mechanism; a restart applies it):
+  - **`create-album` `{name, folder?}`** — creates an album, optionally nested in a `/`-separated folder path (folders created as needed). Idempotent: an existing album of that name is returned with `created: false` instead of duplicating.
+  - **`add-to-album` `{album, uuid[]}`** — files photos into an album by name or UUID (1–100 UUIDs). Idempotent; returns `added` / `alreadyPresent` / `notFound` per UUID.
+  - **`remove-from-album` `{album, uuid[]}`** — removes photos from the ALBUM only, never from the library. Photos' AppleScript has no remove verb, so the album is rebuilt (its UUID changes — reported as `previousAlbumUuid` → `album.uuid`; manual sort order is lost); a call matching no members skips the rebuild entirely.
+  - **`set-photo-metadata` `{uuid, title?, description?, favorite?}`** — writes only the fields passed and echoes full before/after values so any change can be reverted.
+  - **`set-keywords` `{uuid, add?, remove?}`** — **union semantics**: reads the photo's current keywords and merges the edits, so keywords the caller doesn't mention are always preserved (never a blind replace). Echoes before/after; a no-change merge skips the write.
+- **Safety design (the core of this release):** no deletion capability of any kind (photos, albums, or folders — album-quarantine + Photos.app is the deletion path, keeping the 30-day Recently Deleted net); explicit UUIDs/names only (no "current selection", no wildcard operations); every target validated before any mutation; 100-UUID batch caps; the write tools are **always registered** and return the opt-in recipe when gated off (MCP clients cache tool lists, so hiding them would cost discoverability without adding safety); photoscript's default `killall Photos`-on-timeout retry policy is disabled — this server never kills the user's Photos.app.
+- **`doctor` gains a `writes` check** (now six checks): reports the gate state with the opt-in recipe when disabled; when enabled, verifies photoscript is importable and Photos.app is present, and explains the one-time macOS Automation prompt (deliberately not probed — probing would trigger it).
+- **Backend:** writes drive Photos.app via AppleScript through [photoscript](https://github.com/RhetTbull/photoscript) (now an explicit pinned dependency in `requirements.txt`; it was already installed as an osxphotos dependency). Writes always target the library currently open in Photos.app — the read tools' `library` parameter does not apply — and need macOS Automation permission (one-time prompt on first write).
+
+### Changed
+- **BREAKING (semantics only):** the package can no longer be described as unconditionally read-only — read-only is now the (unchanged) default rather than a hard guarantee. No API, tool, or configuration behaves differently unless `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` is set.
+- After any write, both metadata caches (the Node catalog cache and the sidecar's resident parsed library) are force-invalidated rather than trusting the `Photos.sqlite` mtime — Photos commits through SQLite WAL, so the mtime alone can lag a write and serve a stale snapshot.
+- README gains a prominent **Write tools (opt-in)** section (gate setup via env and config.json, safety design, the album-rebuild caveat); Tool Reference, SKILL.md (all three copies), CLAUDE.md, and LIMITATIONS.md updated to match.
+
 ## [1.5.0] - 2026-07-10
 ### Added
 - **`get-thumbnail` — see photos, not just metadata.** New tool returning one photo as an inline MCP **image content block** (base64 JPEG/PNG that vision-capable clients render directly) plus structured metadata (source path, dimensions, MIME type, byte size, `isDerivative`). It serves the smallest preview derivative Photos has **already generated** whose long edge meets `minSize` (default 360 px) — no export, no original-file transfer. When no derivative is big enough, a right-sized JPEG is rendered from the original via `sips` (never upscaled — raising `minSize` to read small text actually gets you more pixels); responses are capped at 8 MB. Movies get a thumbnail when Photos generated a poster-frame derivative; iCloud-only photos with no local image return a clear error suggesting `export`. Unlocks visual triage ("show me the best photo from Saturday"), duplicate eyeballing, and reading text in photos — every workflow that previously dead-ended at metadata or required export-to-disk.

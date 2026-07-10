@@ -1,25 +1,58 @@
 # Limitations
 
-Apple Photos MCP is a **read-only** bridge to the macOS Photos library, backed by
-[osxphotos](https://github.com/RhetTbull/osxphotos). This page documents the real
-limitations — what the server cannot do and why — so they aren't re-investigated
-every release. These agree with the README's
-[Known Limitations](../README.md#known-limitations); this page adds the *why* and
-*what to do* for each.
+Apple Photos MCP is a **read-only-by-default** bridge to the macOS Photos
+library, backed by [osxphotos](https://github.com/RhetTbull/osxphotos). This
+page documents the real limitations — what the server cannot do and why — so
+they aren't re-investigated every release. These agree with the README's
+[Known Limitations](../README.md#known-limitations); this page adds the *why*
+and *what to do* for each.
 
-## Read-only — no writes back to Photos
+## Read-only by default — writes are an explicit opt-in
 
-**Why:** osxphotos reads the Photos library; this server deliberately never
-writes to it. There is no tool to create or rename albums, add or edit keywords,
-tag people, set titles/descriptions, favorite/unfavorite, or otherwise modify the
-library. The only tool that writes anything at all is `export`, and it writes
-**copies of files to a destination directory you choose** — it never touches the
-library itself.
+**Why:** osxphotos reads the Photos library; the read tools never write to it,
+and out of the box neither does anything else — the only disk writes are
+`export`'s **copies of files to a destination directory you choose**. Since
+2.0.0 a set of **write tools** exists (`create-album`, `add-to-album`,
+`remove-from-album`, `set-photo-metadata`, `set-keywords`), but every one of
+them is refused unless the user has set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` —
+see the README's [Write tools (opt-in)](../README.md#write-tools-opt-in)
+section for the gate, the setup, and the safety design.
 
-**What to do:** Use the server to find, inspect, and export. To change anything
-*inside* the library (rename an album, add a keyword, name a face), do it in
-Photos.app; the change will show up on the next query once Photos has persisted
-it.
+**What to do:** Use the server to find, inspect, and export; opt in to the
+write gate if you want it organizing albums and metadata too. To change
+anything the write tools don't cover (rename an album, name a face, edit an
+image), do it in Photos.app; the change shows up on the next query once Photos
+has persisted it.
+
+## No photo deletion — even with writes enabled
+
+**Why:** Deliberate safety design. No tool deletes photos, albums, or folders;
+`remove-from-album` changes album *membership* only (the photos stay in the
+library). An LLM-driven deletion of irreplaceable photos is an unacceptable
+failure mode, so the capability simply doesn't exist in this server.
+
+**What to do:** Use the **album-quarantine pattern**: collect the photos to
+discard into a clearly-named album (`create-album` + `add-to-album`, or by
+hand), then review and delete inside Photos.app — Recently Deleted keeps them
+recoverable for ~30 days.
+
+## Write-tool caveats (when the gate is enabled)
+
+**Why:** Writes drive **Photos.app via AppleScript** (photoscript), which has
+real constraints: (1) macOS requires **Automation permission** for the host
+app — a one-time system prompt on the first write, which can't be granted
+headlessly; (2) AppleScript talks to whatever library Photos.app has **open**,
+so writes always target that library (normally the system one) — the read
+tools' `library` parameter does not apply; (3) Photos' AppleScript dictionary
+has **no remove-from-album verb**, so `remove-from-album` rebuilds the album
+(same name, remaining photos): the album's **UUID changes** and custom manual
+sort order is lost; (4) Photos is launched if it isn't running, so the first
+write can be slow.
+
+**What to do:** Run `doctor` first — its `writes` check reports the gate state
+and backend readiness. Grant the Automation prompt once from a GUI session.
+After a `remove-from-album`, use the returned `album.uuid` (or the album name)
+for follow-up calls.
 
 ## macOS only
 

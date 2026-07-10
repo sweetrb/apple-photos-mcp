@@ -34,8 +34,11 @@ const server = new McpServer({
     "albums/folders/keywords/persons; fetch full photo metadata (location, dimensions, " +
     "EXIF camera data, type flags) singly or in batches; return inline viewable " +
     "thumbnails; find exact-duplicate groups; and export originals or edited versions to " +
-    "a directory. Read-only against the Photos library. Read tools also return " +
-    "structuredContent (typed JSON) alongside the text.",
+    "a directory. Read-only against the Photos library BY DEFAULT: the write tools " +
+    "(create-album, add-to-album, remove-from-album, set-photo-metadata, set-keywords) " +
+    "only work when the user opts in with APPLE_PHOTOS_MCP_ENABLE_WRITES=1, and can " +
+    "never delete photos. Read tools also return structuredContent (typed JSON) " +
+    "alongside the text.",
 });
 
 const libraryArg = {
@@ -83,8 +86,8 @@ server.registerTool(
   "doctor",
   {
     description:
-      "Use when: a tool returns a permission or 'unable to open' error, or you want a full setup diagnostic before querying or exporting.\n" +
-      "Returns: five checks — Python interpreter (path + version; warns below 3.11), osxphotos install, sidecar mode (persistent vs one-shot, plus last respawn), Photos library readability, and Full Disk Access — each reported ok/warn/fail with actionable advice.\n" +
+      "Use when: a tool returns a permission, 'unable to open', or 'write tools are disabled' error, or you want a full setup diagnostic before querying, exporting, or writing.\n" +
+      "Returns: six checks — Python interpreter (path + version; warns below 3.11), osxphotos install, sidecar mode (persistent vs one-shot, plus last respawn), the write-tools gate (enabled/disabled, with the opt-in recipe and — when enabled — whether the photoscript backend and Photos.app look usable), Photos library readability, and Full Disk Access — each reported ok/warn/fail with actionable advice.\n" +
       "Do not use when: you only need the lightweight is-it-working smoke test — use health-check instead.",
     inputSchema: {},
     outputSchema: {
@@ -478,7 +481,7 @@ server.registerTool(
       "Use when: you want to find exact duplicates across the library — cleaning up after a double import, checking whether files were re-uploaded, or auditing before a migration/export.\n" +
       "Returns: groupCount (total duplicate groups found), returned (groups in this response, capped at limit, default 100), and groups ordered newest-first — each with the member UUIDs plus per-member filename, date, size, dimensions, and movie flag. Use get-thumbnail on members to eyeball a group before acting on it.\n" +
       "Do not use when: you're looking for near-duplicates or similar shots — Photos' fingerprint matches EXACT duplicates (identical image data) only; edited copies, resized versions, and burst siblings will NOT group.\n" +
-      "Safety: read-only. This server cannot delete photos (Photos exposes no scriptable delete) — to act on duplicates, collect them into a quarantine album in Photos.app and review/delete there.",
+      "Safety: read-only. This server cannot delete photos — to act on duplicates, quarantine the extra copies into an album (create-album + add-to-album when writes are enabled, otherwise by hand in Photos.app) and review/delete inside Photos.app.",
     inputSchema: {
       ...libraryArg,
       limit: z
@@ -697,6 +700,239 @@ server.registerTool(
     }
     return successResponse(lines.join("\n"), { ...result });
   }, "export")
+);
+
+// ---------------------------------------------------------------------------
+// Write tools — OPT-IN, gated behind APPLE_PHOTOS_MCP_ENABLE_WRITES.
+//
+// Always registered (MCP clients cache the tool list at startup, so hiding
+// them would cost discoverability without adding safety); when the gate is
+// closed every call returns a clear how-to-enable error. The gate is enforced
+// in PhotosManager before anything spawns, and again inside the Python
+// sidecar. None of these tools can delete a photo from the library.
+// ---------------------------------------------------------------------------
+
+/** Every write tool result's album projection. */
+const writeAlbumOutput = {
+  album: z
+    .object({
+      uuid: z.string().optional(),
+      name: z.string().optional(),
+      path: z.string().optional(),
+    })
+    .passthrough()
+    .optional(),
+};
+
+// --- create-album ---
+server.registerTool(
+  "create-album",
+  {
+    description:
+      "Use when: you need an album to file photos into — a new album by name, optionally nested inside a folder path (e.g. for a quarantine album before a dedupe review, or a per-trip album).\n" +
+      "Returns: album {uuid, name, path} and created — false means an album of that name already existed and was returned instead of creating a duplicate (idempotent: safe to re-run; without folder the name is matched anywhere in the library, with folder only inside that folder).\n" +
+      "Do not use when: you want to list existing albums — use list-albums; or you want to put photos into the album — follow up with add-to-album.\n" +
+      "Safety: WRITE tool — disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Only creates albums/folders; never deletes, moves, or modifies photos. Drives Photos.app via AppleScript: Photos is launched if not running, and macOS Automation permission is required (one-time system prompt on first write). Writes always target the library currently open in Photos.app — there is no library parameter.",
+    inputSchema: {
+      name: z.string().min(1).max(255).describe("Album name"),
+      folder: z
+        .string()
+        .min(1)
+        .max(1024)
+        .optional()
+        .describe(
+          'Folder path to nest the album under, "/"-separated for nesting ' +
+            '(e.g. "Trips/2026"); folders are created as needed'
+        ),
+    },
+    outputSchema: {
+      ...writeAlbumOutput,
+      created: z.boolean().optional(),
+    },
+  },
+  withErrorHandling(async ({ name, folder }) => {
+    const result = await manager.createAlbum(name, folder);
+    const verb = result.created ? "Created album" : "Album already exists";
+    return successResponse(`${verb}: ${result.album.path} (${result.album.uuid})`, {
+      ...result,
+    });
+  }, "create-album")
+);
+
+// --- add-to-album ---
+server.registerTool(
+  "add-to-album",
+  {
+    description:
+      "Use when: you have photo UUIDs (from query / find-duplicates) and want to file them into an album — e.g. collecting duplicate extras into a quarantine album, or filing a trip's photos.\n" +
+      "Returns: the album {uuid, name, path}, addedCount, added (UUIDs newly added), alreadyPresent (UUIDs that were already members — adding is idempotent), and notFound (requested UUIDs that don't exist in the library). Fails only when the album doesn't exist or NO requested photo exists.\n" +
+      "Do not use when: the album doesn't exist yet — call create-album first; or you want photos OUT of an album — use remove-from-album.\n" +
+      "Safety: WRITE tool — disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Changes album membership only: photos are never copied, modified, or deleted, and each target is validated to exist first. Max 100 UUIDs per call. Drives Photos.app via AppleScript (launches it if needed; requires macOS Automation permission — one-time prompt). Writes target the library currently open in Photos.app.",
+    inputSchema: {
+      album: z
+        .string()
+        .min(1)
+        .max(1024)
+        .describe("Album name or UUID (UUID-looking values try the id lookup first)"),
+      uuid: z
+        .array(uuidSchema)
+        .min(1)
+        .max(100)
+        .describe("Photo UUID(s) to add (1–100, as returned by query)"),
+    },
+    outputSchema: {
+      ...writeAlbumOutput,
+      addedCount: z.number().optional(),
+      added: z.array(z.string()).optional(),
+      alreadyPresent: z.array(z.string()).optional(),
+      notFound: z.array(z.string()).optional(),
+    },
+  },
+  withErrorHandling(async ({ album, uuid }) => {
+    const result = await manager.addToAlbum(album, uuid);
+    const lines = [
+      `Album:           ${result.album.path} (${result.album.uuid})`,
+      `Added:           ${result.addedCount}`,
+    ];
+    if (result.alreadyPresent.length) {
+      lines.push(`Already present: ${result.alreadyPresent.length}`);
+    }
+    if (result.notFound.length) {
+      lines.push(`Not found:       ${result.notFound.join(", ")}`);
+    }
+    return successResponse(lines.join("\n"), { ...result });
+  }, "add-to-album")
+);
+
+// --- remove-from-album ---
+server.registerTool(
+  "remove-from-album",
+  {
+    description:
+      "Use when: you want to take photos OUT of an album — undoing a mis-filing, or clearing reviewed items from a quarantine album. This removes ALBUM MEMBERSHIP only.\n" +
+      "Returns: the album AFTER the operation ({uuid, name, path} — note the uuid CHANGES when anything was removed), removedCount, removed, notInAlbum (requested UUIDs that weren't members — no-ops), albumRecreated, and previousAlbumUuid.\n" +
+      "Do not use when: you want to delete photos from the library — this server cannot delete photos at all (quarantine them in an album and review in Photos.app instead); or the photos aren't in the album (harmless, but pointless).\n" +
+      "Safety: WRITE tool — disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). NEVER deletes photos from the library — removed photos stay in All Photos and every other album. Photos' AppleScript has no remove-from-album verb, so the album is REBUILT (same name and remaining photos): its UUID changes and any custom manual sort order is lost; re-fetch the album UUID from the response. When none of the UUIDs are members, nothing is rebuilt. Max 100 UUIDs per call. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
+    inputSchema: {
+      album: z
+        .string()
+        .min(1)
+        .max(1024)
+        .describe("Album name or UUID (UUID-looking values try the id lookup first)"),
+      uuid: z
+        .array(uuidSchema)
+        .min(1)
+        .max(100)
+        .describe("Photo UUID(s) to remove from the album (1–100)"),
+    },
+    outputSchema: {
+      ...writeAlbumOutput,
+      removedCount: z.number().optional(),
+      removed: z.array(z.string()).optional(),
+      notInAlbum: z.array(z.string()).optional(),
+      albumRecreated: z.boolean().optional(),
+      previousAlbumUuid: z.string().optional(),
+    },
+  },
+  withErrorHandling(async ({ album, uuid }) => {
+    const result = await manager.removeFromAlbum(album, uuid);
+    const lines = [
+      `Album:        ${result.album.path} (${result.album.uuid})`,
+      `Removed:      ${result.removedCount} (from the album only — photos stay in the library)`,
+    ];
+    if (result.albumRecreated) {
+      lines.push(
+        `Note:         album rebuilt — its UUID changed (was ${result.previousAlbumUuid})`
+      );
+    }
+    if (result.notInAlbum.length) {
+      lines.push(`Not in album: ${result.notInAlbum.join(", ")}`);
+    }
+    return successResponse(lines.join("\n"), { ...result });
+  }, "remove-from-album")
+);
+
+// --- set-photo-metadata ---
+server.registerTool(
+  "set-photo-metadata",
+  {
+    description:
+      "Use when: you want to set a photo's title, description, or favorite flag — captioning passes, marking the best shot of a burst, titling scans.\n" +
+      "Returns: uuid, updated (which fields were written), and the full before/after values of all three fields — so any change can be reverted by writing the before values back.\n" +
+      "Do not use when: you want keywords — use set-keywords (it has union semantics; this tool doesn't touch keywords); or you only want to READ metadata — use get-photo.\n" +
+      "Safety: WRITE tool — disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Metadata only — never touches the image asset, and only the fields you pass are modified (an empty string clears title/description). The target photo is validated to exist first. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
+    inputSchema: {
+      uuid: uuidSchema.describe("Photo UUID (hex-with-dashes, as returned by query)"),
+      title: z.string().max(255).optional().describe("New title (empty string clears it)"),
+      description: z
+        .string()
+        .max(2048)
+        .optional()
+        .describe("New description (empty string clears it)"),
+      favorite: z.boolean().optional().describe("Set or clear the favorite flag"),
+    },
+    outputSchema: {
+      uuid: z.string().optional(),
+      updated: z.array(z.string()).optional(),
+      before: z.object({}).passthrough().optional(),
+      after: z.object({}).passthrough().optional(),
+    },
+  },
+  withErrorHandling(async ({ uuid, title, description, favorite }) => {
+    const result = await manager.setPhotoMetadata(uuid, { title, description, favorite });
+    const lines = [`Updated ${result.updated.join(", ")} on ${result.uuid}:`];
+    for (const field of result.updated) {
+      const key = field as keyof typeof result.before;
+      lines.push(
+        `  ${field}: ${JSON.stringify(result.before[key])} → ${JSON.stringify(result.after[key])}`
+      );
+    }
+    return successResponse(lines.join("\n"), { ...result });
+  }, "set-photo-metadata")
+);
+
+// --- set-keywords ---
+server.registerTool(
+  "set-keywords",
+  {
+    description:
+      "Use when: you want to add and/or remove keywords (tags) on a photo — tagging workflows, fixing a mis-tag — without disturbing its other keywords.\n" +
+      "Returns: uuid, before/after keyword lists (revert by re-running with the diff inverted), added and removed (what actually changed — adding an existing keyword or removing an absent one is a no-op), and changed.\n" +
+      "Do not use when: you want to browse keywords — use list-keywords; or find photos by keyword — use query. A keyword passed in both add and remove is rejected.\n" +
+      "Safety: WRITE tool — disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). UNION semantics — the photo's current keywords are read first and edits are merged in, so existing keywords you don't mention are ALWAYS preserved (never a blind replace). Metadata only — the image asset is untouched; the target photo is validated to exist first. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
+    inputSchema: {
+      uuid: uuidSchema.describe("Photo UUID (hex-with-dashes, as returned by query)"),
+      add: z
+        .array(z.string().min(1).max(255))
+        .max(100)
+        .optional()
+        .describe("Keywords to add (created in Photos if new)"),
+      remove: z
+        .array(z.string().min(1).max(255))
+        .max(100)
+        .optional()
+        .describe("Keywords to remove from this photo (exact match)"),
+    },
+    outputSchema: {
+      uuid: z.string().optional(),
+      before: z.array(z.string()).optional(),
+      after: z.array(z.string()).optional(),
+      added: z.array(z.string()).optional(),
+      removed: z.array(z.string()).optional(),
+      changed: z.boolean().optional(),
+    },
+  },
+  withErrorHandling(async ({ uuid, add, remove }) => {
+    const result = await manager.setKeywords(uuid, { add, remove });
+    const lines = [
+      `Keywords on ${result.uuid}${result.changed ? "" : " (no change needed)"}:`,
+      `  before: ${result.before.length ? result.before.join(", ") : "(none)"}`,
+      `  after:  ${result.after.length ? result.after.join(", ") : "(none)"}`,
+    ];
+    if (result.added.length) lines.push(`  added:   ${result.added.join(", ")}`);
+    if (result.removed.length) lines.push(`  removed: ${result.removed.join(", ")}`);
+    return successResponse(lines.join("\n"), { ...result });
+  }, "set-keywords")
 );
 
 // Register read-only resources (photos://library, albums, persons, keywords,

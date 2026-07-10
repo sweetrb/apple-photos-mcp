@@ -213,3 +213,72 @@ export interface QueryFilters {
   video?: boolean;
   newestFirst?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Write-tool results (opt-in, gated behind APPLE_PHOTOS_MCP_ENABLE_WRITES)
+// ---------------------------------------------------------------------------
+
+/** The album an album-write acted on (photoscript projection). */
+export interface WriteAlbumRef {
+  uuid: string;
+  name: string;
+  /** Library path incl. the album name, "/"-separated (e.g. "Trips/2026/Camping"). */
+  path: string;
+}
+
+export interface CreateAlbumResult {
+  album: WriteAlbumRef;
+  /** false when an album of that name already existed and was returned instead. */
+  created: boolean;
+}
+
+export interface AddToAlbumResult {
+  album: WriteAlbumRef;
+  addedCount: number;
+  added: string[];
+  /** UUIDs that were already in the album (adding is idempotent). */
+  alreadyPresent: string[];
+  /** Requested UUIDs that don't exist in the library. */
+  notFound: string[];
+}
+
+export interface RemoveFromAlbumResult {
+  /** The album AFTER the operation — its uuid CHANGES when albumRecreated. */
+  album: WriteAlbumRef;
+  removedCount: number;
+  removed: string[];
+  /** Requested UUIDs that were not members of the album (no-ops). */
+  notInAlbum: string[];
+  /**
+   * True when the album was rebuilt to effect the removal (Photos' AppleScript
+   * has no remove verb); false when nothing needed removing.
+   */
+  albumRecreated: boolean;
+  /** The album's uuid before the rebuild (present when albumRecreated). */
+  previousAlbumUuid?: string;
+}
+
+export interface PhotoMetadataValues {
+  title: string;
+  description: string;
+  favorite: boolean;
+}
+
+export interface SetPhotoMetadataResult {
+  uuid: string;
+  /** Which fields were written ("title" | "description" | "favorite"). */
+  updated: string[];
+  before: PhotoMetadataValues;
+  after: PhotoMetadataValues;
+}
+
+export interface SetKeywordsResult {
+  uuid: string;
+  before: string[];
+  after: string[];
+  /** Keywords actually added (requested adds already present are omitted). */
+  added: string[];
+  /** Keywords actually removed (requested removes not present are omitted). */
+  removed: string[];
+  changed: boolean;
+}

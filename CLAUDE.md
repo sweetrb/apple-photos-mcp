@@ -4,14 +4,21 @@ This file provides guidance for AI agents (Claude, etc.) when using this MCP ser
 
 ## Overview
 
-This MCP server gives AI assistants **read-only** access to the macOS Apple
-Photos library via [osxphotos](https://github.com/RhetTbull/osxphotos). All
-operations are **local** — nothing leaves the user's machine. You can query the
-library, inspect individual photos (singly or in batches, including EXIF
-camera data), **see** photos inline via thumbnails, find exact-duplicate
-groups, browse the library's structure (albums, folders, keywords, persons),
-and **export** copies of photos to a directory. You cannot modify the library
-itself.
+This MCP server gives AI assistants access to the macOS Apple Photos library
+via [osxphotos](https://github.com/RhetTbull/osxphotos) — **read-only by
+default**. All operations are **local** — nothing leaves the user's machine.
+You can query the library, inspect individual photos (singly or in batches,
+including EXIF camera data), **see** photos inline via thumbnails, find
+exact-duplicate groups, browse the library's structure (albums, folders,
+keywords, persons), and **export** copies of photos to a directory.
+
+**Write tools exist but are gated:** `create-album`, `add-to-album`,
+`remove-from-album`, `set-photo-metadata`, and `set-keywords` only work when
+the user has set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (env or config.json +
+server restart). Until then every write call returns a clear opt-in error —
+**run `doctor` first** when writes matter: its `writes` check reports the gate
+state. Even with writes enabled, **nothing can delete a photo** (see "Write
+workflow" below).
 
 ## Related Documentation
 
@@ -46,10 +53,10 @@ Run **`health-check`** first when in doubt — it confirms both at once (osxphot
 present + library openable). When something is actually broken, reach for
 **`doctor`**: it's the richest diagnostic, checking the Python interpreter
 (path + version — warns below the required 3.11), osxphotos install, the
-sidecar execution mode (persistent vs one-shot fallback), library readability,
-and Full Disk Access separately and reporting each as ok / warn / fail with an
-actionable message — so it pinpoints *which* of the first-run requirements is
-missing.
+sidecar execution mode (persistent vs one-shot fallback), the write-tools gate
+(enabled/disabled + backend readiness), library readability, and Full Disk
+Access separately and reporting each as ok / warn / fail with an actionable
+message — so it pinpoints *which* of the first-run requirements is missing.
 
 ## Performance model: cold vs warm calls
 
@@ -100,8 +107,45 @@ Two worked patterns built from these pieces:
 - **Dedupe with visual verification:** `find-duplicates` → groups of exact
   duplicates (Photos' fingerprint; identical image data only) → `get-thumbnail`
   a member or two per group to eyeball them → since this server cannot delete,
-  have the user collect the extra copies into a quarantine album in Photos.app
-  and delete there.
+  collect the extra copies into a quarantine album (writes enabled: the
+  album-quarantine pattern below; otherwise have the user do it in Photos.app)
+  and let the user delete from there.
+
+## Write workflow (gated — check `doctor` first)
+
+The write tools follow the same query-then-act shape: `query` /
+`find-duplicates` for UUIDs, then the write tool with those explicit UUIDs.
+Rules that keep writes safe and predictable:
+
+- **Check the gate before promising anything.** A write call on a read-only
+  server returns "Write tools are disabled…" with the opt-in recipe
+  (`APPLE_PHOTOS_MCP_ENABLE_WRITES=1` via env or config.json + restart) —
+  relay that recipe to the user rather than retrying. `doctor`'s `writes`
+  check reports the state up front.
+- **There is NO delete.** Deliberately: no tool deletes photos, albums, or
+  folders. The deletion UX is the **album-quarantine pattern** — file the
+  condemned photos into a clearly-named album and have the user review +
+  delete inside Photos.app (30-day Recently Deleted safety net):
+  ```
+  1. find-duplicates                        → groups with UUIDs
+  2. create-album name="Duplicates — review & delete"   (idempotent)
+  3. add-to-album with each group's EXTRA copies (keep the best per group)
+  4. tell the user to review the album in Photos.app and delete there
+  ```
+- **`remove-from-album` rebuilds the album.** Photos' AppleScript has no
+  remove verb, so removal recreates the album minus the removed photos: the
+  album **UUID changes** (response carries `previousAlbumUuid` → `album.uuid`)
+  and manual sort order is lost. It never touches the photos themselves. Use
+  the NEW uuid for follow-up calls (or just use the album name).
+- **`set-keywords` merges, never replaces.** Union semantics: existing
+  keywords the caller doesn't mention are preserved. Revert with the echoed
+  `before` list. A keyword in both `add` and `remove` is rejected.
+- **Metadata writes echo before/after** — capture `before` when the user may
+  want an undo.
+- **Writes target the library currently open in Photos.app** (normally the
+  system library); the `library` parameter applies to read tools only. Writes
+  launch Photos.app if needed and require macOS **Automation** permission —
+  the first write may pop a one-time system prompt.
 
 ## Conventions and behaviors to know
 
@@ -154,7 +198,7 @@ Two worked patterns built from these pieces:
 | Tool | Purpose |
 |------|---------|
 | `health-check` | Verify osxphotos is installed and the library opens (while another operation is running it answers immediately with a liveness summary instead of queueing behind it) |
-| `doctor` | Full setup diagnostic — Python interpreter version, osxphotos install, sidecar mode (persistent vs one-shot), library readability, and Full Disk Access, each ok/warn/fail with advice (richer than `health-check`) |
+| `doctor` | Full setup diagnostic — Python interpreter version, osxphotos install, sidecar mode (persistent vs one-shot), write-tools gate, library readability, and Full Disk Access, each ok/warn/fail with advice (richer than `health-check`) |
 | `library-info` | High-level counts (photos, movies, albums, folders, keywords, persons) |
 | `query` | Find photos by taken/import date, album, keyword, person, ML label, place, folder, year, size, media type, or flags → returns UUIDs (`newestFirst` for the N most recent) |
 | `get-photo` | Full metadata for one photo by UUID (incl. EXIF camera data) |
@@ -166,6 +210,11 @@ Two worked patterns built from these pieces:
 | `list-keywords` | Keywords sorted by usage count |
 | `list-persons` | Named people sorted by photo count |
 | `export` | Copy photo(s) by UUID to a destination directory |
+| `create-album` | *(write, gated)* Create an album, optionally in a folder path; idempotent |
+| `add-to-album` | *(write, gated)* File photos into an album by UUID; idempotent, per-UUID report |
+| `remove-from-album` | *(write, gated)* Remove photos from an album ONLY (never the library); rebuilds the album — UUID changes |
+| `set-photo-metadata` | *(write, gated)* Set title/description/favorite; echoes before/after for undo |
+| `set-keywords` | *(write, gated)* Add/remove keywords with union semantics — unmentioned keywords preserved |
 
 ## Error Handling
 
@@ -178,6 +227,9 @@ Two worked patterns built from these pieces:
 | Export skipped: "Photo does not have adjustments..." / "raw component not on disk..." | `edited` requested but the photo has no edits / `raw` requested but the raw file isn't downloaded | Retry without that flag |
 | Export skipped: "already exists at destination" | A file with that name is already at `dest` and `overwrite` wasn't set | Pass `overwrite: true` to replace, or export to a fresh directory |
 | Export skipped: "UUID not found (deleted or in trash)" | Stale UUID — photo deleted or moved to Recently Deleted since the query | Re-run `query` to get current UUIDs |
+| "Write tools are disabled — apple-photos-mcp is read-only by default" | The `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` opt-in isn't set | Relay the opt-in recipe (env or config.json + server restart); confirm with `doctor`'s `writes` check |
+| "Album not found: '…'" | Wrong album name/UUID, or the album lives in a different library than the one open in Photos.app | `list-albums` for exact names; `create-album` to create it |
+| Write fails with AppleScript error `-1743` / "not authorized" | macOS Automation permission for Photos not granted (or denied) to the host app | Re-enable under System Settings → Privacy & Security → Automation → (host app) → Photos; first write from a GUI session triggers the one-time prompt |
 | "Operation timed out after 60000ms" | Very large library — the first (cold) call after startup, an idle period, or a library change parses the whole Photos DB | Set `APPLE_PHOTOS_MCP_TIMEOUT` (ms) higher; warm calls are then fast |
 | "Export destination ... is outside the allowed export roots" | `dest` resolves outside home, `/tmp`, `/private/tmp`, and `/Volumes` (symlinks are followed) | Pick a destination under one of those roots |
 | Database-lock error | Photos.app is mid-write | Close Photos.app and retry (queries only — iCloud export needs Photos) |
@@ -194,6 +246,9 @@ Two worked patterns built from these pieces:
 - "Do I have duplicates?" → `find-duplicates`, then `get-thumbnail` to verify visually
 - "Export those" → `export` with the UUIDs and a `dest`
 - "What albums / keywords / people are there?" → `list-albums` / `list-keywords` / `list-persons`
+- "File these into an album" → *(writes gated)* `create-album` then `add-to-album` with the UUIDs
+- "Tag / caption / favorite these" → *(writes gated)* `set-keywords` (union merge) / `set-photo-metadata`
+- "Delete the duplicates" → cannot delete: album-quarantine pattern (`create-album` + `add-to-album`), user deletes in Photos.app
 
 ## Recurring macOS permission prompts → offer the official-Node fix
 

@@ -1,8 +1,8 @@
 {
   "name": "apple-photos-mcp",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "packageManager": "pnpm@11.9.0",
-  "description": "MCP server for Apple Photos - query, search, export, and inspect the macOS Photos library via Claude and other AI assistants",
+  "description": "MCP server for Apple Photos - query, search, export, and inspect the macOS Photos library via Claude and other AI assistants, plus opt-in album/metadata write tools (read-only by default)",
   "type": "module",
   "main": "build/index.js",
   "bin": {

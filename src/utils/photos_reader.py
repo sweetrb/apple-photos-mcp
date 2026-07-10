@@ -3,6 +3,12 @@
 Bridge script: queries the Apple Photos library using osxphotos and outputs JSON.
 Called by the TypeScript MCP server via child_process.
 
+Reads go through osxphotos (direct SQLite parse). The OPT-IN write commands
+(create-album, add-to-album, remove-from-album, set-photo-metadata,
+set-keywords) go through photoscript, which drives Photos.app over AppleScript
+— they are refused unless APPLE_PHOTOS_MCP_ENABLE_WRITES is set (the TS layer
+gates them too; this is defense in depth for direct CLI invocation).
+
 Two modes:
 
 - **One-shot (argv)**: `photos_reader.py <command> [--flags]` — runs one command
@@ -31,12 +37,14 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 try:
     import bitmath
@@ -951,6 +959,367 @@ def cmd_export(args):
 
 
 # ---------------------------------------------------------------------------
+# Write commands (photoscript → Photos.app AppleScript) — OPT-IN
+# ---------------------------------------------------------------------------
+#
+# Everything below MODIFIES the user's Photos library and is therefore gated
+# behind APPLE_PHOTOS_MCP_ENABLE_WRITES (checked per command, here AND in the
+# TS layer). Design invariants:
+#
+#   - Writes target the library currently open in Photos.app (normally the
+#     system library) — AppleScript cannot address any other library, so the
+#     write commands deliberately take no --library flag.
+#   - Every target is validated first: unknown photo UUIDs / album names come
+#     back as clear errors (or per-UUID notFound lists for batches), never as
+#     silent no-ops on the wrong object.
+#   - Nothing here can DELETE a photo from the library. remove-from-album
+#     changes album membership only; there is intentionally no delete command
+#     (Photos' AppleScript delete verbs are not exposed as MCP tools).
+#   - After any write the resident PhotosDB cache is dropped: Photos commits
+#     through SQLite WAL, so the Photos.sqlite mtime the cache revalidates on
+#     may not change immediately — trusting it could serve a stale snapshot.
+
+WRITES_ENV = "APPLE_PHOTOS_MCP_ENABLE_WRITES"
+
+# UUID-ish (hex segments and dashes, optional AppleScript "/L0/nnn" suffix) —
+# used to decide whether an album reference should try an id lookup first.
+_UUID_ISH_RE = re.compile(r"^[0-9A-Fa-f-]+(/L0/\d+)?$")
+
+_photoscript_module = None
+
+
+def _writes_enabled() -> bool:
+    value = os.environ.get(WRITES_ENV, "")
+    return value not in ("", "0") and value.lower() != "false"
+
+
+def _require_writes() -> None:
+    if not _writes_enabled():
+        raise RuntimeError(
+            "Write tools are disabled — apple-photos-mcp is read-only by default. "
+            f"Set {WRITES_ENV}=1 in the server's environment (or in "
+            "~/Library/Application Support/apple-photos-mcp/config.json) and restart "
+            "the MCP server to enable them. Run the doctor tool to see the gate "
+            "state, or see "
+            "https://github.com/sweetrb/apple-photos-mcp#write-tools-opt-in"
+        )
+
+
+def _photoscript():
+    """Lazily import photoscript (read-only users never pay for it) and make
+    its AppleScript runner safe for MCP use: photoscript's default retry
+    policy runs `killall Photos` when an AppleScript call times out — an MCP
+    server must NEVER kill the user's Photos.app out from under them, so
+    retries are disabled and timeouts surface as plain errors instead."""
+    global _photoscript_module
+    if _photoscript_module is None:
+        try:
+            import photoscript
+            from photoscript.script_loader import configure_run_script
+        except ImportError as exc:
+            raise RuntimeError(
+                "photoscript not installed. Install it with: pip3 install photoscript, "
+                "or run scripts/setup.sh from a repo checkout (it installs "
+                "requirements.txt into ./venv). Run the doctor tool to diagnose, or see "
+                "https://github.com/sweetrb/apple-photos-mcp#troubleshooting"
+            ) from exc
+        configure_run_script(retry_enabled=False)
+        _photoscript_module = photoscript
+    return _photoscript_module
+
+
+def _run_script(ps, name: str, *args):
+    """One raw AppleScript call via photoscript's runner. Used where the
+    object API would spawn one osascript per photo (Album.photos() constructs
+    a Photo — one existence probe each — for every member; albumPhotes/albumAdd
+    move the whole id list in a single call). photoscript is version-pinned in
+    requirements.txt, so these two handler names are stable."""
+    return ps.script_loader.run_script(name, *args)
+
+
+def _mark_library_written() -> None:
+    """Drop every resident PhotosDB after a write (see invariants above)."""
+    _db_cache.clear()
+
+
+def _bare_uuid(media_id: str) -> str:
+    """Strip the AppleScript '/L0/nnn' suffix: media-item id → osxphotos UUID."""
+    return media_id.split("/")[0]
+
+
+def _album_payload(album) -> dict:
+    return {
+        "uuid": album.uuid,
+        "name": album.name,
+        "path": album.path_str("/"),
+    }
+
+
+def _resolve_album(ps, lib, ref: str):
+    """Resolve an album by UUID or name. UUID-looking refs try the id lookup
+    first and fall back to a name lookup (an album could be *named* like a
+    UUID). Raises with a clear message when nothing matches."""
+    if _UUID_ISH_RE.match(ref):
+        try:
+            return ps.Album(ref)
+        except ValueError:
+            pass  # not a known album id — fall through to the name lookup
+    album = lib.album(ref)
+    if album is None:
+        raise RuntimeError(
+            f"Album not found: {ref!r}. Pass an exact album name or UUID "
+            "(see list-albums), or create it with create-album."
+        )
+    return album
+
+
+def _resolve_photo(ps, uuid: str):
+    """One photo by UUID via Photos.app; same message contract as get-photo."""
+    try:
+        return ps.Photo(uuid)
+    except ValueError:
+        raise RuntimeError(f"Photo not found: {uuid}") from None
+
+
+def _resolve_photos(ps, uuids: list[str]) -> tuple[list, list[str]]:
+    """Batch photo resolution: (found Photo objects, notFound uuids) — dupes
+    collapsed, caller order preserved."""
+    found: list = []
+    not_found: list[str] = []
+    for u in dict.fromkeys(uuids):
+        try:
+            found.append(ps.Photo(u))
+        except ValueError:
+            not_found.append(u)
+    return found, not_found
+
+
+def _temp_album_name(lib) -> str:
+    """A collision-checked scratch-album name for the remove rebuild."""
+    while True:
+        candidate = f"apple-photos-mcp-tmp-{uuid4().hex[:12]}"
+        if lib.album(candidate) is None:
+            return candidate
+
+
+def _merge_keywords(
+    current: list[str], add: list[str], remove: list[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """UNION semantics for set-keywords: start from the photo's CURRENT
+    keywords, drop `remove`, append `add` — never blind-replace, so keywords
+    the caller didn't mention are always preserved. Order: survivors keep
+    their existing order, additions append in caller order.
+
+    Returns (after, added, removed) where added/removed reflect what actually
+    changed (adding an existing keyword or removing an absent one is a no-op).
+    """
+    remove_set = set(remove)
+    after = [k for k in current if k not in remove_set]
+    seen = set(after)
+    added = []
+    for k in add:
+        if k not in seen:
+            after.append(k)
+            seen.add(k)
+            added.append(k)
+    removed = [k for k in dict.fromkeys(current) if k in remove_set]
+    return after, added, removed
+
+
+def cmd_create_album(args):
+    """Create an album (optionally nested in a folder path), or return the
+    existing album of that name with created=false — idempotent by design so
+    re-running a filing workflow never piles up duplicate albums."""
+    _require_writes()
+    ps = _photoscript()
+    lib = ps.PhotosLibrary()
+    try:
+        if args.folder:
+            # "/"-separated folder path; each segment is created if missing
+            # (folder names containing a literal "/" are not addressable).
+            path = [seg for seg in args.folder.split("/") if seg.strip()]
+            if not path:
+                raise RuntimeError("folder must contain at least one folder name")
+            folder = lib.make_folders(path)
+            existing = folder.album(args.name)
+            if existing is not None:
+                return {"album": _album_payload(existing), "created": False}
+            return {"album": _album_payload(folder.create_album(args.name)), "created": True}
+        # No folder: the idempotency check matches an album of that name
+        # ANYWHERE in the library (first match), so re-runs find the album
+        # even if it was originally created inside a folder.
+        existing = lib.album(args.name)
+        if existing is not None:
+            return {"album": _album_payload(existing), "created": False}
+        return {"album": _album_payload(lib.create_album(args.name)), "created": True}
+    finally:
+        _mark_library_written()
+
+
+def cmd_add_to_album(args):
+    """Add photos (by UUID) to an album. Idempotent: photos already in the
+    album are reported in alreadyPresent, not added twice (Photos albums are
+    sets). Unknown UUIDs are reported in notFound; the batch fails only when
+    NO requested photo exists."""
+    _require_writes()
+    ps = _photoscript()
+    lib = ps.PhotosLibrary()
+    try:
+        album = _resolve_album(ps, lib, args.album)
+        photos, not_found = _resolve_photos(ps, args.uuid)
+        if not photos:
+            raise RuntimeError(
+                "None of the requested photos exist in the library: "
+                + ", ".join(not_found)
+            )
+        members = {_bare_uuid(m) for m in _run_script(ps, "albumPhotes", album.id)}
+        to_add = [p for p in photos if p.uuid not in members]
+        already = [p.uuid for p in photos if p.uuid in members]
+        if to_add:
+            # albumAdd verifies membership after adding (retrying internally),
+            # so a normal return means every photo really is in the album.
+            _run_script(ps, "albumAdd", album.id, [p.id for p in to_add])
+        return {
+            "album": _album_payload(album),
+            "addedCount": len(to_add),
+            "added": [p.uuid for p in to_add],
+            "alreadyPresent": already,
+            "notFound": not_found,
+        }
+    finally:
+        _mark_library_written()
+
+
+def cmd_remove_from_album(args):
+    """Remove photos (by UUID) from an album — NEVER from the library: the
+    photos stay in All Photos and every other album.
+
+    Photos' AppleScript dictionary has no remove-from-album verb, so removal
+    REBUILDS the album (the same approach photoscript's Album.remove uses,
+    implemented here with bulk id calls instead of per-photo objects): create
+    a scratch album in the same folder, add every kept photo, delete the
+    original, rename. Consequences callers must know: the album's UUID CHANGES
+    (albumRecreated=true, previousAlbumUuid reports the old one) and any custom
+    manual sort order is lost. When none of the UUIDs are in the album the
+    rebuild is skipped entirely (albumRecreated=false)."""
+    _require_writes()
+    ps = _photoscript()
+    lib = ps.PhotosLibrary()
+    try:
+        album = _resolve_album(ps, lib, args.album)
+        requested = list(dict.fromkeys(args.uuid))
+        member_ids = _run_script(ps, "albumPhotes", album.id)
+        members = {_bare_uuid(m) for m in member_ids}
+        to_remove = [u for u in requested if u in members]
+        not_in_album = [u for u in requested if u not in members]
+        if not to_remove:
+            return {
+                "album": _album_payload(album),
+                "removedCount": 0,
+                "removed": [],
+                "notInAlbum": not_in_album,
+                "albumRecreated": False,
+            }
+
+        remove_set = set(to_remove)
+        keep_ids = [m for m in member_ids if _bare_uuid(m) not in remove_set]
+        previous_uuid = album.uuid
+        name = album.name
+        new_album = lib.create_album(_temp_album_name(lib), folder=album.parent)
+        try:
+            if keep_ids:
+                _run_script(ps, "albumAdd", new_album.id, keep_ids)
+        except Exception:
+            # Rebuild failed before anything was destroyed: drop the scratch
+            # album and leave the original untouched.
+            lib.delete_album(new_album)
+            raise
+        lib.delete_album(album)
+        new_album.name = name
+        return {
+            "album": _album_payload(new_album),
+            "removedCount": len(to_remove),
+            "removed": to_remove,
+            "notInAlbum": not_in_album,
+            "albumRecreated": True,
+            "previousAlbumUuid": previous_uuid,
+        }
+    finally:
+        _mark_library_written()
+
+
+def cmd_set_photo_metadata(args):
+    """Set title / description / favorite on one photo. Only the fields passed
+    are touched; before/after values are echoed so a caller can revert."""
+    _require_writes()
+    if args.title is None and args.description is None and args.favorite is None:
+        raise RuntimeError(
+            "Nothing to update: pass at least one of --title, --description, --favorite"
+        )
+    ps = _photoscript()
+    try:
+        photo = _resolve_photo(ps, args.uuid)
+        before = {
+            "title": photo.title,
+            "description": photo.description,
+            "favorite": photo.favorite,
+        }
+        updated = []
+        if args.title is not None:
+            photo.title = args.title
+            updated.append("title")
+        if args.description is not None:
+            photo.description = args.description
+            updated.append("description")
+        if args.favorite is not None:
+            photo.favorite = args.favorite == "true"
+            updated.append("favorite")
+        after = {
+            "title": photo.title,
+            "description": photo.description,
+            "favorite": photo.favorite,
+        }
+        return {"uuid": photo.uuid, "updated": updated, "before": before, "after": after}
+    finally:
+        _mark_library_written()
+
+
+def cmd_set_keywords(args):
+    """Add/remove keywords on one photo with UNION semantics (_merge_keywords):
+    existing keywords the caller didn't mention are always preserved — the
+    photoscript setter replaces the whole list, so the merge happens here
+    against the photo's live keywords. Echoes before/after for revertability."""
+    _require_writes()
+    add = args.add or []
+    remove = args.remove or []
+    if not add and not remove:
+        raise RuntimeError("Nothing to do: pass --add and/or --remove")
+    overlap = sorted(set(add) & set(remove))
+    if overlap:
+        raise RuntimeError(
+            "Keywords cannot be both added and removed: " + ", ".join(overlap)
+        )
+    ps = _photoscript()
+    try:
+        photo = _resolve_photo(ps, args.uuid)
+        before = list(photo.keywords)
+        after, added, removed = _merge_keywords(before, add, remove)
+        changed = after != before
+        if changed:
+            photo.keywords = after
+        return {
+            "uuid": photo.uuid,
+            "before": before,
+            "after": after,
+            "added": added,
+            "removed": removed,
+            "changed": changed,
+        }
+    finally:
+        _mark_library_written()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1064,6 +1433,34 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--raw", action="store_true", help="Include raw image")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
 
+    # --- write commands (gated; no --library: writes always target the
+    #     library currently open in Photos.app) ---
+    p = sub.add_parser("create-album")
+    p.add_argument("--name", required=True, help="Album name")
+    p.add_argument(
+        "--folder",
+        help='Folder path to nest the album under ("A/B"); folders are created as needed',
+    )
+
+    p = sub.add_parser("add-to-album")
+    p.add_argument("--album", required=True, help="Album name or UUID")
+    p.add_argument("--uuid", action="append", required=True, help="Photo UUID(s) to add")
+
+    p = sub.add_parser("remove-from-album")
+    p.add_argument("--album", required=True, help="Album name or UUID")
+    p.add_argument("--uuid", action="append", required=True, help="Photo UUID(s) to remove")
+
+    p = sub.add_parser("set-photo-metadata")
+    p.add_argument("--uuid", required=True, help="Photo UUID")
+    p.add_argument("--title", help="New title (empty string clears)")
+    p.add_argument("--description", help="New description (empty string clears)")
+    p.add_argument("--favorite", choices=["true", "false"], help="Favorite flag")
+
+    p = sub.add_parser("set-keywords")
+    p.add_argument("--uuid", required=True, help="Photo UUID")
+    p.add_argument("--add", action="append", help="Keyword to add (repeatable)")
+    p.add_argument("--remove", action="append", help="Keyword to remove (repeatable)")
+
     return parser
 
 
@@ -1080,6 +1477,12 @@ HANDLERS = {
     "list-keywords": cmd_list_keywords,
     "list-persons": cmd_list_persons,
     "export": cmd_export,
+    # write commands (gated behind APPLE_PHOTOS_MCP_ENABLE_WRITES)
+    "create-album": cmd_create_album,
+    "add-to-album": cmd_add_to_album,
+    "remove-from-album": cmd_remove_from_album,
+    "set-photo-metadata": cmd_set_photo_metadata,
+    "set-keywords": cmd_set_keywords,
 }
 
 

@@ -1,11 +1,13 @@
 ---
 name: apple-photos
-description: Use this skill when the user wants to query, view, or export photos from their macOS Apple Photos library — searching by date/import-date/album/keyword/person/label/place/media-type, viewing photos inline as thumbnails, finding exact duplicates, browsing albums and folders, fetching metadata (location, dimensions, EXIF, type flags), or exporting originals/edited versions to a directory. Backed by osxphotos.
+description: Use this skill when the user wants to query, view, organize, or export photos from their macOS Apple Photos library — searching by date/import-date/album/keyword/person/label/place/media-type, viewing photos inline as thumbnails, finding exact duplicates, browsing albums and folders, fetching metadata (location, dimensions, EXIF, type flags), exporting originals/edited versions to a directory, or (when the opt-in write gate is enabled) creating albums, filing photos into albums, and setting titles/descriptions/keywords/favorites. Backed by osxphotos.
 ---
 
 # Apple Photos Skill
 
-This skill enables you to query and export photos from the macOS Apple Photos library using natural language. It is backed by the [osxphotos](https://github.com/RhetTbull/osxphotos) Python library and operates **read-only** against the Photos library — no modifications are made to the library itself, but exports write files to disk.
+This skill enables you to query, organize, and export photos from the macOS Apple Photos library using natural language. It is backed by the [osxphotos](https://github.com/RhetTbull/osxphotos) Python library and operates **read-only by default** — no modifications are made to the library itself, but exports write files to disk.
+
+**Write tools exist but are gated:** `create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, and `set-keywords` only work when the user has set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (in the server env or in `~/Library/Application Support/apple-photos-mcp/config.json`, then restarted the server). **Check `doctor` first** when a task needs writes — its `writes` check reports the gate state; a gated call returns the opt-in recipe to relay to the user. Even with writes enabled, **no tool can delete photos** (quarantine into an album; the user deletes in Photos.app).
 
 ## When to Use This Skill
 
@@ -17,6 +19,7 @@ Use this skill when the user:
 - Wants to list albums, folders, keywords, or detected persons
 - Needs full metadata for one photo or a batch (dimensions, location, EXIF camera data, type flags)
 - Wants to export photos (originals, edited versions, raw, or live-photo videos) to a directory
+- Wants to organize photos — create albums, file photos into albums, tag with keywords, set titles/descriptions/favorites (write tools; gated — see above)
 - Mentions Apple Photos, Photos.app, "my photos", "my photo library"
 
 ## Available Tools
@@ -24,7 +27,7 @@ Use this skill when the user:
 | Tool | Purpose |
 |------|---------|
 | `health-check` | Verify osxphotos is installed and the library can be opened |
-| `doctor` | Full diagnostic — five checks: Python interpreter version, osxphotos install, sidecar mode (persistent vs one-shot), library readability, and Full Disk Access (ok/warn/fail with advice) |
+| `doctor` | Full diagnostic — six checks: Python interpreter version, osxphotos install, sidecar mode (persistent vs one-shot), write-tools gate, library readability, and Full Disk Access (ok/warn/fail with advice) |
 | `library-info` | High-level stats: counts of photos, movies, albums, folders, keywords, persons |
 | `query` | Search the library with combinable filters (dates, import dates, albums, keywords, persons, labels, places, years, sizes, media types); `newestFirst` for the N most recent; returns photo summaries with UUIDs |
 | `get-photo` | Full metadata for one photo by UUID (location, dimensions, EXIF camera data, type flags, etc.) |
@@ -36,6 +39,11 @@ Use this skill when the user:
 | `list-keywords` | Keywords sorted by usage count (with optional top-N limit) |
 | `list-persons` | People detected by face recognition, sorted by photo count |
 | `export` | Export one or more photos by UUID to a destination directory |
+| `create-album` | *(write, gated)* Create an album, optionally nested in a folder path; idempotent (existing album returned, not duplicated) |
+| `add-to-album` | *(write, gated)* File photos into an album by UUID (1–100); idempotent, reports added/alreadyPresent/notFound |
+| `remove-from-album` | *(write, gated)* Remove photos from an album ONLY — never from the library; rebuilds the album (its UUID changes) |
+| `set-photo-metadata` | *(write, gated)* Set title/description/favorite; echoes before/after values for undo |
+| `set-keywords` | *(write, gated)* Add/remove keywords with union semantics — keywords you don't mention are preserved |
 
 ## Usage Patterns
 
@@ -99,6 +107,21 @@ User: "I want the edited versions, not the originals"
 → export with edited=true
 ```
 
+### Organize (write tools — gated; check doctor first)
+```
+User: "File this week's imports into a Trailcam album and tag them"
+→ doctor (writes check = ENABLED?)
+→ query addedInLast="7d" → UUIDs
+→ create-album name="Trailcam"          (idempotent)
+→ add-to-album album="Trailcam" uuid=[...]
+→ set-keywords per photo add=["trailcam"]   (merges — existing keywords kept)
+
+User: "Delete the duplicate copies"
+→ You CANNOT delete. Album-quarantine pattern instead:
+  find-duplicates → create-album "Duplicates — review & delete"
+  → add-to-album with each group's extras → user reviews + deletes in Photos.app
+```
+
 ## Important Guidelines
 
 1. **Two-step workflow:** Use `query` to find UUIDs, then `get-photo`/`get-photos`, `get-thumbnail`, or `export` for details/images/files. Don't ask the user for UUIDs — derive them from a search first. Prefer `get-photos` over repeated `get-photo` calls when you hold several UUIDs.
@@ -117,6 +140,8 @@ User: "I want the edited versions, not the originals"
 
 7. **macOS only.** The Photos library only exists on macOS.
 
+7a. **Writes are opt-in — never assume they're available.** If a write tool returns "Write tools are disabled", relay the recipe: set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (env or config.json) and restart the server. `remove-from-album` removes album membership only (never deletes photos) and rebuilds the album — its UUID changes, so use the returned `album.uuid` (or the name) afterwards. `set-keywords` merges (union): keywords the user didn't mention are preserved. Writes drive Photos.app via AppleScript — the first write may pop a one-time macOS Automation prompt, and writes always target the library currently open in Photos.app.
+
 8. **First-run setup is automatic.** The server auto-bootstraps a Python venv with `osxphotos` on the first tool call — the venv lives inside the plugin's own clone (under `~/.claude/plugins/` for a marketplace install), not in the user's project. If a tool still reports "osxphotos not installed", run the `doctor` tool FIRST to diagnose why auto-setup failed — the most common cause is `python3` older than 3.11 (stock macOS ships 3.9): have the user run `brew install python@3.12`, then simply retry the tool call (the venv rebuilds automatically).
 
 ## Error Handling
@@ -130,3 +155,6 @@ User: "I want the edited versions, not the originals"
 | "No photos matched the query" | Filters too narrow — relax the criteria |
 | "Photo not found: <uuid>" | Wrong UUID, or photo deleted |
 | Permission errors during export | Destination not writable, or library locked by Photos.app |
+| "Write tools are disabled — apple-photos-mcp is read-only by default" | The opt-in gate isn't set — relay: `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (env or config.json) + server restart; confirm with `doctor` |
+| "Album not found: '…'" | Wrong album name/UUID — `list-albums` for exact names, or `create-album` |
+| Write fails with AppleScript `-1743` / "not authorized" | macOS Automation permission for Photos not granted to the host app — System Settings → Privacy & Security → Automation → (host app) → Photos |

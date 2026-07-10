@@ -20,7 +20,7 @@
  *   (or `npx vitest run --config vitest.integration.config.ts`)
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { PhotosManager } from "../src/services/photosManager.js";
 
 let mgr: PhotosManager;
@@ -60,6 +60,68 @@ describe("PhotosManager construction", () => {
     expect(typeof m.listAlbums).toBe("function");
     expect(typeof m.listKeywords).toBe("function");
     expect(typeof m.listPersons).toBe("function");
+  });
+
+  it("exposes the write API surface", () => {
+    const m = new PhotosManager();
+    expect(typeof m.createAlbum).toBe("function");
+    expect(typeof m.addToAlbum).toBe("function");
+    expect(typeof m.removeFromAlbum).toBe("function");
+    expect(typeof m.setPhotoMetadata).toBe("function");
+    expect(typeof m.setKeywords).toBe("function");
+  });
+});
+
+// ===========================================================================
+// Write gate — pure, always runs (incl. CI). With the gate closed (the
+// default), every write method must be refused BEFORE any sidecar spawns, so
+// this block is guaranteed side-effect-free: no Photos.app, no AppleScript,
+// no library. The live write path is exercised by test/live-writes.test.ts,
+// which requires an explicit double opt-in.
+// ===========================================================================
+
+describe("write tools are gated off by default", () => {
+  let savedGate: string | undefined;
+
+  beforeAll(() => {
+    savedGate = process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
+    delete process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
+  });
+
+  afterAll(() => {
+    if (savedGate !== undefined) {
+      process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = savedGate;
+    }
+  });
+
+  const gated = /read-only by default/;
+
+  it("createAlbum is refused with the opt-in recipe", async () => {
+    const m = new PhotosManager();
+    await expect(m.createAlbum("Gate Test")).rejects.toThrow(gated);
+    await expect(m.createAlbum("Gate Test")).rejects.toThrow(
+      /APPLE_PHOTOS_MCP_ENABLE_WRITES=1/
+    );
+  });
+
+  it("addToAlbum is refused", async () => {
+    const m = new PhotosManager();
+    await expect(m.addToAlbum("Gate Test", ["0000-0000"])).rejects.toThrow(gated);
+  });
+
+  it("removeFromAlbum is refused", async () => {
+    const m = new PhotosManager();
+    await expect(m.removeFromAlbum("Gate Test", ["0000-0000"])).rejects.toThrow(gated);
+  });
+
+  it("setPhotoMetadata is refused", async () => {
+    const m = new PhotosManager();
+    await expect(m.setPhotoMetadata("0000-0000", { title: "x" })).rejects.toThrow(gated);
+  });
+
+  it("setKeywords is refused", async () => {
+    const m = new PhotosManager();
+    await expect(m.setKeywords("0000-0000", { add: ["x"] })).rejects.toThrow(gated);
   });
 });
 

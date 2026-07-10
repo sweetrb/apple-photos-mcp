@@ -819,3 +819,284 @@ describe("PhotosManager", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Write tools (opt-in, gated behind APPLE_PHOTOS_MCP_ENABLE_WRITES)
+// ---------------------------------------------------------------------------
+describe("PhotosManager write tools", () => {
+  let manager: PhotosManager;
+  let savedGate: string | undefined;
+
+  beforeEach(() => {
+    manager = new PhotosManager();
+    runMock.mockReset();
+    statMock.mockReset();
+    statMock.mockImplementation(() => {
+      throw new Error("ENOENT: no such file");
+    });
+    savedGate = process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
+    process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = "1";
+  });
+
+  afterEach(() => {
+    if (savedGate === undefined) {
+      delete process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
+    } else {
+      process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = savedGate;
+    }
+  });
+
+  describe("the gate (writes disabled)", () => {
+    const gatedError = /read-only by default/;
+
+    beforeEach(() => {
+      delete process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
+    });
+
+    it("createAlbum is refused before anything spawns", async () => {
+      await expect(manager.createAlbum("X")).rejects.toThrow(gatedError);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("addToAlbum is refused before anything spawns", async () => {
+      await expect(manager.addToAlbum("X", ["A1B2"])).rejects.toThrow(gatedError);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("removeFromAlbum is refused before anything spawns", async () => {
+      await expect(manager.removeFromAlbum("X", ["A1B2"])).rejects.toThrow(gatedError);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("setPhotoMetadata is refused before anything spawns", async () => {
+      await expect(manager.setPhotoMetadata("A1B2", { title: "t" })).rejects.toThrow(gatedError);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("setKeywords is refused before anything spawns", async () => {
+      await expect(manager.setKeywords("A1B2", { add: ["k"] })).rejects.toThrow(gatedError);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("the gated error names the env var and the config file", async () => {
+      await expect(manager.createAlbum("X")).rejects.toThrow(/APPLE_PHOTOS_MCP_ENABLE_WRITES=1/);
+      await expect(manager.createAlbum("X")).rejects.toThrow(/config\.json/);
+    });
+
+    it("APPLE_PHOTOS_MCP_ENABLE_WRITES=0 and =false keep the gate closed", async () => {
+      process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = "0";
+      await expect(manager.createAlbum("X")).rejects.toThrow(gatedError);
+      process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = "false";
+      await expect(manager.createAlbum("X")).rejects.toThrow(gatedError);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("createAlbum", () => {
+    it("builds the sidecar command (name only)", async () => {
+      const data = { album: { uuid: "AL1", name: "Trailcam", path: "Trailcam" }, created: true };
+      runMock.mockResolvedValue({ data });
+      const result = await manager.createAlbum("Trailcam");
+      expect(runMock).toHaveBeenCalledWith(
+        "create-album",
+        ["--name=Trailcam"],
+        expect.any(Number),
+        undefined
+      );
+      expect(result).toEqual(data);
+    });
+
+    it("passes the folder path and handles leading-dash names via --flag=value", async () => {
+      runMock.mockResolvedValue({
+        data: {
+          album: { uuid: "AL1", name: "-Archive", path: "Trips/2026/-Archive" },
+          created: true,
+        },
+      });
+      await manager.createAlbum("-Archive", "Trips/2026");
+      expect(runMock).toHaveBeenCalledWith(
+        "create-album",
+        ["--name=-Archive", "--folder=Trips/2026"],
+        expect.any(Number),
+        undefined
+      );
+    });
+  });
+
+  describe("addToAlbum", () => {
+    it("builds one --uuid token per photo", async () => {
+      runMock.mockResolvedValue({
+        data: {
+          album: { uuid: "AL1", name: "T", path: "T" },
+          addedCount: 2,
+          added: ["U1", "U2"],
+          alreadyPresent: [],
+          notFound: [],
+        },
+      });
+      await manager.addToAlbum("Trailcam", ["U1", "U2"]);
+      expect(runMock).toHaveBeenCalledWith(
+        "add-to-album",
+        ["--album=Trailcam", "--uuid=U1", "--uuid=U2"],
+        expect.any(Number),
+        undefined
+      );
+    });
+
+    it("rejects an empty uuid batch without spawning", async () => {
+      await expect(manager.addToAlbum("Trailcam", [])).rejects.toThrow(/at least one/i);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("removeFromAlbum", () => {
+    it("builds the sidecar command and returns the rebuild metadata", async () => {
+      const data = {
+        album: { uuid: "AL2", name: "T", path: "T" },
+        removedCount: 1,
+        removed: ["U1"],
+        notInAlbum: ["U9"],
+        albumRecreated: true,
+        previousAlbumUuid: "AL1",
+      };
+      runMock.mockResolvedValue({ data });
+      const result = await manager.removeFromAlbum("AL1", ["U1", "U9"]);
+      expect(runMock).toHaveBeenCalledWith(
+        "remove-from-album",
+        ["--album=AL1", "--uuid=U1", "--uuid=U9"],
+        expect.any(Number),
+        undefined
+      );
+      expect(result.albumRecreated).toBe(true);
+      expect(result.previousAlbumUuid).toBe("AL1");
+    });
+
+    it("rejects an empty uuid batch without spawning", async () => {
+      await expect(manager.removeFromAlbum("T", [])).rejects.toThrow(/at least one/i);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("setPhotoMetadata", () => {
+    it("passes only the fields provided", async () => {
+      runMock.mockResolvedValue({
+        data: {
+          uuid: "U1",
+          updated: ["title"],
+          before: { title: "", description: "", favorite: false },
+          after: { title: "New", description: "", favorite: false },
+        },
+      });
+      await manager.setPhotoMetadata("U1", { title: "New" });
+      expect(runMock).toHaveBeenCalledWith(
+        "set-photo-metadata",
+        ["--uuid=U1", "--title=New"],
+        expect.any(Number),
+        undefined
+      );
+    });
+
+    it("serializes favorite=false as --favorite=false (not omitted)", async () => {
+      runMock.mockResolvedValue({
+        data: { uuid: "U1", updated: ["favorite"], before: {}, after: {} },
+      });
+      await manager.setPhotoMetadata("U1", { favorite: false });
+      expect(runMock).toHaveBeenCalledWith(
+        "set-photo-metadata",
+        ["--uuid=U1", "--favorite=false"],
+        expect.any(Number),
+        undefined
+      );
+    });
+
+    it("passes an empty string through (clearing a title)", async () => {
+      runMock.mockResolvedValue({
+        data: { uuid: "U1", updated: ["title"], before: {}, after: {} },
+      });
+      await manager.setPhotoMetadata("U1", { title: "" });
+      expect(runMock).toHaveBeenCalledWith(
+        "set-photo-metadata",
+        ["--uuid=U1", "--title="],
+        expect.any(Number),
+        undefined
+      );
+    });
+
+    it("rejects when no field is provided, without spawning", async () => {
+      await expect(manager.setPhotoMetadata("U1", {})).rejects.toThrow(/nothing to update/i);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("setKeywords", () => {
+    it("builds --add/--remove tokens (dash-safe)", async () => {
+      runMock.mockResolvedValue({
+        data: { uuid: "U1", before: [], after: [], added: [], removed: [], changed: false },
+      });
+      await manager.setKeywords("U1", { add: ["Trailcam", "-archive"], remove: ["Reveal"] });
+      expect(runMock).toHaveBeenCalledWith(
+        "set-keywords",
+        ["--uuid=U1", "--add=Trailcam", "--add=-archive", "--remove=Reveal"],
+        expect.any(Number),
+        undefined
+      );
+    });
+
+    it("rejects when neither add nor remove is provided, without spawning", async () => {
+      await expect(manager.setKeywords("U1", {})).rejects.toThrow(/nothing to do/i);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("metadata-cache invalidation on write", () => {
+    const fakeStat = (mtimeMs: number) => ({ mtimeMs }) as unknown as ReturnType<typeof statSync>;
+    const albums = { count: 1, albums: [{ title: "Vacation" }] };
+
+    it("a successful write force-clears the catalog cache even when the DB mtime is unchanged (WAL)", async () => {
+      // Same mtime throughout — simulating Photos' WAL commit not touching
+      // Photos.sqlite. Without the force-clear, the third call would be a hit.
+      statMock.mockReturnValue(fakeStat(4242));
+      runMock.mockResolvedValue({ data: albums });
+
+      await manager.listAlbums();
+      await manager.listAlbums(); // cache hit
+      expect(runMock).toHaveBeenCalledTimes(1);
+
+      runMock.mockResolvedValueOnce({
+        data: { album: { uuid: "AL1", name: "X", path: "X" }, created: true },
+      });
+      await manager.createAlbum("X");
+
+      runMock.mockResolvedValue({ data: albums });
+      await manager.listAlbums(); // must re-spawn, NOT serve the stale cache
+      expect(runMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("a FAILED write also clears the cache (it may have partially mutated)", async () => {
+      statMock.mockReturnValue(fakeStat(4242));
+      runMock.mockResolvedValue({ data: albums });
+      await manager.listAlbums();
+      expect(runMock).toHaveBeenCalledTimes(1);
+
+      runMock.mockResolvedValueOnce({ error: "AppleScript error mid-rebuild" });
+      await expect(manager.removeFromAlbum("T", ["U1"])).rejects.toThrow(/mid-rebuild/);
+
+      runMock.mockResolvedValue({ data: albums });
+      await manager.listAlbums();
+      expect(runMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("a gated-off write does NOT clear the cache (nothing ran)", async () => {
+      statMock.mockReturnValue(fakeStat(4242));
+      runMock.mockResolvedValue({ data: albums });
+      await manager.listAlbums();
+
+      delete process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
+      await expect(manager.createAlbum("X")).rejects.toThrow(/read-only/);
+      process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = "1";
+
+      await manager.listAlbums(); // still a cache hit
+      expect(runMock).toHaveBeenCalledTimes(1);
+    });
+  });
+});
