@@ -1,10 +1,10 @@
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { runPhotosReader, checkDependencies, sidecarBusy, isVenvReady } from "../utils/python.js";
+import { runPhotosReader, sidecarBusy, isVenvReady } from "../utils/python.js";
 import type { SidecarProgress } from "../utils/sidecarClient.js";
 import { FDA_REMEDIATION } from "../utils/docsUrls.js";
-import { resolveExportDest } from "../utils/exportPath.js";
+import { resolveExportDest, resolveImportSource } from "../utils/exportPath.js";
 import { assertWritesEnabled } from "../utils/writeGate.js";
 import type {
   AddToAlbumResult,
@@ -13,6 +13,7 @@ import type {
   DuplicateGroupsResult,
   ExportResult,
   FolderInfo,
+  ImportPhotosResult,
   KeywordCount,
   LibraryInfo,
   PersonCount,
@@ -21,7 +22,9 @@ import type {
   QueryFilters,
   QueryResult,
   RemoveFromAlbumResult,
+  SelectedPhotosResult,
   SetKeywordsResult,
+  SetPhotoDateResult,
   SetPhotoMetadataResult,
   ThumbnailResult,
 } from "../types.js";
@@ -87,6 +90,46 @@ const MAX_CACHE_ENTRIES = 8;
  */
 const WRITE_TIMEOUT_MS = 5 * 60 * 1000;
 const ALBUM_REBUILD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * import-photos copies files into the library and — with duplicate checking
+ * on — can block on Photos' duplicate dialog until a human answers it, so it
+ * gets the same generous budget as the album rebuild.
+ */
+const IMPORT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * get-selected-photos is one AppleScript round-trip for the selection plus an
+ * osxphotos projection; 2 minutes covers a large selection on a slow Mac.
+ */
+const SELECTION_TIMEOUT_MS = 2 * 60 * 1000;
+
+/**
+ * Parse and range-check a query `near` filter ("lat,lon,radiusKm") BEFORE the
+ * sidecar spawns, returning the canonical "lat,lon,radiusKm" string to pass
+ * through. The sidecar re-validates (defense in depth for direct CLI use).
+ */
+function validateNear(near: string): string {
+  const parts = near.split(",").map((s) => s.trim());
+  const nums = parts.map(Number);
+  if (parts.length !== 3 || parts.some((s) => s === "") || nums.some((n) => !Number.isFinite(n))) {
+    throw new Error(
+      `Invalid near filter "${near}": must be "lat,lon,radiusKm" — three numbers, ` +
+        `e.g. "46.5,-87.4,5"`
+    );
+  }
+  const [lat, lon, radiusKm] = nums;
+  if (lat < -90 || lat > 90) {
+    throw new Error(`Invalid near filter: latitude ${lat} out of range [-90, 90]`);
+  }
+  if (lon < -180 || lon > 180) {
+    throw new Error(`Invalid near filter: longitude ${lon} out of range [-180, 180]`);
+  }
+  if (!(radiusKm > 0) || radiusKm > 40075) {
+    throw new Error(`Invalid near filter: radiusKm ${radiusKm} must be > 0 and <= 40075`);
+  }
+  return `${lat},${lon},${radiusKm}`;
+}
 
 interface CacheEntry {
   mtimeMs: number;
@@ -238,8 +281,11 @@ export class PhotosManager {
           "Re-run health-check after the operation completes for the full result.",
       };
     }
-    const dep = await checkDependencies();
-    if (!dep.ok) return dep;
+    // Optimistic-first (PERF-6): run the real `health` command directly — its
+    // success proves everything a separate `import osxphotos` probe would
+    // (saving that probe's ~0.5–1s spawn on every call), and on failure the
+    // sidecar layer already classifies missing deps (venv auto-bootstrap +
+    // mapStructuredError attach the setup hint to the error message).
     try {
       const result = await this.run<{
         ok: boolean;
@@ -315,17 +361,32 @@ export class PhotosManager {
     if (filters.timelapse) args.push("--time-lapse");
     if (filters.slowMo) args.push("--slow-mo");
     if (filters.newestFirst) args.push("--newest-first");
+    // Post-filters (validated here so junk fails before a sidecar spawns).
+    if (filters.near !== undefined) args.push(flagArg("--near", validateNear(filters.near)));
+    if (filters.minScore !== undefined) args.push(flagArg("--min-score", filters.minScore));
+    if (filters.detectedText !== undefined) {
+      args.push(flagArg("--detected-text", filters.detectedText));
+    }
     if (filters.limit !== undefined) args.push(flagArg("--limit", filters.limit));
 
     return this.run<QueryResult>("query", args);
   }
 
-  async getPhoto(uuid: string, library?: string): Promise<PhotoDetail> {
-    const result = await this.run<{ photo: PhotoDetail }>("get-photo", [
-      ...this.libraryArgs(library),
-      flagArg("--uuid", uuid),
-    ]);
+  async getPhoto(uuid: string, library?: string, burstPhotos?: boolean): Promise<PhotoDetail> {
+    const args = [...this.libraryArgs(library), flagArg("--uuid", uuid)];
+    if (burstPhotos) args.push("--burst-photos");
+    const result = await this.run<{ photo: PhotoDetail }>("get-photo", args);
     return result.photo;
+  }
+
+  /**
+   * The photos currently selected in the Photos.app GUI, as query-shaped
+   * summaries. Read-only (not gated), but it drives Photos.app over
+   * AppleScript, so it needs Photos running (it never launches Photos itself)
+   * and macOS Automation permission.
+   */
+  async getSelectedPhotos(): Promise<SelectedPhotosResult> {
+    return this.run<SelectedPhotosResult>("get-selected-photos", [], SELECTION_TIMEOUT_MS);
   }
 
   /**
@@ -501,6 +562,58 @@ export class PhotosManager {
       args.push(flagArg("--remove", k));
     }
     return this.runWrite<SetKeywordsResult>("set-keywords", args, WRITE_TIMEOUT_MS);
+  }
+
+  /**
+   * Set or shift one photo's date. DRY RUN unless dryRun === false — the
+   * default previews before/after without writing anything. Exactly one of
+   * date (absolute ISO 8601, local time) or shiftSeconds (relative, negative
+   * = earlier) is required. Photos-DB date only; EXIF is never touched.
+   */
+  async setPhotoDate(
+    uuid: string,
+    opts: { date?: string; shiftSeconds?: number; dryRun?: boolean }
+  ): Promise<SetPhotoDateResult> {
+    const hasDate = opts.date !== undefined;
+    const hasShift = opts.shiftSeconds !== undefined;
+    if (hasDate === hasShift) {
+      throw new Error(
+        "Pass exactly one of date (absolute ISO 8601 datetime) or shiftSeconds " +
+          "(relative shift in seconds, negative = earlier)"
+      );
+    }
+    const args = [flagArg("--uuid", uuid)];
+    if (opts.date !== undefined) args.push(flagArg("--date", opts.date));
+    if (opts.shiftSeconds !== undefined) {
+      args.push(flagArg("--shift-seconds", opts.shiftSeconds));
+    }
+    // dryRun defaults to TRUE: only an explicit false writes.
+    if (opts.dryRun === false) args.push("--apply");
+    return this.runWrite<SetPhotoDateResult>("set-photo-date", args, WRITE_TIMEOUT_MS);
+  }
+
+  /**
+   * Import files into the Photos library (optionally into an existing album).
+   * Source paths must be absolute (or ~-prefixed), inside the same allowlist
+   * roots as export, and must exist — all validated against the canonical
+   * (symlink-resolved) path BEFORE the sidecar spawns.
+   */
+  async importPhotos(
+    paths: string[],
+    opts: { album?: string; skipDuplicateCheck?: boolean } = {}
+  ): Promise<ImportPhotosResult> {
+    if (paths.length === 0) {
+      throw new Error("At least one path is required");
+    }
+    const resolved = paths.map((p) => resolveImportSource(p));
+    const missing = resolved.filter((p) => !existsSync(p));
+    if (missing.length > 0) {
+      throw new Error(`Import path(s) not found: ${missing.join(", ")}`);
+    }
+    const args = resolved.map((p) => flagArg("--path", p));
+    if (opts.album !== undefined) args.push(flagArg("--album", opts.album));
+    if (opts.skipDuplicateCheck) args.push("--skip-duplicate-check");
+    return this.runWrite<ImportPhotosResult>("import-photos", args, IMPORT_TIMEOUT_MS);
   }
 
   async exportPhotos(

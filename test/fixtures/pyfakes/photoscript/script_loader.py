@@ -1,8 +1,8 @@
-"""Fake script_loader: the two raw AppleScript calls photos_reader.py uses
-(albumPhotes / albumAdd) plus configure_run_script (recorded so tests can
-assert the killall-Photos retry policy is disabled)."""
+"""Fake script_loader: the raw AppleScript calls photos_reader.py uses
+(albumPhotes / albumAdd / photosLibraryIsRunning) plus configure_run_script
+(recorded so tests can assert the killall-Photos retry policy is disabled)."""
 
-from . import _album_record, _log
+from . import _album_record, _log, _state
 
 
 def configure_run_script(retry_enabled=None, retries=None, wait_seconds=None):
@@ -10,6 +10,9 @@ def configure_run_script(retry_enabled=None, retries=None, wait_seconds=None):
 
 
 def run_script(name, *args):
+    if name == "photosLibraryIsRunning":
+        return bool(_state().get("running", True))
+
     if name == "albumPhotes":
         rec = _album_record(args[0].split("/")[0])
         if rec is None:

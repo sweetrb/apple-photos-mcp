@@ -5,9 +5,11 @@ Called by the TypeScript MCP server via child_process.
 
 Reads go through osxphotos (direct SQLite parse). The OPT-IN write commands
 (create-album, add-to-album, remove-from-album, set-photo-metadata,
-set-keywords) go through photoscript, which drives Photos.app over AppleScript
-— they are refused unless APPLE_PHOTOS_MCP_ENABLE_WRITES is set (the TS layer
-gates them too; this is defense in depth for direct CLI invocation).
+set-keywords, set-photo-date, import-photos) go through photoscript, which
+drives Photos.app over AppleScript — they are refused unless
+APPLE_PHOTOS_MCP_ENABLE_WRITES is set (the TS layer gates them too; this is
+defense in depth for direct CLI invocation). get-selected-photos is the one
+photoscript-backed READ (not gated): it reads the live GUI selection.
 
 Two modes:
 
@@ -37,6 +39,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import os
 import re
 import subprocess
@@ -261,6 +264,117 @@ def _exif(p) -> dict | None:
     }
 
 
+def _score_overall(p) -> float | None:
+    """Photos' computed overall aesthetic score (0..1), or None when the
+    library version predates ScoreInfo or no score was computed. Reads the
+    eagerly-parsed score table — a dict lookup, never extra I/O."""
+    try:
+        s = p.score
+        return None if s is None else s.overall
+    except Exception:  # noqa: BLE001 - ML fields must never break a response
+        return None
+
+
+def _detected_text_field(p) -> list[str] | None:
+    """Text Photos' own OCR indexed for this photo (SearchInfo.detected_text —
+    the PRE-COMPUTED index parsed at library load, not a live Vision pass).
+    None when search info is unavailable (Photos <= 4 / no analysis yet);
+    [] when analyzed but no text was found (also all macOS < 13)."""
+    try:
+        si = p.search_info
+        if si is None:
+            return None
+        return list(si.detected_text)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _shared_comments(p) -> list[dict]:
+    """iCloud shared-album comments on this photo ([] for non-shared assets)."""
+    try:
+        return [
+            {
+                "user": c.user,
+                "text": c.text,
+                "date": c.datetime.isoformat() if c.datetime else None,
+                "isMine": c.ismine,
+            }
+            for c in (p.comments or [])
+        ]
+    except Exception:  # noqa: BLE001 - social data must never break a response
+        return []
+
+
+def _shared_likes(p) -> list[dict]:
+    """iCloud shared-album likes on this photo ([] for non-shared assets)."""
+    try:
+        return [
+            {
+                "user": like.user,
+                "date": like.datetime.isoformat() if like.datetime else None,
+                "isMine": like.ismine,
+            }
+            for like in (p.likes or [])
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _shared_owner(p) -> str | None:
+    """Owner name for a shared-album photo, None otherwise."""
+    try:
+        return p.owner
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _burst_siblings(p) -> list[dict]:
+    """The OTHER frames of this photo's burst set ([] when not a burst)."""
+    try:
+        return [
+            {
+                "uuid": b.uuid,
+                "filename": b.original_filename,
+                "date": b.date.isoformat() if b.date else None,
+            }
+            for b in p.burst_photos
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _parse_near(value: str) -> tuple[float, float, float]:
+    """Parse and validate the query's near filter: "lat,lon,radiusKm"."""
+    parts = [s.strip() for s in value.split(",")]
+    if len(parts) != 3:
+        raise ValueError(
+            f'Invalid near filter: {value!r}. Use "lat,lon,radiusKm" — '
+            'e.g. "46.5,-87.4,5".'
+        )
+    try:
+        lat, lon, radius_km = (float(s) for s in parts)
+    except ValueError:
+        raise ValueError(
+            f"Invalid near filter: {value!r}. All three parts must be numbers."
+        ) from None
+    if not -90.0 <= lat <= 90.0:
+        raise ValueError(f"near latitude out of range [-90, 90]: {lat}")
+    if not -180.0 <= lon <= 180.0:
+        raise ValueError(f"near longitude out of range [-180, 180]: {lon}")
+    if not 0.0 < radius_km <= 40075.0:
+        raise ValueError(f"near radiusKm must be > 0 and <= 40075: {radius_km}")
+    return lat, lon, radius_km
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in km between two WGS-84 points."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return 2 * 6371.0088 * math.asin(math.sqrt(a))
+
+
 def _photo_detail(p) -> dict:
     """Full projection of a PhotoInfo for detail responses."""
     place = p.place
@@ -313,6 +427,14 @@ def _photo_detail(p) -> dict:
             "country": place.country_code if place else None,
         } if place else None,
         "exif": _exif(p),
+        # Photos' ML intelligence (macOS-version dependent, null-graceful):
+        "score": _score_overall(p),
+        "detectedText": _detected_text_field(p),
+        # iCloud shared-album social data (owner/comments/likes are only ever
+        # populated for shared assets; [] / null otherwise):
+        "owner": _shared_owner(p),
+        "comments": _shared_comments(p),
+        "likes": _shared_likes(p),
     }
 
 
@@ -438,6 +560,36 @@ def cmd_query(args):
     options = _query_options(args)
     photos = db.query(options)
 
+    # --- post-filters (no QueryOptions equivalent) — applied BEFORE the total
+    # count and the limit slice, so `count` reflects what actually matched and
+    # they compose (AND) with every QueryOptions filter above. ---
+    if args.near:
+        lat, lon, radius_km = _parse_near(args.near)
+        photos = [
+            p
+            for p in photos
+            if p.latitude is not None
+            and p.longitude is not None
+            and _haversine_km(lat, lon, p.latitude, p.longitude) <= radius_km
+        ]
+    if args.min_score is not None:
+        if not 0.0 <= args.min_score <= 1.0:
+            raise ValueError(f"min-score must be between 0 and 1: {args.min_score}")
+        kept = []
+        for p in photos:
+            score = _score_overall(p)
+            if score is not None and score >= args.min_score:
+                kept.append(p)
+        photos = kept  # photos without a computed score never match
+    if args.detected_text:
+        needle = args.detected_text.lower()
+        kept = []
+        for p in photos:
+            texts = _detected_text_field(p)
+            if texts and needle in " ".join(texts).lower():
+                kept.append(p)
+        photos = kept  # photos without indexed text never match
+
     # db.query() returns lightweight PhotoInfo handles; the expensive work is the
     # per-photo property access in _photo_summary (albums/keywords/persons/etc.).
     # Slice to the limit *before* projecting so large libraries don't pay the
@@ -469,7 +621,12 @@ def cmd_get_photo(args):
     )
     if not matches:
         return {"error": f"Photo not found: {args.uuid}"}
-    return {"photo": _photo_detail(matches[0])}
+    detail = _photo_detail(matches[0])
+    if args.burst_photos:
+        # Opt-in burst expansion: the OTHER frames of this burst set
+        # ([] when the photo is not a burst member).
+        detail["burstPhotos"] = _burst_siblings(matches[0])
+    return {"photo": detail}
 
 
 def cmd_get_photos(args):
@@ -958,6 +1115,54 @@ def cmd_export(args):
     }
 
 
+def cmd_get_selected_photos(args):
+    """Query-shaped summaries for the photos currently selected in Photos.app.
+
+    The one photoscript-backed READ command (not gated): it reads the live GUI
+    selection over AppleScript, then projects the selected UUIDs through
+    osxphotos for the same summary shape query returns. Deliberately refuses
+    to LAUNCH Photos — a selection can only exist in an already-open window,
+    so a not-running Photos means there is nothing to read. Selection targets
+    the library currently open in Photos.app; summaries come from the system
+    library, so a just-imported item Photos hasn't checkpointed to SQLite yet
+    is reported in notFound (with its filename) rather than dropped."""
+    ps = _photoscript()
+    # The running check MUST precede PhotosLibrary(): the constructor launches
+    # Photos and waits for it (photosLibraryWaitForPhotos), which would defeat
+    # the never-launch contract — and a freshly launched Photos can restore a
+    # STALE selection from its previous session. The raw handler evaluates
+    # `application "Photos" is running`, which never launches anything.
+    if not _run_script(ps, "photosLibraryIsRunning"):
+        raise RuntimeError(
+            "Photos.app is not running. Open Photos, select the photos to act "
+            "on, then retry — get-selected-photos reads the live GUI selection "
+            "and never launches Photos itself."
+        )
+    lib = ps.PhotosLibrary()
+    selection = lib.selection
+    if not selection:
+        raise RuntimeError(
+            "No photos are selected in Photos.app. Select one or more items in "
+            "the Photos window (they must be highlighted) and retry. Note: "
+            "full-screen/edit view may report an empty selection — use the "
+            "grid/moments view."
+        )
+    uuids = list(dict.fromkeys(p.uuid for p in selection))
+    db = _open_db(None)
+    found = {p.uuid: p for p in db.photos(uuid=uuids, intrash=False)}
+    photos = [_photo_summary(found[u]) for u in uuids if u in found]
+    not_found = []
+    for sel in selection:
+        if sel.uuid in found:
+            continue
+        try:
+            filename = sel.filename
+        except Exception:  # noqa: BLE001 - filename is best-effort context
+            filename = None
+        not_found.append({"uuid": sel.uuid, "filename": filename})
+    return {"count": len(photos), "photos": photos, "notFound": not_found}
+
+
 # ---------------------------------------------------------------------------
 # Write commands (photoscript → Photos.app AppleScript) — OPT-IN
 # ---------------------------------------------------------------------------
@@ -1032,8 +1237,10 @@ def _run_script(ps, name: str, *args):
     """One raw AppleScript call via photoscript's runner. Used where the
     object API would spawn one osascript per photo (Album.photos() constructs
     a Photo — one existence probe each — for every member; albumPhotes/albumAdd
-    move the whole id list in a single call). photoscript is version-pinned in
-    requirements.txt, so these two handler names are stable."""
+    move the whole id list in a single call) and where the object API has the
+    wrong side effect (photosLibraryIsRunning: PhotosLibrary() LAUNCHES Photos
+    before its .running property could ever be read). photoscript is
+    version-pinned in requirements.txt, so these handler names are stable."""
     return ps.script_loader.run_script(name, *args)
 
 
@@ -1319,6 +1526,125 @@ def cmd_set_keywords(args):
         _mark_library_written()
 
 
+def cmd_set_photo_date(args):
+    """Set or shift one photo's date — DRY RUN unless --apply is passed.
+
+    Exactly one of --date (absolute ISO 8601, interpreted in the Mac's local
+    timezone; a timezone-aware datetime is converted to local first) or
+    --shift-seconds (relative, may be negative) is required. This rewrites the
+    date in the Photos LIBRARY DATABASE only — the same operation as
+    Photos.app's "Adjust Date & Time"; the original file's EXIF is never
+    touched. Echoes before/after so an applied change can be reverted by
+    re-running with --date=<before> --apply."""
+    _require_writes()
+    if (args.date is None) == (args.shift_seconds is None):
+        raise RuntimeError(
+            "Pass exactly one of --date (absolute ISO 8601 datetime) or "
+            "--shift-seconds (relative shift, negative = earlier)"
+        )
+    ps = _photoscript()
+    photo = _resolve_photo(ps, args.uuid)
+    before = photo.date
+    if before is None:
+        raise RuntimeError(
+            f"Photo {args.uuid} has no readable date — cannot compute a shift "
+            "or echo a revertible before value"
+        )
+    if args.date is not None:
+        try:
+            target = datetime.fromisoformat(args.date)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Invalid --date (must be ISO 8601, e.g. 2026-05-14T06:32:00): "
+                f"{args.date!r}"
+            ) from exc
+        if target.tzinfo is not None:
+            # photoscript takes a timezone-NAIVE local datetime; normalize.
+            target = target.astimezone().replace(tzinfo=None)
+    else:
+        target = before + timedelta(seconds=args.shift_seconds)
+    applied = False
+    after = target
+    if args.apply:
+        try:
+            photo.date = target
+            after = photo.date or target
+            applied = True
+        finally:
+            _mark_library_written()
+    return {
+        "uuid": photo.uuid,
+        "before": before.isoformat(),
+        "after": after.isoformat(),
+        "shiftSeconds": (target - before).total_seconds(),
+        "applied": applied,
+        "dryRun": not applied,
+    }
+
+
+def cmd_import_photos(args):
+    """Import files into the Photos library (optionally into an existing album).
+
+    ADDS to the library only — nothing is modified or deleted (and note the
+    inverse does not exist: Photos' AppleScript has no photo-delete verb, so
+    an import cannot be programmatically undone). Every path is validated
+    (absolute, exists, is a file) before anything is imported. With duplicate
+    checking on (the default), importing a duplicate makes Photos.app show a
+    blocking dialog a human must answer — the call waits on it."""
+    _require_writes()
+    paths: list[str] = []
+    missing: list[str] = []
+    not_files: list[str] = []
+    for raw in args.path:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            raise RuntimeError(f"Import paths must be absolute: {raw!r}")
+        if not p.exists():
+            missing.append(str(p))
+        elif not p.is_file():
+            not_files.append(str(p))
+        else:
+            paths.append(str(p.resolve()))
+    if missing:
+        raise RuntimeError("Import path(s) not found: " + ", ".join(missing))
+    if not_files:
+        raise RuntimeError(
+            "Import path(s) are not regular files: " + ", ".join(not_files)
+        )
+    ps = _photoscript()
+    lib = ps.PhotosLibrary()
+    try:
+        album_obj = None
+        album_payload = None
+        if args.album:
+            # Validate-first: the album must already exist (create-album is the
+            # tool for making one) so a typo can't silently file imports nowhere.
+            album_obj = _resolve_album(ps, lib, args.album)
+            album_payload = _album_payload(album_obj)
+        imported = lib.import_photos(
+            paths,
+            album=album_obj,
+            skip_duplicate_check=bool(args.skip_duplicate_check),
+        )
+        items = []
+        for photo in imported:
+            try:
+                filename = photo.filename
+            except Exception:  # noqa: BLE001 - filename is best-effort context
+                filename = None
+            items.append({"uuid": photo.uuid, "filename": filename})
+        result = {
+            "requestedCount": len(paths),
+            "importedCount": len(items),
+            "imported": items,
+        }
+        if album_payload is not None:
+            result["album"] = album_payload
+        return result
+    finally:
+        _mark_library_written()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1367,6 +1693,23 @@ def _add_query_filters(p: argparse.ArgumentParser) -> None:
     p.add_argument("--portrait", action="store_true", help="Only portrait-mode photos")
     p.add_argument("--time-lapse", action="store_true", help="Only time-lapse videos")
     p.add_argument("--slow-mo", action="store_true", help="Only slow-motion videos")
+    # --- post-filters (applied after QueryOptions, before count/limit) ---
+    p.add_argument(
+        "--near",
+        help='GPS-radius filter: "lat,lon,radiusKm" (haversine post-filter; '
+        "photos without location never match)",
+    )
+    p.add_argument(
+        "--min-score",
+        type=float,
+        help="Minimum Photos aesthetic score 0..1 (post-filter; photos "
+        "without a score never match)",
+    )
+    p.add_argument(
+        "--detected-text",
+        help="Case-insensitive substring over Photos' OCR-indexed text "
+        "(post-filter; macOS 13+)",
+    )
     # --- ordering ---
     p.add_argument(
         "--newest-first",
@@ -1392,6 +1735,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("get-photo")
     _add_library(p)
     p.add_argument("--uuid", required=True)
+    p.add_argument(
+        "--burst-photos",
+        action="store_true",
+        help="Include the sibling frames of the photo's burst set",
+    )
 
     p = sub.add_parser("get-photos")
     _add_library(p)
@@ -1433,6 +1781,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--raw", action="store_true", help="Include raw image")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
 
+    # photoscript-backed READ (not gated; no --library: the selection lives in
+    # the library currently open in Photos.app)
+    sub.add_parser("get-selected-photos")
+
     # --- write commands (gated; no --library: writes always target the
     #     library currently open in Photos.app) ---
     p = sub.add_parser("create-album")
@@ -1461,6 +1813,31 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--add", action="append", help="Keyword to add (repeatable)")
     p.add_argument("--remove", action="append", help="Keyword to remove (repeatable)")
 
+    p = sub.add_parser("set-photo-date")
+    p.add_argument("--uuid", required=True, help="Photo UUID")
+    p.add_argument("--date", help="Absolute new date-time (ISO 8601, local timezone)")
+    p.add_argument(
+        "--shift-seconds",
+        type=float,
+        help="Relative shift in seconds (negative = earlier)",
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually write the new date (default is a dry run)",
+    )
+
+    p = sub.add_parser("import-photos")
+    p.add_argument(
+        "--path", action="append", required=True, help="Absolute file path (repeatable)"
+    )
+    p.add_argument("--album", help="Existing album (name or UUID) to import into")
+    p.add_argument(
+        "--skip-duplicate-check",
+        action="store_true",
+        help="Skip Photos' duplicate check (duplicates WILL be re-imported)",
+    )
+
     return parser
 
 
@@ -1477,12 +1854,16 @@ HANDLERS = {
     "list-keywords": cmd_list_keywords,
     "list-persons": cmd_list_persons,
     "export": cmd_export,
+    # photoscript-backed read (not gated)
+    "get-selected-photos": cmd_get_selected_photos,
     # write commands (gated behind APPLE_PHOTOS_MCP_ENABLE_WRITES)
     "create-album": cmd_create_album,
     "add-to-album": cmd_add_to_album,
     "remove-from-album": cmd_remove_from_album,
     "set-photo-metadata": cmd_set_photo_metadata,
     "set-keywords": cmd_set_keywords,
+    "set-photo-date": cmd_set_photo_date,
+    "import-photos": cmd_import_photos,
 }
 
 

@@ -1,25 +1,28 @@
 ---
 name: apple-photos
-description: Use this skill when the user wants to query, view, organize, or export photos from their macOS Apple Photos library — searching by date/import-date/album/keyword/person/label/place/media-type, viewing photos inline as thumbnails, finding exact duplicates, browsing albums and folders, fetching metadata (location, dimensions, EXIF, type flags), exporting originals/edited versions to a directory, or (when the opt-in write gate is enabled) creating albums, filing photos into albums, and setting titles/descriptions/keywords/favorites. Backed by osxphotos.
+description: Use this skill when the user wants to query, view, organize, or export photos from their macOS Apple Photos library — searching by date/import-date/album/keyword/person/label/place/GPS-radius/media-type/aesthetic-score/OCR-text, viewing photos inline as thumbnails, acting on the live Photos.app selection, finding exact duplicates, browsing albums and folders, fetching metadata (location, dimensions, EXIF, ML score, detected text, shared-album comments/likes, burst siblings, type flags), exporting originals/edited versions to a directory, or (when the opt-in write gate is enabled) creating albums, filing photos into albums, setting titles/descriptions/keywords/favorites, fixing photo dates, and importing files. Backed by osxphotos.
 ---
 
 # Apple Photos Skill
 
 This skill enables you to query, organize, and export photos from the macOS Apple Photos library using natural language. It is backed by the [osxphotos](https://github.com/RhetTbull/osxphotos) Python library and operates **read-only by default** — no modifications are made to the library itself, but exports write files to disk.
 
-**Write tools exist but are gated:** `create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, and `set-keywords` only work when the user has set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (in the server env or in `~/Library/Application Support/apple-photos-mcp/config.json`, then restarted the server). **Check `doctor` first** when a task needs writes — its `writes` check reports the gate state; a gated call returns the opt-in recipe to relay to the user. Even with writes enabled, **no tool can delete photos** (quarantine into an album; the user deletes in Photos.app).
+**Write tools exist but are gated:** `create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`, `set-photo-date`, and `import-photos` only work when the user has set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (in the server env or in `~/Library/Application Support/apple-photos-mcp/config.json`, then restarted the server). **Check `doctor` first** when a task needs writes — its `writes` check reports the gate state; a gated call returns the opt-in recipe to relay to the user. Even with writes enabled, **no tool can delete photos** (quarantine into an album; the user deletes in Photos.app).
 
 ## When to Use This Skill
 
 Use this skill when the user:
-- Wants to find photos by date, import date ("what did I import this week?"), album, keyword, person, ML label, place, year, file size, media type (screenshots, selfies, panoramas, bursts, …), or favorite/hidden flags
+- Wants to find photos by date, import date ("what did I import this week?"), album, keyword, person, ML label, place, GPS radius ("near the cabin"), year, file size, media type (screenshots, selfies, panoramas, bursts, …), aesthetic score ("the good ones"), OCR-detected text ("photos of receipts"), or favorite/hidden flags
 - Wants to SEE a photo ("show me…", "which one is better?") — get-thumbnail returns viewable images inline
 - Asks about duplicate photos in their library
 - Asks for stats about their library (counts of photos, albums, etc.)
 - Wants to list albums, folders, keywords, or detected persons
 - Needs full metadata for one photo or a batch (dimensions, location, EXIF camera data, type flags)
 - Wants to export photos (originals, edited versions, raw, or live-photo videos) to a directory
+- Says "these photos" about a selection in the Photos.app window — get-selected-photos bridges the GUI selection to UUIDs
 - Wants to organize photos — create albums, file photos into albums, tag with keywords, set titles/descriptions/favorites (write tools; gated — see above)
+- Wants to fix wrong photo dates (trailcam/scanner imports, mis-set camera clocks) — set-photo-date, dry-run first (write tool; gated)
+- Wants to import image/video files into the library — import-photos (write tool; gated; cannot be undone programmatically)
 - Mentions Apple Photos, Photos.app, "my photos", "my photo library"
 
 ## Available Tools
@@ -29,9 +32,10 @@ Use this skill when the user:
 | `health-check` | Verify osxphotos is installed and the library can be opened |
 | `doctor` | Full diagnostic — six checks: Python interpreter version, osxphotos install, sidecar mode (persistent vs one-shot), write-tools gate, library readability, and Full Disk Access (ok/warn/fail with advice) |
 | `library-info` | High-level stats: counts of photos, movies, albums, folders, keywords, persons |
-| `query` | Search the library with combinable filters (dates, import dates, albums, keywords, persons, labels, places, years, sizes, media types); `newestFirst` for the N most recent; returns photo summaries with UUIDs |
-| `get-photo` | Full metadata for one photo by UUID (location, dimensions, EXIF camera data, type flags, etc.) |
+| `query` | Search the library with combinable filters (dates, import dates, albums, keywords, persons, labels, places, GPS radius `near`, years, sizes, media types, aesthetic `minScore`, OCR `detectedText`); `newestFirst` for the N most recent; returns photo summaries with UUIDs |
+| `get-photo` | Full metadata for one photo by UUID (location, dimensions, EXIF camera data, ML score/detected text, shared-album social data, type flags; `burstPhotos=true` adds burst siblings) |
 | `get-photos` | Full metadata for up to 50 UUIDs in ONE batched call |
+| `get-selected-photos` | The photos currently selected in the Photos.app window ("act on these") — errors, never launches Photos, when it isn't running or nothing is selected |
 | `get-thumbnail` | The photo itself as an inline viewable image (from Photos' pre-generated derivatives; `minSize` px, default 360) |
 | `find-duplicates` | Groups of exact duplicates via Photos' own fingerprint detection |
 | `list-albums` | All albums with their folder paths and photo counts |
@@ -44,6 +48,8 @@ Use this skill when the user:
 | `remove-from-album` | *(write, gated)* Remove photos from an album ONLY — never from the library; rebuilds the album (its UUID changes) |
 | `set-photo-metadata` | *(write, gated)* Set title/description/favorite; echoes before/after values for undo |
 | `set-keywords` | *(write, gated)* Add/remove keywords with union semantics — keywords you don't mention are preserved |
+| `set-photo-date` | *(write, gated)* Fix a photo's date — absolute or shift by seconds; **dry run by default** (pass `dryRun=false` to write); echoes before/after for revert; Photos-DB date only, EXIF untouched |
+| `import-photos` | *(write, gated)* Import files into the library, optionally into an existing album; add-only — imports cannot be deleted programmatically |
 
 ## Usage Patterns
 
@@ -61,6 +67,22 @@ User: "Show me my favorite sunsets"
 ```
 User: "What did I import this week?"
 → query with addedInLast="7d" newestFirst=true limit=20
+```
+
+```
+User: "The best shots from near the cabin"
+→ query with near="46.51,-87.42,5" minScore=0.6 newestFirst=true limit=20
+
+User: "Find the screenshot with the wifi password"
+→ query with screenshot=true detectedText="password"
+```
+
+### Act on the Photos.app selection
+```
+User: [selects photos in Photos.app] "Add these to the Yearbook album"
+→ get-selected-photos → UUIDs → add-to-album album="Yearbook" uuid=[...]
+  (Photos must be running with a visible selection — the tool errors,
+   and never launches Photos, otherwise)
 ```
 
 ### See photos
@@ -122,6 +144,22 @@ User: "Delete the duplicate copies"
   → add-to-album with each group's extras → user reviews + deletes in Photos.app
 ```
 
+### Fix wrong dates (write tools — dry-run first)
+```
+User: "This trailcam photo is stamped with the upload time; the strip says 05/14 06:32"
+→ set-photo-date uuid=... date="2026-05-14T06:32:00"       (dryRun defaults TRUE — preview)
+→ confirm the echoed before → after with the user
+→ set-photo-date uuid=... date="2026-05-14T06:32:00" dryRun=false
+  (batches with one wrong clock: shiftSeconds instead; revert = date=<echoed before>)
+```
+
+### Import files (write tools)
+```
+User: "Import these scans into the family album"
+→ confirm the file list (imports CANNOT be undone programmatically)
+→ create-album name="Family Scans" if needed → import-photos paths=[...] album="Family Scans"
+```
+
 ## Important Guidelines
 
 1. **Two-step workflow:** Use `query` to find UUIDs, then `get-photo`/`get-photos`, `get-thumbnail`, or `export` for details/images/files. Don't ask the user for UUIDs — derive them from a search first. Prefer `get-photos` over repeated `get-photo` calls when you hold several UUIDs.
@@ -140,7 +178,9 @@ User: "Delete the duplicate copies"
 
 7. **macOS only.** The Photos library only exists on macOS.
 
-7a. **Writes are opt-in — never assume they're available.** If a write tool returns "Write tools are disabled", relay the recipe: set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (env or config.json) and restart the server. `remove-from-album` removes album membership only (never deletes photos) and rebuilds the album — its UUID changes, so use the returned `album.uuid` (or the name) afterwards. `set-keywords` merges (union): keywords the user didn't mention are preserved. Writes drive Photos.app via AppleScript — the first write may pop a one-time macOS Automation prompt, and writes always target the library currently open in Photos.app.
+7a. **`set-photo-date` is a dry run by default** — preview, confirm the echoed before/after with the user, then re-run with `dryRun=false`. It changes the Photos-library date only (like Photos.app's Adjust Date & Time); the file's EXIF is untouched. **`import-photos` cannot be undone programmatically** (no AppleScript photo-delete verb) — confirm the file list first; sources must exist under the export allowlist roots; the target album must already exist. **`get-selected-photos`** needs Photos.app running with a visible selection and never launches Photos itself.
+
+7b. **Writes are opt-in — never assume they're available.** If a write tool returns "Write tools are disabled", relay the recipe: set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (env or config.json) and restart the server. `remove-from-album` removes album membership only (never deletes photos) and rebuilds the album — its UUID changes, so use the returned `album.uuid` (or the name) afterwards. `set-keywords` merges (union): keywords the user didn't mention are preserved. Writes drive Photos.app via AppleScript — the first write may pop a one-time macOS Automation prompt, and writes always target the library currently open in Photos.app.
 
 8. **First-run setup is automatic.** The server auto-bootstraps a Python venv with `osxphotos` on the first tool call — the venv lives inside the plugin's own clone (under `~/.claude/plugins/` for a marketplace install), not in the user's project. If a tool still reports "osxphotos not installed", run the `doctor` tool FIRST to diagnose why auto-setup failed — the most common cause is `python3` older than 3.11 (stock macOS ships 3.9): have the user run `brew install python@3.12`, then simply retry the tool call (the venv rebuilds automatically).
 
@@ -157,4 +197,6 @@ User: "Delete the duplicate copies"
 | Permission errors during export | Destination not writable, or library locked by Photos.app |
 | "Write tools are disabled — apple-photos-mcp is read-only by default" | The opt-in gate isn't set — relay: `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (env or config.json) + server restart; confirm with `doctor` |
 | "Album not found: '…'" | Wrong album name/UUID — `list-albums` for exact names, or `create-album` |
+| "Photos.app is not running..." (get-selected-photos) | The selection bridge never launches Photos — have the user open Photos and select items, then retry |
+| "No photos are selected in Photos.app..." | Nothing highlighted (or full-screen/edit view) — have the user select photos in the grid view |
 | Write fails with AppleScript `-1743` / "not authorized" | macOS Automation permission for Photos not granted to the host app — System Settings → Privacy & Security → Automation → (host app) → Photos |

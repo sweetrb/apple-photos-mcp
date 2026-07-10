@@ -11,12 +11,16 @@ assert exactly which writes happened (and, as importantly, which didn't).
 State shape:
 {
   "albums": [{"uuid", "name", "path", "members": [uuid...], "folder": [..]?}],
-  "photos": {uuid: {"title", "description", "favorite", "keywords": [...]}}
+  "photos": {uuid: {"title", "description", "favorite", "keywords": [...],
+                    "date": "ISO"?, "filename": str?}},
+  "running": bool?,        # Photos.app running (default true)
+  "selection": [uuid...]?  # current GUI selection (default [])
 }
 """
 
 import json
 import os
+from datetime import datetime
 
 _state_cache = None
 
@@ -93,6 +97,20 @@ class Photo:
     def keywords(self, value):
         self._rec()["keywords"] = list(value)
         _log({"op": "set_keywords", "uuid": self._uuid, "value": list(value)})
+
+    @property
+    def date(self):
+        raw = self._rec().get("date")
+        return datetime.fromisoformat(raw) if raw else None
+
+    @date.setter
+    def date(self, value):
+        self._rec()["date"] = value.isoformat()
+        _log({"op": "set_date", "uuid": self._uuid, "value": value.isoformat()})
+
+    @property
+    def filename(self):
+        return self._rec().get("filename", f"{self._uuid}.jpg")
 
 
 class Album:
@@ -195,3 +213,37 @@ class PhotosLibrary:
             raise ValueError("folder_path must be a non-empty list")
         _log({"op": "make_folders", "path": folder_path})
         return Folder(folder_path)
+
+    @property
+    def running(self):
+        return bool(_state().get("running", True))
+
+    @property
+    def selection(self):
+        return [Photo(u) for u in _state().get("selection", [])]
+
+    def import_photos(self, photo_paths, album=None, skip_duplicate_check=False):
+        state = _state()
+        imported = []
+        for path in photo_paths:
+            n = len(state["photos"]) + 1
+            uuid = f"IMP{n:03d}"
+            state["photos"][uuid] = {
+                "title": "",
+                "description": "",
+                "favorite": False,
+                "keywords": [],
+                "filename": os.path.basename(str(path)),
+            }
+            if album is not None:
+                _album_record(album.uuid)["members"].append(uuid)
+            imported.append(uuid)
+        _log(
+            {
+                "op": "import_photos",
+                "paths": [str(p) for p in photo_paths],
+                "album": album.uuid if album is not None else None,
+                "skip_duplicate_check": bool(skip_duplicate_check),
+            }
+        )
+        return [Photo(u) for u in imported]

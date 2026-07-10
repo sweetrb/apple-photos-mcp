@@ -83,8 +83,7 @@ it was taken — the right tool for "recently imported" sweeps.
   `live` (live photos), `portrait` (depth-effect), `timelapse`, `slowMo`,
   `burst`. There are no `not*` counterparts.
 - **`hasLocation`** is tri-state: `true` = only photos WITH GPS coordinates,
-  `false` = only photos WITHOUT, omitted = no location filter. (Radius/nearby
-  search is not supported — filter by `place` names instead.)
+  `false` = only photos WITHOUT, omitted = no location filter.
 - **`year`** matches the calendar year the photo was taken (`year: [2024, 2025]`).
 - **`minSize` / `maxSize`** bound the ORIGINAL file size in bytes — storage-hog
   hunting (`minSize: 50000000`) or thumbnail-junk sweeps (`maxSize: 100000`).
@@ -97,14 +96,33 @@ it was taken — the right tool for "recently imported" sweeps.
   `get-photo` resolves may still be absent from `query` results and skipped by
   `export`.)
 
+## Post-filters: `near`, `minScore`, `detectedText`
+
+Three filters have no native osxphotos query equivalent, so the sidecar
+applies them AFTER the other filters, before `count` and the `limit` slice —
+they compose (AND) with everything above, and `count` reflects them:
+
+- **`near: "lat,lon,radiusKm"`** — GPS-radius search: only photos within the
+  great-circle (haversine) radius of the point (`"46.5,-87.4,5"` = within
+  5 km). **Requires location data**: photos without GPS coordinates never
+  match. Latitude −90…90, longitude −180…180, radius > 0.
+- **`minScore: 0..1`** — only photos whose Photos-computed overall
+  **aesthetic score** is at least the threshold (`0.7` ≈ "the good ones";
+  scores concentrate below ~0.5, so start low). Photos without a computed
+  score (freshly imported, or pre-analysis) never match.
+- **`detectedText: "substring"`** — case-insensitive substring over the text
+  Photos' own OCR indexed per photo (macOS 13+ / Photos 8+): receipts, signs,
+  screenshots, whiteboards. This reads per-photo search info across every
+  other filter's matches, so on big libraries combine it with narrowing
+  filters (dates, `screenshot: true`, an album) rather than running it bare.
+
 ## What is NOT filterable
 
 `get-photo` returns a few fields that still have **no `query` filter**:
-filename, EXIF camera make/model/settings, and the `isRaw` / `isEdited` /
-`isHDR` / `isMissing` flags. GPS **radius** search ("photos within 5 km of…")
-is also unsupported — `hasLocation` and `place` (name substrings) are the
-location filters that exist. For these, narrow with the filters that DO exist,
-then inspect candidates with `get-photos` (batch) and post-filter.
+filename, EXIF camera make/model/settings, shared-album comments/likes, and
+the `isRaw` / `isEdited` / `isHDR` / `isMissing` flags. For these, narrow with
+the filters that DO exist, then inspect candidates with `get-photos` (batch)
+and post-filter.
 
 ## Ordering, `limit`, and `count` vs `returned`
 
@@ -131,6 +149,9 @@ then inspect candidates with `get-photos` (batch) and post-filter.
 | `title` | ≤ 1024 chars |
 | `description` | ≤ 2048 chars |
 | `minSize` / `maxSize` | positive integer (bytes) |
+| `near` | ≤ 128 chars, `"lat,lon,radiusKm"` (three numbers) |
+| `minScore` | number 0–1 |
+| `detectedText` | 1–256 chars |
 | `limit` | positive integer ≤ 100000 |
 | `library` | ≤ 4096 chars |
 
@@ -170,3 +191,15 @@ Small screenshots taken in 2024 — a typical cleanup candidate list.
 { "label": ["Dog"], "hasLocation": true, "newestFirst": true, "limit": 10 }
 ```
 The 10 newest geotagged photos Photos itself classified as containing a dog.
+
+```json
+{ "near": "46.51,-87.42,5", "minScore": 0.6, "newestFirst": true, "limit": 20 }
+```
+The 20 newest well-scored photos taken within 5 km of the point — a
+"best shots from the property" sweep.
+
+```json
+{ "screenshot": true, "detectedText": "invoice" }
+```
+Screenshots whose OCR-indexed text contains "invoice" — the poor-man's
+document search (`detectedText` composes with `screenshot` to stay cheap).

@@ -1,11 +1,12 @@
 /**
  * The write-tools gate.
  *
- * apple-photos-mcp is read-only by default — the 2.0.0 write tools
- * (create-album, add-to-album, remove-from-album, set-photo-metadata,
- * set-keywords) only work when APPLE_PHOTOS_MCP_ENABLE_WRITES is set to a
- * truthy value ("1"/"true"/anything but ""/"0"/"false"), via the environment
- * or the config.json file the server loads at startup (services/fileConfig).
+ * apple-photos-mcp is read-only by default — the write tools (create-album,
+ * add-to-album, remove-from-album, set-photo-metadata, set-keywords from
+ * 2.0.0; set-photo-date and import-photos from 2.1.0) only work when
+ * APPLE_PHOTOS_MCP_ENABLE_WRITES is set to a truthy value ("1"/"true"/anything
+ * but ""/"0"/"false"), via the environment or the config.json file the server
+ * loads at startup (services/fileConfig).
  *
  * The write tools are ALWAYS REGISTERED and return this gate's error when
  * disabled, rather than being hidden from the tool list. Rationale: MCP

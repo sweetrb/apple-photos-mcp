@@ -109,9 +109,11 @@ describe("outputSchema contract (real server over stdio)", () => {
     "remove-from-album",
     "set-photo-metadata",
     "set-keywords",
+    "set-photo-date",
+    "import-photos",
   ];
 
-  it("registers all five write tools even while the gate is closed", async () => {
+  it("registers all seven write tools even while the gate is closed", async () => {
     const { tools } = await client.listTools();
     const names = new Set(tools.map((t) => t.name));
     for (const tool of WRITE_TOOLS) {
@@ -141,4 +143,23 @@ describe("outputSchema contract (real server over stdio)", () => {
     expect(text).toContain("APPLE_PHOTOS_MCP_ENABLE_WRITES=1");
     expect(text).toContain("config.json");
   }, 15_000);
+
+  it("a gated set-photo-date DRY RUN is also refused (the gate covers previews)", async () => {
+    const result = (await client.callTool({
+      name: "set-photo-date",
+      arguments: { uuid: "0000-0000", shiftSeconds: 60, dryRun: true },
+    })) as { isError?: boolean; content?: Array<{ type: string; text?: string }> };
+
+    expect(result.isError).toBe(true);
+    const text = result.content?.map((c) => c.text ?? "").join("\n") ?? "";
+    expect(text).toMatch(/read-only by default/);
+  }, 15_000);
+
+  it("get-selected-photos is registered and NOT gated (read-only GUI bridge)", async () => {
+    const { tools } = await client.listTools();
+    const tool = tools.find((t) => t.name === "get-selected-photos");
+    expect(tool).toBeDefined();
+    // Read-only: no gate env var in its description.
+    expect(tool?.description ?? "").not.toContain("APPLE_PHOTOS_MCP_ENABLE_WRITES");
+  });
 });

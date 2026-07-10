@@ -11,7 +11,7 @@
  */
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 /** Roots under which `export` is permitted to write. */
 export const ALLOWED_EXPORT_ROOTS = [homedir(), "/tmp", "/private/tmp", "/Volumes"];
@@ -82,6 +82,31 @@ export function resolveExportDest(dest: string): string {
       `Export destination "${dest}" resolves to "${resolved}", which is outside the ` +
         `allowed export roots (${ALLOWED_EXPORT_ROOTS_TEXT}). Choose a destination ` +
         `under one of those roots.`
+    );
+  }
+  return resolved;
+}
+
+/**
+ * Canonicalize an import-photos SOURCE path and enforce the same allowlist as
+ * export (the user's own space: home, /tmp, /private/tmp, /Volumes). Sources
+ * must be given absolute (or ~-prefixed) — import reads user files, so a
+ * cwd-relative path would be meaningless in an MCP server whose cwd the user
+ * doesn't control. Existence is checked by the caller against the CANONICAL
+ * path this returns (and re-checked inside the sidecar).
+ *
+ * @throws Error for relative paths or paths outside the allowed roots.
+ */
+export function resolveImportSource(path: string): string {
+  const expanded = expandTilde(path);
+  if (!isAbsolute(expanded)) {
+    throw new Error(`Import paths must be absolute (or ~-prefixed): "${path}"`);
+  }
+  const resolved = realpathDeepestExisting(resolve(expanded));
+  if (!isPathWithinAllowedRoots(resolved)) {
+    throw new Error(
+      `Import source "${path}" resolves to "${resolved}", which is outside the ` +
+        `allowed roots (${ALLOWED_EXPORT_ROOTS_TEXT}).`
     );
   }
   return resolved;

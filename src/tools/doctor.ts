@@ -164,8 +164,8 @@ export async function runDoctor(manager: PhotosManager): Promise<DoctorReport> {
         detail:
           `disabled — server is read-only (the default). To enable the write tools ` +
           `(create-album, add-to-album, remove-from-album, set-photo-metadata, ` +
-          `set-keywords), set ${WRITES_ENV}=1 in the server env or config.json and ` +
-          `restart. See ${WRITE_TOOLS_URL}`,
+          `set-keywords, set-photo-date, import-photos), set ${WRITES_ENV}=1 in the ` +
+          `server env or config.json and restart. See ${WRITE_TOOLS_URL}`,
       });
     } else {
       const ps = await checkPhotoscript();
@@ -175,7 +175,8 @@ export async function runDoctor(manager: PhotosManager): Promise<DoctorReport> {
         status: !ps.ok ? "fail" : photosAppPresent ? "ok" : "warn",
         detail:
           `ENABLED — the write tools can modify this Photos library (album membership, ` +
-          `titles, descriptions, keywords, favorites; never deleting photos). ` +
+          `titles, descriptions, keywords, favorites, dates, imports; never deleting ` +
+          `photos). ` +
           `${ps.message}; Photos.app ${photosAppPresent ? "present" : `NOT found at ${PHOTOS_APP_PATH}`}. ` +
           `Writes drive Photos.app via AppleScript and need macOS Automation permission ` +
           `for the host app — macOS asks via a one-time prompt on the first write ` +

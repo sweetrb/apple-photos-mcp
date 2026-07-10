@@ -13,10 +13,11 @@ and *what to do* for each.
 and out of the box neither does anything else — the only disk writes are
 `export`'s **copies of files to a destination directory you choose**. Since
 2.0.0 a set of **write tools** exists (`create-album`, `add-to-album`,
-`remove-from-album`, `set-photo-metadata`, `set-keywords`), but every one of
-them is refused unless the user has set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` —
-see the README's [Write tools (opt-in)](../README.md#write-tools-opt-in)
-section for the gate, the setup, and the safety design.
+`remove-from-album`, `set-photo-metadata`, `set-keywords`, and since 2.1.0
+`set-photo-date`, `import-photos`), but every one of them is refused unless
+the user has set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` — see the README's
+[Write tools (opt-in)](../README.md#write-tools-opt-in) section for the gate,
+the setup, and the safety design.
 
 **What to do:** Use the server to find, inspect, and export; opt in to the
 write gate if you want it organizing albums and metadata too. To change
@@ -36,6 +37,11 @@ discard into a clearly-named album (`create-album` + `add-to-album`, or by
 hand), then review and delete inside Photos.app — Recently Deleted keeps them
 recoverable for ~30 days.
 
+The same constraint means **`import-photos` cannot be undone
+programmatically** — Photos' AppleScript has no photo-delete verb, so a
+mistaken import must be removed by hand in Photos.app. Import deliberately
+validates every source path first and defaults to Photos' duplicate check.
+
 ## Write-tool caveats (when the gate is enabled)
 
 **Why:** Writes drive **Photos.app via AppleScript** (photoscript), which has
@@ -47,12 +53,32 @@ tools' `library` parameter does not apply; (3) Photos' AppleScript dictionary
 has **no remove-from-album verb**, so `remove-from-album` rebuilds the album
 (same name, remaining photos): the album's **UUID changes** and custom manual
 sort order is lost; (4) Photos is launched if it isn't running, so the first
-write can be slow.
+write can be slow; (5) `set-photo-date` rewrites the **Photos library date
+only** — the same thing Photos.app's *Adjust Date & Time* does — the file's
+EXIF is never modified, so an exported original still carries its old EXIF
+timestamps; (6) with `import-photos`' default duplicate check, importing a
+duplicate makes Photos.app show a **blocking dialog** a human must answer.
 
 **What to do:** Run `doctor` first — its `writes` check reports the gate state
 and backend readiness. Grant the Automation prompt once from a GUI session.
 After a `remove-from-album`, use the returned `album.uuid` (or the album name)
-for follow-up calls.
+for follow-up calls. Preview date fixes with `set-photo-date`'s default dry
+run before applying.
+
+## `get-selected-photos` needs a live GUI selection
+
+**Why:** The selection bridge reads what's highlighted in the Photos.app
+window over AppleScript. A selection only exists in a running, visible
+Photos.app — so the tool errors (rather than launching Photos) when the app
+isn't running, and errors when nothing is selected. Full-screen/edit view can
+report an empty selection, and there is no way to SET the selection
+programmatically — it's inherently a human-in-the-loop tool.
+
+**What to do:** Have the user select photos in Photos.app's grid view first,
+then call `get-selected-photos` and feed the UUIDs into `get-photos`,
+`export`, or `add-to-album`. If it errors, relay the error — it says exactly
+which precondition (running / selection) failed. Automation permission for
+the host app is required, same as the write tools.
 
 ## macOS only
 

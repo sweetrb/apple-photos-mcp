@@ -1,7 +1,9 @@
 /**
- * Hermetic tests for photos_reader.py's WRITE command logic — the gate, target
- * validation, create-album idempotency, add/remove membership math, the
- * remove rebuild sequence, union keyword merges, and before/after echoes.
+ * Hermetic tests for photos_reader.py's photoscript-backed command logic —
+ * the write gate, target validation, create-album idempotency, add/remove
+ * membership math, the remove rebuild sequence, union keyword merges,
+ * before/after echoes, set-photo-date's dry-run-by-default contract,
+ * import-photos path validation, and the get-selected-photos GUI bridge.
  *
  * The REAL sidecar script runs one-shot under python3 with PYTHONPATH pointing
  * at test/fixtures/pyfakes, whose fake photoscript/osxphotos/bitmath modules
@@ -45,14 +47,38 @@ interface FakeState {
   }>;
   photos: Record<
     string,
-    { title?: string; description?: string; favorite?: boolean; keywords?: string[] }
+    {
+      title?: string;
+      description?: string;
+      favorite?: boolean;
+      keywords?: string[];
+      date?: string;
+      filename?: string;
+      width?: number;
+      height?: number;
+      /** false = photoscript sees it but the osxphotos index doesn't (yet). */
+      inLibraryIndex?: boolean;
+    }
   >;
+  /** Photos.app running (default true). */
+  running?: boolean;
+  /** Current GUI selection (default []). */
+  selection?: string[];
 }
 
 const baseState = (): FakeState => ({
   albums: [{ uuid: "A11111", name: "Trailcam", path: "Trailcam", members: ["0001", "0002"] }],
   photos: {
-    "0001": { title: "one", description: "", favorite: false, keywords: ["Reveal", "deer"] },
+    "0001": {
+      title: "one",
+      description: "",
+      favorite: false,
+      keywords: ["Reveal", "deer"],
+      date: "2026-01-01T12:00:00",
+      filename: "IMG_0001.jpg",
+      width: 4032,
+      height: 3024,
+    },
     "0002": { title: "", description: "", favorite: true, keywords: [] },
     "0003": { title: "", description: "", favorite: false, keywords: [] },
   },
@@ -117,6 +143,9 @@ describe("photos_reader write commands (hermetic, fake photoscript)", () => {
         ["remove-from-album", "--album=Trailcam", "--uuid=0001"],
         ["set-photo-metadata", "--uuid=0001", "--title=t"],
         ["set-keywords", "--uuid=0001", "--add=k"],
+        ["set-photo-date", "--uuid=0001", "--shift-seconds=60"],
+        ["set-photo-date", "--uuid=0001", "--shift-seconds=60", "--apply"],
+        ["import-photos", "--path=/tmp/nonexistent.jpg"],
       ]) {
         const r = runReader(args, baseState(), { writesEnabled: false });
         expect(r.status).toBe(1);
@@ -319,6 +348,243 @@ describe("photos_reader write commands (hermetic, fake photoscript)", () => {
       const r = runReader(["set-keywords", "--uuid=0001"]);
       expect(r.status).toBe(1);
       expect(String(r.json.error)).toMatch(/Nothing to do/);
+    });
+  });
+
+  describe("set-photo-date (dry run by default)", () => {
+    it("without --apply it echoes before/after and writes NOTHING", (ctx) => {
+      if (!python) ctx.skip();
+      const r = runReader(["set-photo-date", "--uuid=0001", "--shift-seconds=3600"]);
+      expect(r.status).toBe(0);
+      expect(r.json.dryRun).toBe(true);
+      expect(r.json.applied).toBe(false);
+      expect(r.json.before).toBe("2026-01-01T12:00:00");
+      expect(r.json.after).toBe("2026-01-01T13:00:00");
+      expect(r.json.shiftSeconds).toBe(3600);
+      expect(r.log.filter((e) => e.op === "set_date")).toEqual([]); // nothing written
+    });
+
+    it("with --apply it writes the shifted date (negative shift = earlier)", (ctx) => {
+      if (!python) ctx.skip();
+      const r = runReader(["set-photo-date", "--uuid=0001", "--shift-seconds=-86400", "--apply"]);
+      expect(r.status).toBe(0);
+      expect(r.json.applied).toBe(true);
+      expect(r.json.dryRun).toBe(false);
+      expect(r.json.before).toBe("2026-01-01T12:00:00");
+      expect(r.json.after).toBe("2025-12-31T12:00:00");
+      expect(r.json.shiftSeconds).toBe(-86400);
+      const write = r.log.find((e) => e.op === "set_date") as { value: string };
+      expect(write.value).toBe("2025-12-31T12:00:00");
+    });
+
+    it("sets an absolute --date and reports the effective shift", (ctx) => {
+      if (!python) ctx.skip();
+      const r = runReader([
+        "set-photo-date",
+        "--uuid=0001",
+        "--date=2026-01-01T12:05:00",
+        "--apply",
+      ]);
+      expect(r.status).toBe(0);
+      expect(r.json.after).toBe("2026-01-01T12:05:00");
+      expect(r.json.shiftSeconds).toBe(300);
+    });
+
+    it("rejects passing BOTH --date and --shift-seconds", (ctx) => {
+      if (!python) ctx.skip();
+      const r = runReader([
+        "set-photo-date",
+        "--uuid=0001",
+        "--date=2026-01-01T00:00:00",
+        "--shift-seconds=60",
+      ]);
+      expect(r.status).toBe(1);
+      expect(String(r.json.error)).toMatch(/exactly one/i);
+      expect(r.log.filter((e) => e.op === "set_date")).toEqual([]);
+    });
+
+    it("rejects passing NEITHER --date nor --shift-seconds", (ctx) => {
+      if (!python) ctx.skip();
+      const r = runReader(["set-photo-date", "--uuid=0001"]);
+      expect(r.status).toBe(1);
+      expect(String(r.json.error)).toMatch(/exactly one/i);
+    });
+
+    it("rejects a non-ISO --date with a clear error", (ctx) => {
+      if (!python) ctx.skip();
+      const r = runReader(["set-photo-date", "--uuid=0001", "--date=yesterday", "--apply"]);
+      expect(r.status).toBe(1);
+      expect(String(r.json.error)).toMatch(/ISO 8601/);
+      expect(r.log.filter((e) => e.op === "set_date")).toEqual([]);
+    });
+
+    it("fails clearly for an unknown photo (validate-first)", (ctx) => {
+      if (!python) ctx.skip();
+      const r = runReader(["set-photo-date", "--uuid=DEAD1", "--shift-seconds=60"]);
+      expect(r.status).toBe(1);
+      expect(String(r.json.error)).toBe("Photo not found: DEAD1");
+    });
+
+    it("an applied change is revertible from the echoed before value", (ctx) => {
+      if (!python) ctx.skip();
+      // One process per invocation, so replay the revert against the state the
+      // first write produced.
+      const state = baseState();
+      state.photos["0001"].date = "2026-01-01T13:00:00"; // after a +3600 apply
+      const r = runReader(
+        ["set-photo-date", "--uuid=0001", "--date=2026-01-01T12:00:00", "--apply"],
+        state
+      );
+      expect(r.status).toBe(0);
+      expect(r.json.after).toBe("2026-01-01T12:00:00");
+      expect(r.json.shiftSeconds).toBe(-3600);
+    });
+  });
+
+  describe("import-photos", () => {
+    function withTempFiles(count: number): string[] {
+      const dir = mkdtempSync(join(tmpdir(), "photos-import-src-"));
+      const files: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const f = join(dir, `scan-${i}.jpg`);
+        writeFileSync(f, "not-really-a-jpeg");
+        files.push(f);
+      }
+      return files;
+    }
+
+    it("imports validated files and returns the new uuids + filenames", (ctx) => {
+      if (!python) ctx.skip();
+      const [a, b] = withTempFiles(2);
+      const r = runReader(["import-photos", `--path=${a}`, `--path=${b}`]);
+      expect(r.status).toBe(0);
+      expect(r.json.requestedCount).toBe(2);
+      expect(r.json.importedCount).toBe(2);
+      const imported = r.json.imported as Array<{ uuid: string; filename: string }>;
+      expect(imported.map((i) => i.filename)).toEqual(["scan-0.jpg", "scan-1.jpg"]);
+      const log = r.log.find((e) => e.op === "import_photos") as {
+        skip_duplicate_check: boolean;
+        album: string | null;
+      };
+      expect(log.skip_duplicate_check).toBe(false); // duplicate check ON by default
+      expect(log.album).toBeNull();
+    });
+
+    it("imports into an EXISTING album and echoes it", (ctx) => {
+      if (!python) ctx.skip();
+      const [a] = withTempFiles(1);
+      const r = runReader(["import-photos", `--path=${a}`, "--album=Trailcam"]);
+      expect(r.status).toBe(0);
+      expect((r.json.album as Record<string, unknown>).uuid).toBe("A11111");
+      const log = r.log.find((e) => e.op === "import_photos") as { album: string };
+      expect(log.album).toBe("A11111");
+    });
+
+    it("fails clearly when the album does not exist (validate-first, nothing imported)", (ctx) => {
+      if (!python) ctx.skip();
+      const [a] = withTempFiles(1);
+      const r = runReader(["import-photos", `--path=${a}`, "--album=Nope"]);
+      expect(r.status).toBe(1);
+      expect(String(r.json.error)).toMatch(/Album not found: 'Nope'/);
+      expect(r.log.filter((e) => e.op === "import_photos")).toEqual([]);
+    });
+
+    it("rejects missing paths BEFORE importing anything (lists every offender)", (ctx) => {
+      if (!python) ctx.skip();
+      const [a] = withTempFiles(1);
+      const r = runReader([
+        "import-photos",
+        `--path=${a}`,
+        "--path=/tmp/definitely-missing-1.jpg",
+        "--path=/tmp/definitely-missing-2.jpg",
+      ]);
+      expect(r.status).toBe(1);
+      expect(String(r.json.error)).toMatch(/not found/i);
+      expect(String(r.json.error)).toContain("definitely-missing-1.jpg");
+      expect(String(r.json.error)).toContain("definitely-missing-2.jpg");
+      expect(r.log.filter((e) => e.op === "import_photos")).toEqual([]);
+    });
+
+    it("rejects relative paths", (ctx) => {
+      if (!python) ctx.skip();
+      const r = runReader(["import-photos", "--path=relative/scan.jpg"]);
+      expect(r.status).toBe(1);
+      expect(String(r.json.error)).toMatch(/must be absolute/i);
+    });
+
+    it("passes --skip-duplicate-check through to photoscript", (ctx) => {
+      if (!python) ctx.skip();
+      const [a] = withTempFiles(1);
+      const r = runReader(["import-photos", `--path=${a}`, "--skip-duplicate-check"]);
+      expect(r.status).toBe(0);
+      const log = r.log.find((e) => e.op === "import_photos") as {
+        skip_duplicate_check: boolean;
+      };
+      expect(log.skip_duplicate_check).toBe(true);
+    });
+  });
+
+  describe("get-selected-photos (photoscript-backed READ — not gated)", () => {
+    it("works with the write gate CLOSED (read-only tool)", (ctx) => {
+      if (!python) ctx.skip();
+      const state = baseState();
+      state.selection = ["0001"];
+      const r = runReader(["get-selected-photos"], state, { writesEnabled: false });
+      expect(r.status).toBe(0);
+      expect(r.json.count).toBe(1);
+    });
+
+    it("returns query-shaped summaries for the selection, in selection order", (ctx) => {
+      if (!python) ctx.skip();
+      const state = baseState();
+      state.selection = ["0002", "0001"];
+      const r = runReader(["get-selected-photos"], state);
+      expect(r.status).toBe(0);
+      expect(r.json.count).toBe(2);
+      const photos = r.json.photos as Array<Record<string, unknown>>;
+      expect(photos.map((p) => p.uuid)).toEqual(["0002", "0001"]);
+      // Summary shape (same projection as query results).
+      expect(photos[1]).toMatchObject({
+        uuid: "0001",
+        filename: "IMG_0001.jpg",
+        date: "2026-01-01T12:00:00",
+        favorite: false,
+        width: 4032,
+        height: 3024,
+      });
+      expect(Array.isArray(photos[1].keywords)).toBe(true);
+      expect(r.json.notFound).toEqual([]);
+    });
+
+    it("errors clearly when Photos.app is not running (and never launches it)", (ctx) => {
+      if (!python) ctx.skip();
+      const state = baseState();
+      state.running = false;
+      state.selection = ["0001"];
+      const r = runReader(["get-selected-photos"], state);
+      expect(r.status).toBe(1);
+      expect(String(r.json.error)).toMatch(/Photos\.app is not running/);
+    });
+
+    it("errors clearly when nothing is selected", (ctx) => {
+      if (!python) ctx.skip();
+      const r = runReader(["get-selected-photos"], baseState());
+      expect(r.status).toBe(1);
+      expect(String(r.json.error)).toMatch(/No photos are selected/);
+    });
+
+    it("reports selected items unknown to the library index in notFound (with filename)", (ctx) => {
+      if (!python) ctx.skip();
+      const state = baseState();
+      state.selection = ["0001", "GHOST"];
+      // GHOST exists in Photos.app (photoscript resolves it) but not in the
+      // osxphotos SQLite index — the just-imported-pending-checkpoint case.
+      state.photos["GHOST"] = { filename: "fresh-import.heic", inLibraryIndex: false };
+      const r = runReader(["get-selected-photos"], state);
+      expect(r.status).toBe(0);
+      expect(r.json.count).toBe(1);
+      expect((r.json.photos as Array<{ uuid: string }>).map((p) => p.uuid)).toEqual(["0001"]);
+      expect(r.json.notFound).toEqual([{ uuid: "GHOST", filename: "fresh-import.heic" }]);
     });
   });
 });

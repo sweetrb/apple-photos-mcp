@@ -7,18 +7,22 @@ This file provides guidance for AI agents (Claude, etc.) when using this MCP ser
 This MCP server gives AI assistants access to the macOS Apple Photos library
 via [osxphotos](https://github.com/RhetTbull/osxphotos) — **read-only by
 default**. All operations are **local** — nothing leaves the user's machine.
-You can query the library, inspect individual photos (singly or in batches,
-including EXIF camera data), **see** photos inline via thumbnails, find
-exact-duplicate groups, browse the library's structure (albums, folders,
-keywords, persons), and **export** copies of photos to a directory.
+You can query the library (including by GPS radius, aesthetic score, and
+OCR-detected text), inspect individual photos (singly or in batches, including
+EXIF camera data, ML score/detected text, shared-album comments/likes, and
+burst siblings), read the **live Photos.app selection**, **see** photos inline
+via thumbnails, find exact-duplicate groups, browse the library's structure
+(albums, folders, keywords, persons), and **export** copies of photos to a
+directory.
 
 **Write tools exist but are gated:** `create-album`, `add-to-album`,
-`remove-from-album`, `set-photo-metadata`, and `set-keywords` only work when
-the user has set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (env or config.json +
-server restart). Until then every write call returns a clear opt-in error —
-**run `doctor` first** when writes matter: its `writes` check reports the gate
-state. Even with writes enabled, **nothing can delete a photo** (see "Write
-workflow" below).
+`remove-from-album`, `set-photo-metadata`, `set-keywords`, `set-photo-date`,
+and `import-photos` only work when the user has set
+`APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (env or config.json + server restart).
+Until then every write call returns a clear opt-in error — **run `doctor`
+first** when writes matter: its `writes` check reports the gate state. Even
+with writes enabled, **nothing can delete a photo** (see "Write workflow"
+below).
 
 ## Related Documentation
 
@@ -146,6 +150,24 @@ Rules that keep writes safe and predictable:
   `before` list. A keyword in both `add` and `remove` is rejected.
 - **Metadata writes echo before/after** — capture `before` when the user may
   want an undo.
+- **`set-photo-date` is a DRY RUN by default.** Always preview first, then
+  apply with `dryRun: false` — the trailcam/scanner date-fix workflow:
+  ```
+  1. get-thumbnail on the photo (raise minSize) → read the burned-in date strip
+  2. set-photo-date uuid=… date="2026-05-14T06:32:00"      ← dryRun defaults TRUE
+     → echoes before/after, writes NOTHING; sanity-check the delta
+  3. set-photo-date … dryRun=false                          ← the actual write
+  4. keep the echoed `before` — reverting = set-photo-date date=<before> dryRun=false
+  ```
+  Whole batches with one wrong clock shift with `shiftSeconds` (the same
+  offset per photo) instead of an absolute `date`. Photos-library date only —
+  the file's EXIF is never touched (same as Photos.app's *Adjust Date & Time*).
+- **`import-photos` is add-only and CANNOT be undone programmatically** (no
+  AppleScript photo-delete verb) — confirm the file list with the user before
+  importing. Sources must exist under the export allowlist roots; the target
+  `album` must already exist (`create-album` first). The default duplicate
+  check makes Photos.app pop a blocking dialog on duplicates — warn the user,
+  or pass `skipDuplicateCheck: true` only when re-imports are acceptable.
 - **Writes target the library currently open in Photos.app** (normally the
   system library); the `library` parameter applies to read tools only. Writes
   launch Photos.app if needed and require macOS **Automation** permission —
@@ -204,9 +226,10 @@ Rules that keep writes safe and predictable:
 | `health-check` | Verify osxphotos is installed and the library opens (while another operation is running it answers immediately with a liveness summary instead of queueing behind it) |
 | `doctor` | Full setup diagnostic — Python interpreter version, osxphotos install, sidecar mode (persistent vs one-shot), write-tools gate, library readability, and Full Disk Access, each ok/warn/fail with advice (richer than `health-check`) |
 | `library-info` | High-level counts (photos, movies, albums, folders, keywords, persons) |
-| `query` | Find photos by taken/import date, album, keyword, person, ML label, place, folder, year, size, media type, or flags → returns UUIDs (`newestFirst` for the N most recent) |
-| `get-photo` | Full metadata for one photo by UUID (incl. EXIF camera data) |
+| `query` | Find photos by taken/import date, album, keyword, person, ML label, place, GPS radius (`near`), folder, year, size, media type, aesthetic score (`minScore`), OCR text (`detectedText`), or flags → returns UUIDs (`newestFirst` for the N most recent) |
+| `get-photo` | Full metadata for one photo by UUID (incl. EXIF camera data, ML `score`/`detectedText`, shared-album social data; `burstPhotos: true` adds burst siblings) |
 | `get-photos` | Full metadata for up to 50 UUIDs in one batched call |
+| `get-selected-photos` | The photos currently selected in the Photos.app window — "act on these"; errors (never launches Photos) when Photos isn't running or nothing is selected |
 | `get-thumbnail` | The photo itself as an inline viewable image (from Photos' derivatives; `minSize` px, default 360) |
 | `find-duplicates` | Groups of exact duplicates via Photos' fingerprint detection |
 | `list-albums` | All albums with folder paths and photo counts |
@@ -219,6 +242,8 @@ Rules that keep writes safe and predictable:
 | `remove-from-album` | *(write, gated)* Remove photos from an album ONLY (never the library); rebuilds the album — UUID changes |
 | `set-photo-metadata` | *(write, gated)* Set title/description/favorite; echoes before/after for undo |
 | `set-keywords` | *(write, gated)* Add/remove keywords with union semantics — unmentioned keywords preserved |
+| `set-photo-date` | *(write, gated)* Fix a photo's date (absolute or `shiftSeconds`); **dry run by default**, before/after echoed for revert; Photos-DB date only |
+| `import-photos` | *(write, gated)* Import files into the library (optionally into an existing album); add-only, cannot be undone programmatically |
 
 ## Error Handling
 
@@ -252,6 +277,12 @@ Rules that keep writes safe and predictable:
 - "What albums / keywords / people are there?" → `list-albums` / `list-keywords` / `list-persons`
 - "File these into an album" → *(writes gated)* `create-album` then `add-to-album` with the UUIDs
 - "Tag / caption / favorite these" → *(writes gated)* `set-keywords` (union merge) / `set-photo-metadata`
+- "These photos" (selected in Photos.app) → `get-selected-photos` → feed the UUIDs onward
+- "The dates on these are wrong" → *(writes gated)* `set-photo-date` — dry run first, then `dryRun: false`
+- "Photos near the cabin / at these coordinates" → `query` with `near: "lat,lon,radiusKm"`
+- "The good ones / best shots" → `query` with `minScore` (+ `newestFirst`)
+- "Photos with text / of receipts" → `query` with `detectedText` (combine with `screenshot` or dates)
+- "Import these files / scans" → *(writes gated)* `import-photos` (confirm the list first — imports can't be undone programmatically)
 - "Delete the duplicates" → cannot delete: album-quarantine pattern (`create-album` + `add-to-album`), user deletes in Photos.app
 
 ## Recurring macOS permission prompts → offer the official-Node fix

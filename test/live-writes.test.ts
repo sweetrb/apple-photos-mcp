@@ -18,34 +18,76 @@
  *   5. removes one photo from the album (album rebuild — UUID change),
  *   6. verifies the album is visible to the osxphotos READ path (cache
  *      invalidation + sidecar re-parse, end-to-end),
- *   7. afterAll: deletes the test album and force-restores the photo's
- *      title/keywords via photoscript directly — deletion is deliberately NOT
- *      an MCP tool, so cleanup goes straight at the backend.
+ *   7. (2.1.0) round-trips the photo's DATE: dry run (verifies nothing was
+ *      written), real +1h shift, then revert from the echoed before value,
+ *   8. (2.1.0) imports a freshly generated 100×100 random-pixel JPEG into a
+ *      scratch album, titles it clearly, and verifies it round-trips,
+ *   9. afterAll: deletes the test albums and force-restores the photo's
+ *      title/keywords/date via photoscript directly — deletion is
+ *      deliberately NOT an MCP tool, so cleanup goes straight at the backend.
+ *
+ * KNOWN RESIDUE: the imported test photo itself CANNOT be deleted
+ * programmatically (Photos' AppleScript has no photo-delete verb). It is
+ * titled "MCP live-import test — safe to delete" so it's easy to find and
+ * remove by hand in Photos.app; each run generates unique random pixels, so
+ * re-runs never trip Photos' duplicate dialog.
  *
  * Requires: macOS, a signed-in Photos library, Full Disk Access, and macOS
  * Automation permission for Photos (the first write may pop the TCC prompt).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdtempSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { PhotosManager } from "../src/services/photosManager.js";
 
 const LIVE = process.env.APPLE_PHOTOS_MCP_LIVE_WRITE_TEST === "1";
 const TEST_ALBUM = "MCP Write Test 2.0.0";
+const IMPORT_ALBUM = "MCP Import Test 2.1.0";
 const TEST_KEYWORD = "mcp-live-write-test";
 const TEST_TITLE = "MCP Live Write Test Title";
+const IMPORT_TITLE = "MCP live-import test — safe to delete";
 const VENV_PYTHON = resolve(__dirname, "../venv/bin/python3");
 
 let mgr: PhotosManager;
 let ready = false;
-let photoA: string; // keyword/title round-trip target
+let photoA: string; // keyword/title/date round-trip target
 let photoB: string;
 let originalKeywords: string[] | null = null;
 let originalTitle: string | null = null;
+let originalDate: string | null = null;
 let keywordsRestored = false;
 let titleRestored = false;
+let dateRestored = false;
 let albumUuid: string | null = null;
+let importedUuid: string | null = null;
+
+/** Write a 100×100 random-pixel JPEG (unique every run) and return its path. */
+function generateTestJpeg(): string {
+  // Under /tmp, not os.tmpdir(): macOS's per-user temp (/var/folders/…) is
+  // outside the import/export allowlist roots by design.
+  const dir = mkdtempSync(join("/tmp", "mcp-import-live-"));
+  const png = join(dir, "mcp-import-test.png");
+  const jpg = join(dir, "mcp-import-test.jpg");
+  const script = `
+import os, struct, sys, zlib
+path = sys.argv[1]
+w = h = 100
+raw = b"".join(b"\\x00" + os.urandom(3 * w) for _ in range(h))
+def chunk(tag, data):
+    body = tag + data
+    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+png = b"\\x89PNG\\r\\n\\x1a\\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+open(path, "wb").write(png)
+`;
+  execFileSync(VENV_PYTHON, ["-c", script, png], { timeout: 30_000 });
+  execFileSync("/usr/bin/sips", ["-s", "format", "jpeg", png, "--out", jpg], {
+    stdio: "pipe",
+    timeout: 30_000,
+  });
+  return jpg;
+}
 
 beforeAll(async () => {
   if (!LIVE) return;
@@ -69,17 +111,19 @@ afterAll(async () => {
   // photo's title/keywords if the in-test reverts didn't run.
   const cleanup = `
 import json, sys
+from datetime import datetime
 import photoscript
 from photoscript.script_loader import configure_run_script
 configure_run_script(retry_enabled=False)
 spec = json.loads(sys.argv[1])
 lib = photoscript.PhotosLibrary()
 deleted = 0
-album = lib.album(spec["album"])
-while album is not None:
-    lib.delete_album(album)
-    deleted += 1
-    album = lib.album(spec["album"])
+for name in spec["albums"]:
+    album = lib.album(name)
+    while album is not None:
+        lib.delete_album(album)
+        deleted += 1
+        album = lib.album(name)
 restored = []
 if spec.get("uuid"):
     p = photoscript.Photo(spec["uuid"])
@@ -89,20 +133,33 @@ if spec.get("uuid"):
     if spec.get("restoreTitle") is not None:
         p.title = spec["restoreTitle"]
         restored.append("title")
+    if spec.get("restoreDate") is not None:
+        p.date = datetime.fromisoformat(spec["restoreDate"])
+        restored.append("date")
 print(json.dumps({"deletedAlbums": deleted, "restored": restored}))
 `;
   const spec = {
-    album: TEST_ALBUM,
+    albums: [TEST_ALBUM, IMPORT_ALBUM],
     uuid: photoA ?? null,
     restoreKeywords: !keywordsRestored && originalKeywords !== null ? originalKeywords : null,
     restoreTitle: !titleRestored && originalTitle !== null ? originalTitle : null,
+    restoreDate: !dateRestored && originalDate !== null ? originalDate : null,
   };
   const out = execFileSync(VENV_PYTHON, ["-c", cleanup, JSON.stringify(spec)], {
     encoding: "utf-8",
     timeout: 300_000,
   });
-  // Surface the cleanup result in the test output.
+  // Surface the cleanup result in the test output. The imported test photo
+  // cannot be deleted programmatically (no AppleScript photo-delete verb) —
+  // report its identity so it can be removed by hand in Photos.app.
   console.log(`[live-writes cleanup] ${out.trim()}`);
+  if (importedUuid !== null) {
+    console.log(
+      `[live-writes cleanup] imported test photo ${importedUuid} ("${IMPORT_TITLE}") ` +
+        `remains in the library — Photos' AppleScript cannot delete photos; ` +
+        `remove it by hand in Photos.app if desired.`
+    );
+  }
 }, 300_000);
 
 describe("live write tools (opt-in: APPLE_PHOTOS_MCP_LIVE_WRITE_TEST=1)", () => {
@@ -195,5 +252,76 @@ describe("live write tools (opt-in: APPLE_PHOTOS_MCP_LIVE_WRITE_TEST=1)", () => 
     }
     expect(seen, "test album not visible to the osxphotos read path").toBeDefined();
     expect(seen?.photoCount).toBe(1); // photoA remains; photoB was removed
+  }, 300_000);
+
+  // --- 2.1.0: set-photo-date (dry run → apply → revert) ---
+
+  it("set-photo-date DRY RUN previews the shift and writes NOTHING", async (ctx) => {
+    if (!ready) ctx.skip();
+    const dry = await mgr.setPhotoDate(photoA, { shiftSeconds: 3600 }); // dryRun default
+    expect(dry.dryRun).toBe(true);
+    expect(dry.applied).toBe(false);
+    expect(dry.shiftSeconds).toBe(3600);
+    expect(Date.parse(dry.after) - Date.parse(dry.before)).toBe(3600_000);
+    originalDate = dry.before;
+    // Prove nothing was written: a second dry run sees the same before.
+    const again = await mgr.setPhotoDate(photoA, { shiftSeconds: 3600 });
+    expect(again.before).toBe(dry.before);
+  }, 300_000);
+
+  it("set-photo-date dryRun=false applies a real +1h shift", async (ctx) => {
+    if (!ready) ctx.skip();
+    const applied = await mgr.setPhotoDate(photoA, { shiftSeconds: 3600, dryRun: false });
+    expect(applied.applied).toBe(true);
+    expect(applied.dryRun).toBe(false);
+    expect(applied.before).toBe(originalDate);
+    expect(Date.parse(applied.after) - Date.parse(originalDate as string)).toBe(3600_000);
+  }, 300_000);
+
+  it("set-photo-date REVERTS from the echoed before value", async (ctx) => {
+    if (!ready) ctx.skip();
+    const reverted = await mgr.setPhotoDate(photoA, {
+      date: originalDate as string,
+      dryRun: false,
+    });
+    expect(reverted.applied).toBe(true);
+    expect(reverted.after).toBe(originalDate);
+    dateRestored = true;
+  }, 300_000);
+
+  // --- 2.1.0: import-photos (generated JPEG → scratch album → verify) ---
+
+  it("import-photos imports a generated 100×100 JPEG into a scratch album", async (ctx) => {
+    if (!ready) ctx.skip();
+    const jpg = generateTestJpeg();
+    await mgr.createAlbum(IMPORT_ALBUM);
+    // Random pixel content makes every run unique, so the DEFAULT duplicate
+    // check can stay on without risking Photos' blocking duplicate dialog.
+    const result = await mgr.importPhotos([jpg], { album: IMPORT_ALBUM });
+    expect(result.requestedCount).toBe(1);
+    expect(result.importedCount).toBe(1);
+    expect(result.album?.name).toBe(IMPORT_ALBUM);
+    importedUuid = result.imported[0].uuid;
+    expect(importedUuid.length).toBeGreaterThan(0);
+    // Title it so the un-deletable residue is findable by hand (see header).
+    const titled = await mgr.setPhotoMetadata(importedUuid, { title: IMPORT_TITLE });
+    expect(titled.after.title).toBe(IMPORT_TITLE);
+  }, 600_000);
+
+  it("the imported photo round-trips through the osxphotos READ path", async (ctx) => {
+    if (!ready || importedUuid === null) ctx.skip();
+    // Retry for Photos' WAL checkpoint latency, like the album check above.
+    let detail: { uuid: string; filename: string } | undefined;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        detail = await mgr.getPhoto(importedUuid as string);
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 2500));
+      }
+    }
+    expect(detail, "imported photo not visible to the osxphotos read path").toBeDefined();
+    expect(detail?.uuid).toBe(importedUuid);
+    expect(detail?.filename).toContain("mcp-import-test");
   }, 300_000);
 });
