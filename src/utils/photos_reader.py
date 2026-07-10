@@ -630,7 +630,7 @@ def cmd_get_thumbnail(args):
         }
 
     # Preferred path: the smallest renderable derivative whose long edge
-    # meets minSize; else the largest renderable one (better than nothing).
+    # meets minSize — the cheapest response that honors the requested detail.
     qualifying = [
         c
         for c in renderable
@@ -638,39 +638,66 @@ def cmd_get_thumbnail(args):
     ]
     if qualifying:
         return _read(min(qualifying, key=lambda c: max(c["dims"])))
+
+    # Nothing pre-generated meets minSize. Prefer RENDERING a right-sized JPEG
+    # (via sips) from a larger local source over returning an undersized
+    # thumbnail — an agent that raised minSize to read small text must not
+    # silently get a 360px preview. Never upscale: that adds bytes, not detail.
+    best_fallback = None
     fallback = [c for c in renderable if c["bytes"] <= MAX_THUMBNAIL_BYTES]
     if fallback:
-        return _read(max(fallback, key=lambda c: (max(c["dims"]) if c["dims"] else 0, c["bytes"])))
+        best_fallback = max(
+            fallback, key=lambda c: (max(c["dims"]) if c["dims"] else 0, c["bytes"])
+        )
+    have = max(best_fallback["dims"]) if best_fallback and best_fallback["dims"] else 0
 
-    # No renderable derivative: render one from the original (or a HEIC/TIFF
-    # derivative) via sips. Movies without an image derivative can't be
-    # thumbnailed here.
-    source = None
-    if candidates:  # non-renderable image derivative (e.g. HEIC)
-        source = max(candidates, key=lambda c: c["bytes"])["path"]
-    elif p.ismovie:
+    source = None  # a local file plausibly LARGER than the best derivative
+    target = min_size
+    original_edge = max(p.original_width or 0, p.original_height or 0)
+    if not p.ismovie and (p.path or p.path_edited) and original_edge > have:
+        source = p.path or p.path_edited
+        # Cap at the original's own size so sips never upscales.
+        target = min(min_size, original_edge)
+    if source is None:
+        # A non-renderable derivative (e.g. HEIC): dims unreadable here, but
+        # Photos only generates those larger than its thumbnail-size JPEGs.
+        non_renderable = [c for c in candidates if c["mime"] not in _RENDERABLE_MIME]
+        if non_renderable:
+            source = max(non_renderable, key=lambda c: c["bytes"])["path"]
+    if source is None and best_fallback is None and not p.ismovie:
+        # No derivatives at all — the original/edited file is the only option.
+        source = p.path or p.path_edited
+
+    if source is not None:
+        try:
+            rendered = _render_jpeg(source, target)
+        except RuntimeError:
+            rendered = None  # sips couldn't read it — settle for the fallback
+        if rendered is not None:
+            try:
+                return _read(
+                    {"path": rendered, "mime": "image/jpeg", "bytes": 0, "dims": None},
+                    converted=True,
+                )
+            finally:
+                Path(rendered).unlink(missing_ok=True)
+
+    if best_fallback is not None:
+        return _read(best_fallback)
+
+    if p.ismovie:
         return {
             "error": (
                 f"No image derivative available for movie {args.uuid} — "
                 "export it and extract a frame instead."
             )
         }
-    else:
-        source = p.path or p.path_edited
-    if not source:
-        return {
-            "error": (
-                f"No local image available for {args.uuid} (original may be "
-                "iCloud-only with no derivatives) — export it first."
-            )
-        }
-    rendered = _render_jpeg(source, max(min_size, DEFAULT_THUMBNAIL_MIN_SIZE))
-    try:
-        return _read(
-            {"path": rendered, "mime": "image/jpeg", "bytes": 0, "dims": None}, converted=True
+    return {
+        "error": (
+            f"No local image available for {args.uuid} (original may be "
+            "iCloud-only with no derivatives) — export it first."
         )
-    finally:
-        Path(rendered).unlink(missing_ok=True)
+    }
 
 
 def cmd_find_duplicates(args):
@@ -947,6 +974,36 @@ def _add_query_filters(p: argparse.ArgumentParser) -> None:
     p.add_argument("--title", help="Substring match on title")
     p.add_argument("--description", help="Substring match on description")
     p.add_argument("--limit", type=int, help="Max number of results")
+    # --- import-date window (QueryOptions added_after/added_before/added_in_last) ---
+    p.add_argument("--added-after", help="ISO 8601 lower bound on import date")
+    p.add_argument("--added-before", help="ISO 8601 upper bound on import date")
+    p.add_argument("--added-in-last", help='Imported within a duration ("7d", "24h")')
+    # --- content/organization filters ---
+    p.add_argument("--label", action="append", help="Filter by ML label (repeatable)")
+    p.add_argument("--folder", action="append", help="Albums in folder (repeatable)")
+    p.add_argument("--place", action="append", help="Place-name substring (repeatable)")
+    p.add_argument("--has-location", action="store_true", help="Only photos with GPS data")
+    p.add_argument("--no-location", action="store_true", help="Only photos without GPS data")
+    p.add_argument("--year", action="append", type=int, help="Taken in year (repeatable)")
+    p.add_argument("--min-size", type=int, help="Original file size >= bytes")
+    p.add_argument("--max-size", type=int, help="Original file size <= bytes")
+    p.add_argument("--no-keyword", action="store_true", help="Only photos with no keyword")
+    p.add_argument("--burst", action="store_true", help="Only burst photos")
+    # --- media-type flags ---
+    p.add_argument("--screenshot", action="store_true", help="Only screenshots")
+    p.add_argument("--screen-recording", action="store_true", help="Only screen recordings")
+    p.add_argument("--selfie", action="store_true", help="Only selfies")
+    p.add_argument("--panorama", action="store_true", help="Only panoramas")
+    p.add_argument("--live", action="store_true", help="Only live photos")
+    p.add_argument("--portrait", action="store_true", help="Only portrait-mode photos")
+    p.add_argument("--time-lapse", action="store_true", help="Only time-lapse videos")
+    p.add_argument("--slow-mo", action="store_true", help="Only slow-motion videos")
+    # --- ordering ---
+    p.add_argument(
+        "--newest-first",
+        action="store_true",
+        help="Sort by date descending BEFORE the limit slice (limit = N most recent)",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -966,6 +1023,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("get-photo")
     _add_library(p)
     p.add_argument("--uuid", required=True)
+
+    p = sub.add_parser("get-photos")
+    _add_library(p)
+    p.add_argument("--uuid", action="append", required=True, help="UUID(s) to fetch (repeatable)")
+
+    p = sub.add_parser("get-thumbnail")
+    _add_library(p)
+    p.add_argument("--uuid", required=True)
+    p.add_argument(
+        "--min-size",
+        type=int,
+        help=f"Smallest acceptable long-edge pixels (default {DEFAULT_THUMBNAIL_MIN_SIZE})",
+    )
+
+    p = sub.add_parser("find-duplicates")
+    _add_library(p)
+    p.add_argument("--limit", type=int, help="Max number of duplicate groups (default 100)")
 
     p = sub.add_parser("list-albums")
     _add_library(p)
@@ -998,6 +1072,9 @@ HANDLERS = {
     "library-info": cmd_library_info,
     "query": cmd_query,
     "get-photo": cmd_get_photo,
+    "get-photos": cmd_get_photos,
+    "get-thumbnail": cmd_get_thumbnail,
+    "find-duplicates": cmd_find_duplicates,
     "list-albums": cmd_list_albums,
     "list-folders": cmd_list_folders,
     "list-keywords": cmd_list_keywords,

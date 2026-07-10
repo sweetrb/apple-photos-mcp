@@ -6,8 +6,12 @@
  * prose. Mirrors the helpers used in apple-notes-mcp / apple-mail-mcp.
  */
 
+export type ContentBlock =
+  | { type: "text"; text: string; [k: string]: unknown }
+  | { type: "image"; data: string; mimeType: string; [k: string]: unknown };
+
 export interface ToolResponse {
-  content: { type: "text"; text: string; [k: string]: unknown }[];
+  content: ContentBlock[];
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
   [k: string]: unknown;
@@ -36,6 +40,27 @@ export function errorResponse(message: string, structured?: Record<string, unkno
 /** Plain text result with no structured payload (kept for back-compat). */
 export function textResponse(text: string): ToolResponse {
   return { content: [{ type: "text", text }] };
+}
+
+/**
+ * A successful result whose payload is an IMAGE the client can render inline
+ * (MCP image content block), preceded by a brief text summary. The structured
+ * payload should carry the image's metadata but NOT the base64 data — it would
+ * double a multi-hundred-KB response for no benefit.
+ */
+export function imageResponse(
+  message: string,
+  image: { data: string; mimeType: string },
+  structured?: Record<string, unknown>
+): ToolResponse {
+  const res: ToolResponse = {
+    content: [
+      { type: "text", text: message },
+      { type: "image", data: image.data, mimeType: image.mimeType },
+    ],
+  };
+  if (structured !== undefined) res.structuredContent = structured;
+  return res;
 }
 
 /**

@@ -198,6 +198,169 @@ describe("PhotosManager", () => {
       await manager.query({ photos: true });
       expect(runMock.mock.calls[0][1]).toEqual(["--photos"]);
     });
+
+    it("translates the expanded 1.5.0 filters to CLI flags in sidecar argv order", async () => {
+      runMock.mockResolvedValue({ data: { count: 0, returned: 0, photos: [] } });
+      await manager.query({
+        label: ["Dog"],
+        folder: ["Trips"],
+        place: ["Chicago"],
+        year: [2024, 2025],
+        addedAfter: "2026-06-01",
+        addedBefore: "2026-07-01",
+        addedInLast: "7d",
+        minSize: 1024,
+        maxSize: 5_000_000,
+        noKeyword: true,
+        burst: true,
+        screenshot: true,
+        screenRecording: true,
+        selfie: true,
+        panorama: true,
+        live: true,
+        portrait: true,
+        timelapse: true,
+        slowMo: true,
+        newestFirst: true,
+        limit: 10,
+      });
+      const [, args] = runMock.mock.calls[0];
+      expect(args).toEqual([
+        "--label=Dog",
+        "--folder=Trips",
+        "--place=Chicago",
+        "--year=2024",
+        "--year=2025",
+        "--added-after=2026-06-01",
+        "--added-before=2026-07-01",
+        "--added-in-last=7d",
+        "--min-size=1024",
+        "--max-size=5000000",
+        "--no-keyword",
+        "--burst",
+        "--screenshot",
+        "--screen-recording",
+        "--selfie",
+        "--panorama",
+        "--live",
+        "--portrait",
+        "--time-lapse",
+        "--slow-mo",
+        "--newest-first",
+        "--limit=10",
+      ]);
+    });
+
+    it("maps the hasLocation tri-state to --has-location / --no-location / no flag", async () => {
+      runMock.mockResolvedValue({ data: { count: 0, returned: 0, photos: [] } });
+      await manager.query({ hasLocation: true });
+      expect(runMock.mock.calls[0][1]).toEqual(["--has-location"]);
+
+      runMock.mockClear();
+      await manager.query({ hasLocation: false });
+      expect(runMock.mock.calls[0][1]).toEqual(["--no-location"]);
+
+      runMock.mockClear();
+      await manager.query({});
+      expect(runMock.mock.calls[0][1]).toEqual([]);
+    });
+
+    it("treats video as a pure alias of movies (never a duplicate --movies token)", async () => {
+      runMock.mockResolvedValue({ data: { count: 0, returned: 0, photos: [] } });
+      await manager.query({ video: true });
+      expect(runMock.mock.calls[0][1]).toEqual(["--movies"]);
+
+      runMock.mockClear();
+      await manager.query({ video: true, movies: true });
+      expect(runMock.mock.calls[0][1]).toEqual(["--movies"]);
+    });
+  });
+
+  describe("getPhotos (batch)", () => {
+    it("rejects an empty uuid list before invoking python", async () => {
+      await expect(manager.getPhotos([])).rejects.toThrow(/at least one uuid/i);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("fetches N uuids in ONE sidecar call and returns the batch result verbatim", async () => {
+      const data = {
+        count: 2,
+        photos: [{ uuid: "AAAA-1111" }, { uuid: "BBBB-2222" }],
+        notFound: ["CCCC-3333"],
+      };
+      runMock.mockResolvedValue({ data });
+      const result = await manager.getPhotos(["AAAA-1111", "BBBB-2222", "CCCC-3333"]);
+      expect(runMock).toHaveBeenCalledTimes(1);
+      const [command, args] = runMock.mock.calls[0];
+      expect(command).toBe("get-photos");
+      expect(args).toEqual(["--uuid=AAAA-1111", "--uuid=BBBB-2222", "--uuid=CCCC-3333"]);
+      expect(result).toEqual(data);
+    });
+
+    it("includes --library before the uuid flags when provided", async () => {
+      runMock.mockResolvedValue({ data: { count: 0, photos: [], notFound: [] } });
+      await manager.getPhotos(["AAAA-1111"], "/tmp/Other.photoslibrary");
+      expect(runMock.mock.calls[0][1]).toEqual([
+        "--library=/tmp/Other.photoslibrary",
+        "--uuid=AAAA-1111",
+      ]);
+    });
+  });
+
+  describe("getThumbnail", () => {
+    const thumb = {
+      uuid: "AAAA-1111",
+      path: "/derivatives/x.jpeg",
+      width: 360,
+      height: 480,
+      mimeType: "image/jpeg",
+      byteSize: 3,
+      isDerivative: true,
+      base64: "aGVsbG8=",
+    };
+
+    it("forwards the uuid and --min-size and returns the thumbnail", async () => {
+      runMock.mockResolvedValue({ data: thumb });
+      const result = await manager.getThumbnail("AAAA-1111", 720);
+      const [command, args] = runMock.mock.calls[0];
+      expect(command).toBe("get-thumbnail");
+      expect(args).toEqual(["--uuid=AAAA-1111", "--min-size=720"]);
+      expect(result).toEqual(thumb);
+    });
+
+    it("omits --min-size when not given (sidecar default applies)", async () => {
+      runMock.mockResolvedValue({ data: thumb });
+      await manager.getThumbnail("AAAA-1111");
+      expect(runMock.mock.calls[0][1]).toEqual(["--uuid=AAAA-1111"]);
+    });
+
+    it("rejects when the sidecar returns a payload with no image data", async () => {
+      runMock.mockResolvedValue({ data: { uuid: "AAAA-1111" } });
+      await expect(manager.getThumbnail("AAAA-1111")).rejects.toThrow(/no image data/i);
+    });
+  });
+
+  describe("findDuplicates", () => {
+    it("passes --limit and a 5-minute sidecar timeout", async () => {
+      runMock.mockResolvedValue({ data: { groupCount: 0, returned: 0, groups: [] } });
+      await manager.findDuplicates(50);
+      const [command, args, timeout] = runMock.mock.calls[0];
+      expect(command).toBe("find-duplicates");
+      expect(args).toEqual(["--limit=50"]);
+      expect(timeout).toBe(5 * 60 * 1000);
+    });
+
+    it("passes no args by default and returns groups verbatim", async () => {
+      const data = {
+        groupCount: 1,
+        returned: 1,
+        groups: [{ uuids: ["AAAA-1111", "BBBB-2222"], count: 2, photos: [] }],
+      };
+      runMock.mockResolvedValue({ data });
+      const result = await manager.findDuplicates();
+      expect(runMock.mock.calls[0][1]).toEqual([]);
+      expect(result).toEqual(data);
+    });
   });
 
   describe("exportPhotos", () => {

@@ -7,14 +7,17 @@ import { FDA_REMEDIATION } from "../utils/docsUrls.js";
 import { resolveExportDest } from "../utils/exportPath.js";
 import type {
   AlbumInfo,
+  DuplicateGroupsResult,
   ExportResult,
   FolderInfo,
   KeywordCount,
   LibraryInfo,
   PersonCount,
+  PhotoBatchResult,
   PhotoDetail,
   QueryFilters,
   QueryResult,
+  ThumbnailResult,
 } from "../types.js";
 
 /**
@@ -252,9 +255,13 @@ export class PhotosManager {
       ["album", "--album"],
       ["keyword", "--keyword"],
       ["person", "--person"],
+      ["label", "--label"],
+      ["folder", "--folder"],
+      ["place", "--place"],
+      ["year", "--year"],
     ];
     for (const [key, flag] of repeatable) {
-      const values = filters[key] as string[] | undefined;
+      const values = filters[key] as Array<string | number> | undefined;
       if (values) {
         for (const v of values) {
           args.push(flagArg(flag, v));
@@ -264,14 +271,34 @@ export class PhotosManager {
 
     if (filters.fromDate) args.push(flagArg("--from-date", filters.fromDate));
     if (filters.toDate) args.push(flagArg("--to-date", filters.toDate));
+    if (filters.addedAfter) args.push(flagArg("--added-after", filters.addedAfter));
+    if (filters.addedBefore) args.push(flagArg("--added-before", filters.addedBefore));
+    if (filters.addedInLast) args.push(flagArg("--added-in-last", filters.addedInLast));
     if (filters.favorite) args.push("--favorite");
     if (filters.notFavorite) args.push("--not-favorite");
     if (filters.hidden) args.push("--hidden");
     if (filters.notHidden) args.push("--not-hidden");
     if (filters.photos) args.push("--photos");
-    if (filters.movies) args.push("--movies");
+    // `video` is a pure alias of `movies` — the sidecar knows only --movies.
+    if (filters.movies || filters.video) args.push("--movies");
     if (filters.title) args.push(flagArg("--title", filters.title));
     if (filters.description) args.push(flagArg("--description", filters.description));
+    // Tri-state: undefined = no location filter at all.
+    if (filters.hasLocation === true) args.push("--has-location");
+    if (filters.hasLocation === false) args.push("--no-location");
+    if (filters.minSize !== undefined) args.push(flagArg("--min-size", filters.minSize));
+    if (filters.maxSize !== undefined) args.push(flagArg("--max-size", filters.maxSize));
+    if (filters.noKeyword) args.push("--no-keyword");
+    if (filters.burst) args.push("--burst");
+    if (filters.screenshot) args.push("--screenshot");
+    if (filters.screenRecording) args.push("--screen-recording");
+    if (filters.selfie) args.push("--selfie");
+    if (filters.panorama) args.push("--panorama");
+    if (filters.live) args.push("--live");
+    if (filters.portrait) args.push("--portrait");
+    if (filters.timelapse) args.push("--time-lapse");
+    if (filters.slowMo) args.push("--slow-mo");
+    if (filters.newestFirst) args.push("--newest-first");
     if (filters.limit !== undefined) args.push(flagArg("--limit", filters.limit));
 
     return this.run<QueryResult>("query", args);
@@ -283,6 +310,46 @@ export class PhotosManager {
       flagArg("--uuid", uuid),
     ]);
     return result.photo;
+  }
+
+  /**
+   * Full details for a batch of UUIDs in ONE sidecar round-trip — the batch
+   * equivalent of getPhoto (same per-photo shape, same trash fallback).
+   * Unknown UUIDs come back in notFound instead of failing the batch.
+   */
+  async getPhotos(uuids: string[], library?: string): Promise<PhotoBatchResult> {
+    if (uuids.length === 0) {
+      throw new Error("At least one UUID is required");
+    }
+    const args = this.libraryArgs(library);
+    for (const uuid of uuids) {
+      args.push(flagArg("--uuid", uuid));
+    }
+    return this.run<PhotoBatchResult>("get-photos", args);
+  }
+
+  /**
+   * A small renderable image (base64 JPEG/PNG) for one photo, from the preview
+   * derivatives Photos has already generated — no export, no original-file
+   * transfer. minSize is the smallest acceptable long-edge pixel size.
+   */
+  async getThumbnail(uuid: string, minSize?: number, library?: string): Promise<ThumbnailResult> {
+    const args = [...this.libraryArgs(library), flagArg("--uuid", uuid)];
+    if (minSize !== undefined) args.push(flagArg("--min-size", minSize));
+    const result = await this.run<ThumbnailResult>("get-thumbnail", args);
+    if (!result.base64) {
+      throw new Error("Sidecar returned no image data");
+    }
+    return result;
+  }
+
+  /** Groups of exact duplicates (Photos' own fingerprint-based detection). */
+  async findDuplicates(limit?: number, library?: string): Promise<DuplicateGroupsResult> {
+    const args = this.libraryArgs(library);
+    if (limit !== undefined) args.push(flagArg("--limit", limit));
+    // Walking the duplicates adjacency touches every duplicate photo's
+    // properties — give big libraries more room than the default 60s.
+    return this.run<DuplicateGroupsResult>("find-duplicates", args, 5 * 60 * 1000, library);
   }
 
   async listAlbums(library?: string): Promise<{ count: number; albums: AlbumInfo[] }> {
