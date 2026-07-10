@@ -29,12 +29,17 @@ Two modes:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import re
+import subprocess
 import sys
+import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 try:
+    import bitmath
     import osxphotos
     from osxphotos import PhotosDB, QueryOptions
 except ImportError:
@@ -98,9 +103,36 @@ def _parse_to_date(value: str) -> datetime:
     return dt + timedelta(days=1)
 
 
+_DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhdw])\s*$", re.IGNORECASE)
+_DURATION_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+
+
+def _parse_duration(value: str) -> timedelta:
+    """Parse a compact duration string ("30d", "24h", "90m", "2w", "45s") into
+    a timedelta for QueryOptions.added_in_last."""
+    m = _DURATION_RE.match(value)
+    if not m:
+        raise ValueError(
+            f"Invalid duration: {value!r}. Use <number><unit> where unit is "
+            "s(econds), m(inutes), h(ours), d(ays), or w(eeks) — e.g. \"7d\", \"24h\"."
+        )
+    return timedelta(**{_DURATION_UNITS[m.group(2).lower()]: float(m.group(1))})
+
+
 def _normalize_count(value) -> int:
     """osxphotos may return either an int count or a list of UUIDs depending on version."""
     return value if isinstance(value, int) else len(value)
+
+
+def _date_sort_key(p) -> float:
+    """Timestamp sort key for newest-first ordering; photos without a date sort
+    last. timestamp() works for both naive and tz-aware datetimes (naive is
+    interpreted as local time), so mixed libraries can't raise a naive/aware
+    comparison TypeError."""
+    try:
+        return p.date.timestamp() if p.date else float("-inf")
+    except (OverflowError, OSError, ValueError):
+        return float("-inf")
 
 
 # Per-library-path PhotosDB cache (serve mode). Each entry remembers the
@@ -195,6 +227,32 @@ def _photo_summary(p) -> dict:
     }
 
 
+def _exif(p) -> dict | None:
+    """Project PhotoInfo.exif_info (camera/lens/exposure data Photos captured
+    at import) into a JSON-friendly dict; None when Photos recorded no EXIF
+    (e.g. manufacturer-app uploads, scans)."""
+    try:
+        e = p.exif_info
+    except Exception:  # noqa: BLE001 - EXIF must never break a detail response
+        return None
+    if e is None:
+        return None
+    return {
+        "cameraMake": e.camera_make,
+        "cameraModel": e.camera_model,
+        "lensModel": e.lens_model,
+        "iso": e.iso,
+        "aperture": e.aperture,
+        "shutterSpeed": e.shutter_speed,
+        "focalLength": e.focal_length,
+        "exposureBias": e.exposure_bias,
+        "flashFired": e.flash_fired,
+        "duration": e.duration,
+        "fps": e.fps,
+        "codec": e.codec,
+    }
+
+
 def _photo_detail(p) -> dict:
     """Full projection of a PhotoInfo for detail responses."""
     place = p.place
@@ -246,6 +304,7 @@ def _photo_detail(p) -> dict:
             "name": place.name if place else None,
             "country": place.country_code if place else None,
         } if place else None,
+        "exif": _exif(p),
     }
 
 
@@ -286,6 +345,49 @@ def _query_options(args) -> QueryOptions:
         kwargs["title"] = [args.title]
     if args.description:
         kwargs["description"] = [args.description]
+    # --- import-date window (date_added, not the photo's taken date) ---
+    if args.added_after:
+        kwargs["added_after"] = _parse_date(args.added_after)
+    if args.added_before:
+        # Same bare-date convenience as --to-date: a bare date rolls forward a
+        # day so the named day is included in the (exclusive) upper bound.
+        kwargs["added_before"] = _parse_to_date(args.added_before)
+    if args.added_in_last:
+        kwargs["added_in_last"] = _parse_duration(args.added_in_last)
+    # --- content/organization filters ---
+    if args.label:
+        kwargs["label"] = args.label
+    if args.folder:
+        kwargs["folder"] = args.folder
+    if args.place:
+        kwargs["place"] = args.place
+    if args.has_location:
+        kwargs["location"] = True
+    elif args.no_location:
+        kwargs["no_location"] = True
+    if args.year:
+        kwargs["year"] = args.year
+    if args.min_size is not None:
+        kwargs["min_size"] = bitmath.Byte(args.min_size)
+    if args.max_size is not None:
+        kwargs["max_size"] = bitmath.Byte(args.max_size)
+    if args.no_keyword:
+        kwargs["no_keyword"] = True
+    if args.burst:
+        kwargs["burst"] = True
+    # --- media-type flags (one-sided: True filters to only that type) ---
+    for flag in (
+        "screenshot",
+        "screen_recording",
+        "selfie",
+        "panorama",
+        "live",
+        "portrait",
+        "time_lapse",
+        "slow_mo",
+    ):
+        if getattr(args, flag):
+            kwargs[flag] = True
     return QueryOptions(**kwargs)
 
 
@@ -335,6 +437,10 @@ def cmd_query(args):
     # BEFORE the slice so callers can tell when results were truncated; when no
     # limit is given, DEFAULT_QUERY_LIMIT applies.
     total = len(photos)
+    if args.newest_first:
+        # Sort BEFORE the limit slice so limit means "the N most recent
+        # matches" instead of "N in database order".
+        photos = sorted(photos, key=_date_sort_key, reverse=True)
     limit = args.limit if args.limit and args.limit > 0 else DEFAULT_QUERY_LIMIT
     page = photos[:limit]
 
@@ -356,6 +462,302 @@ def cmd_get_photo(args):
     if not matches:
         return {"error": f"Photo not found: {args.uuid}"}
     return {"photo": _photo_detail(matches[0])}
+
+
+def cmd_get_photos(args):
+    """Get full details for a batch of photos by UUID in ONE library pass —
+    the batch equivalent of get-photo (same per-photo shape, same trash
+    fallback). Unknown UUIDs are reported in notFound rather than erroring."""
+    db = _open_db(args.library)
+    requested = list(dict.fromkeys(args.uuid))  # dedupe, preserve caller order
+    found = {p.uuid: p for p in db.photos(uuid=requested, intrash=False)}
+    missing = [u for u in requested if u not in found]
+    if missing:
+        for p in db.photos(uuid=missing, intrash=True):
+            found[p.uuid] = p
+    photos = [_photo_detail(found[u]) for u in requested if u in found]
+    not_found = [u for u in requested if u not in found]
+    return {"count": len(photos), "photos": photos, "notFound": not_found}
+
+
+# --- get-thumbnail helpers -------------------------------------------------
+
+# Refuse to base64 anything bigger than this — a thumbnail response must stay
+# a small fraction of the MCP transport/window, and every Photos-generated
+# derivative is far below it. (Original-file fallbacks are downscaled first.)
+MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024
+
+DEFAULT_THUMBNAIL_MIN_SIZE = 360
+
+# MIME types MCP clients can actually render inline. HEIC deliberately absent:
+# Photos' derivatives are JPEG in practice, and anything else is converted.
+_RENDERABLE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+_EXT_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+}
+
+
+def _image_dims(path: str) -> tuple[int, int] | None:
+    """(width, height) via a pure-Python header sniff for JPEG/PNG/GIF —
+    covers every Photos-generated derivative (they are JPEG in practice).
+    Returns None for anything unrecognized rather than guessing."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(26)
+            if head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR":
+                return (
+                    int.from_bytes(head[16:20], "big"),
+                    int.from_bytes(head[20:24], "big"),
+                )
+            if head[:4] in (b"GIF8",):
+                return (
+                    int.from_bytes(head[6:8], "little"),
+                    int.from_bytes(head[8:10], "little"),
+                )
+            if head[:2] != b"\xff\xd8":
+                return None
+            # JPEG: walk the marker chain to the first SOFn frame header.
+            f.seek(2)
+            while True:
+                b = f.read(1)
+                if not b:
+                    return None
+                if b[0] != 0xFF:
+                    continue
+                code = 0xFF
+                while code == 0xFF:
+                    nxt = f.read(1)
+                    if not nxt:
+                        return None
+                    code = nxt[0]
+                if code in (0x01,) or 0xD0 <= code <= 0xD9:
+                    continue  # standalone markers carry no length
+                ln = int.from_bytes(f.read(2), "big")
+                if ln < 2:
+                    return None
+                if 0xC0 <= code <= 0xCF and code not in (0xC4, 0xC8, 0xCC):
+                    body = f.read(5)
+                    if len(body) < 5:
+                        return None
+                    return (
+                        int.from_bytes(body[3:5], "big"),
+                        int.from_bytes(body[1:3], "big"),
+                    )
+                f.seek(ln - 2, 1)
+    except OSError:
+        return None
+
+
+def _render_jpeg(src: str, max_dim: int) -> str:
+    """Downscale/convert any macOS-readable image to a JPEG capped at max_dim
+    px on the long edge, via the always-present `sips`. Returns the temp-file
+    path (caller unlinks). Used only for fallbacks — HEIC-or-huge originals
+    with no usable derivative."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False)
+    tmp.close()
+    try:
+        subprocess.run(
+            [
+                "/usr/bin/sips",
+                "-s", "format", "jpeg",
+                "--resampleHeightWidthMax", str(max_dim),
+                src,
+                "--out", tmp.name,
+            ],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except Exception as exc:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise RuntimeError(f"could not render a JPEG thumbnail from {src}: {exc}") from exc
+    return tmp.name
+
+
+def cmd_get_thumbnail(args):
+    """Return a small renderable image (base64 JPEG/PNG) for one photo, using
+    the preview derivatives Photos has already generated — no export, no
+    original-file transfer."""
+    db = _open_db(args.library)
+    matches = db.photos(uuid=[args.uuid], intrash=False) or db.photos(
+        uuid=[args.uuid], intrash=True
+    )
+    if not matches:
+        return {"error": f"Photo not found: {args.uuid}"}
+    p = matches[0]
+    min_size = args.min_size if args.min_size and args.min_size > 0 else DEFAULT_THUMBNAIL_MIN_SIZE
+
+    # Catalog the image derivatives (skip video derivatives of movies).
+    candidates = []
+    for d in p.path_derivatives or []:
+        mime = _EXT_MIME.get(Path(d).suffix.lower())
+        if mime is None:
+            continue
+        try:
+            size = Path(d).stat().st_size
+        except OSError:
+            continue
+        candidates.append({"path": d, "mime": mime, "bytes": size, "dims": _image_dims(d)})
+
+    renderable = [c for c in candidates if c["mime"] in _RENDERABLE_MIME]
+
+    def _read(choice, converted=False):
+        data = Path(choice["path"]).read_bytes()
+        if len(data) > MAX_THUMBNAIL_BYTES:
+            raise RuntimeError(
+                f"thumbnail is {len(data)} bytes (cap {MAX_THUMBNAIL_BYTES}); "
+                "request a smaller minSize"
+            )
+        dims = choice["dims"] or _image_dims(choice["path"])
+        return {
+            "uuid": p.uuid,
+            "path": choice["path"] if not converted else (p.path or choice["path"]),
+            "width": dims[0] if dims else None,
+            "height": dims[1] if dims else None,
+            "mimeType": choice["mime"],
+            "byteSize": len(data),
+            "isDerivative": not converted,
+            "base64": base64.b64encode(data).decode("ascii"),
+        }
+
+    # Preferred path: the smallest renderable derivative whose long edge
+    # meets minSize — the cheapest response that honors the requested detail.
+    qualifying = [
+        c
+        for c in renderable
+        if c["dims"] and max(c["dims"]) >= min_size and c["bytes"] <= MAX_THUMBNAIL_BYTES
+    ]
+    if qualifying:
+        return _read(min(qualifying, key=lambda c: max(c["dims"])))
+
+    # Nothing pre-generated meets minSize. Prefer RENDERING a right-sized JPEG
+    # (via sips) from a larger local source over returning an undersized
+    # thumbnail — an agent that raised minSize to read small text must not
+    # silently get a 360px preview. Never upscale: that adds bytes, not detail.
+    best_fallback = None
+    fallback = [c for c in renderable if c["bytes"] <= MAX_THUMBNAIL_BYTES]
+    if fallback:
+        best_fallback = max(
+            fallback, key=lambda c: (max(c["dims"]) if c["dims"] else 0, c["bytes"])
+        )
+    have = max(best_fallback["dims"]) if best_fallback and best_fallback["dims"] else 0
+
+    source = None  # a local file plausibly LARGER than the best derivative
+    target = min_size
+    original_edge = max(p.original_width or 0, p.original_height or 0)
+    if not p.ismovie and (p.path or p.path_edited) and original_edge > have:
+        source = p.path or p.path_edited
+        # Cap at the original's own size so sips never upscales.
+        target = min(min_size, original_edge)
+    if source is None:
+        # A non-renderable derivative (e.g. HEIC): dims unreadable here, but
+        # Photos only generates those larger than its thumbnail-size JPEGs.
+        non_renderable = [c for c in candidates if c["mime"] not in _RENDERABLE_MIME]
+        if non_renderable:
+            source = max(non_renderable, key=lambda c: c["bytes"])["path"]
+    if source is None and best_fallback is None and not p.ismovie:
+        # No derivatives at all — the original/edited file is the only option.
+        source = p.path or p.path_edited
+
+    if source is not None:
+        try:
+            rendered = _render_jpeg(source, target)
+        except RuntimeError:
+            rendered = None  # sips couldn't read it — settle for the fallback
+        if rendered is not None:
+            try:
+                return _read(
+                    {"path": rendered, "mime": "image/jpeg", "bytes": 0, "dims": None},
+                    converted=True,
+                )
+            finally:
+                Path(rendered).unlink(missing_ok=True)
+
+    if best_fallback is not None:
+        return _read(best_fallback)
+
+    if p.ismovie:
+        return {
+            "error": (
+                f"No image derivative available for movie {args.uuid} — "
+                "export it and extract a frame instead."
+            )
+        }
+    return {
+        "error": (
+            f"No local image available for {args.uuid} (original may be "
+            "iCloud-only with no derivatives) — export it first."
+        )
+    }
+
+
+def cmd_find_duplicates(args):
+    """Group exact duplicates (Photos' own fingerprint-based detection).
+
+    Grouping walks the PhotoInfo.duplicates adjacency instead of the exposed
+    `fingerprint` attribute — on newer Photos versions (macOS 15+) fingerprint
+    reads as None even though duplicate detection works. Hidden photos are
+    excluded (same privacy contract as query); photos in Recently Deleted are
+    never group members."""
+    db = _open_db(args.library)
+    photos = db.query(QueryOptions(duplicate=True, not_hidden=True))
+    live = {p.uuid: p for p in photos}
+
+    seen: set[str] = set()
+    groups = []
+    for p in photos:
+        if p.uuid in seen:
+            continue
+        # Connected component over the duplicates relation, restricted to
+        # live (non-trashed, non-hidden) photos.
+        members = []
+        stack = [p]
+        seen.add(p.uuid)
+        while stack:
+            cur = stack.pop()
+            members.append(cur)
+            for d in cur.duplicates:
+                if d.uuid in live and d.uuid not in seen:
+                    seen.add(d.uuid)
+                    stack.append(live[d.uuid])
+        if len(members) < 2:
+            continue  # its only duplicate is hidden or already in the trash
+        members.sort(key=_date_sort_key, reverse=True)
+        groups.append(
+            {
+                "uuids": [m.uuid for m in members],
+                "count": len(members),
+                "photos": [
+                    {
+                        "uuid": m.uuid,
+                        "filename": m.original_filename,
+                        "date": m.date.isoformat() if m.date else None,
+                        "size": m.original_filesize,
+                        "width": m.width,
+                        "height": m.height,
+                        "isMovie": m.ismovie,
+                    }
+                    for m in members
+                ],
+            }
+        )
+
+    # Most recently taken first — recent imports (the usual dedupe target)
+    # surface at the top.
+    groups.sort(key=lambda g: g["photos"][0]["date"] or "", reverse=True)
+    total = len(groups)
+    limit = args.limit if args.limit and args.limit > 0 else 100
+    page = groups[:limit]
+    return {"groupCount": total, "returned": len(page), "groups": page}
 
 
 def cmd_list_albums(args):
@@ -572,6 +974,36 @@ def _add_query_filters(p: argparse.ArgumentParser) -> None:
     p.add_argument("--title", help="Substring match on title")
     p.add_argument("--description", help="Substring match on description")
     p.add_argument("--limit", type=int, help="Max number of results")
+    # --- import-date window (QueryOptions added_after/added_before/added_in_last) ---
+    p.add_argument("--added-after", help="ISO 8601 lower bound on import date")
+    p.add_argument("--added-before", help="ISO 8601 upper bound on import date")
+    p.add_argument("--added-in-last", help='Imported within a duration ("7d", "24h")')
+    # --- content/organization filters ---
+    p.add_argument("--label", action="append", help="Filter by ML label (repeatable)")
+    p.add_argument("--folder", action="append", help="Albums in folder (repeatable)")
+    p.add_argument("--place", action="append", help="Place-name substring (repeatable)")
+    p.add_argument("--has-location", action="store_true", help="Only photos with GPS data")
+    p.add_argument("--no-location", action="store_true", help="Only photos without GPS data")
+    p.add_argument("--year", action="append", type=int, help="Taken in year (repeatable)")
+    p.add_argument("--min-size", type=int, help="Original file size >= bytes")
+    p.add_argument("--max-size", type=int, help="Original file size <= bytes")
+    p.add_argument("--no-keyword", action="store_true", help="Only photos with no keyword")
+    p.add_argument("--burst", action="store_true", help="Only burst photos")
+    # --- media-type flags ---
+    p.add_argument("--screenshot", action="store_true", help="Only screenshots")
+    p.add_argument("--screen-recording", action="store_true", help="Only screen recordings")
+    p.add_argument("--selfie", action="store_true", help="Only selfies")
+    p.add_argument("--panorama", action="store_true", help="Only panoramas")
+    p.add_argument("--live", action="store_true", help="Only live photos")
+    p.add_argument("--portrait", action="store_true", help="Only portrait-mode photos")
+    p.add_argument("--time-lapse", action="store_true", help="Only time-lapse videos")
+    p.add_argument("--slow-mo", action="store_true", help="Only slow-motion videos")
+    # --- ordering ---
+    p.add_argument(
+        "--newest-first",
+        action="store_true",
+        help="Sort by date descending BEFORE the limit slice (limit = N most recent)",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -591,6 +1023,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("get-photo")
     _add_library(p)
     p.add_argument("--uuid", required=True)
+
+    p = sub.add_parser("get-photos")
+    _add_library(p)
+    p.add_argument("--uuid", action="append", required=True, help="UUID(s) to fetch (repeatable)")
+
+    p = sub.add_parser("get-thumbnail")
+    _add_library(p)
+    p.add_argument("--uuid", required=True)
+    p.add_argument(
+        "--min-size",
+        type=int,
+        help=f"Smallest acceptable long-edge pixels (default {DEFAULT_THUMBNAIL_MIN_SIZE})",
+    )
+
+    p = sub.add_parser("find-duplicates")
+    _add_library(p)
+    p.add_argument("--limit", type=int, help="Max number of duplicate groups (default 100)")
 
     p = sub.add_parser("list-albums")
     _add_library(p)
@@ -623,6 +1072,9 @@ HANDLERS = {
     "library-info": cmd_library_info,
     "query": cmd_query,
     "get-photo": cmd_get_photo,
+    "get-photos": cmd_get_photos,
+    "get-thumbnail": cmd_get_thumbnail,
+    "find-duplicates": cmd_find_duplicates,
     "list-albums": cmd_list_albums,
     "list-folders": cmd_list_folders,
     "list-keywords": cmd_list_keywords,

@@ -22,11 +22,13 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 This server acts as a bridge between AI assistants and Apple Photos. Once configured, you can ask Claude (or any MCP-compatible AI) to:
 
 - "Find all my photos from our trip to Spain in 2023"
-- "Show me my favorite sunset photos"
+- "Show me my favorite sunset photos" — and actually **see** them (`get-thumbnail` returns viewable images)
 - "How many photos do I have? What are my top keywords?"
 - "Find photos of Sarah from last summer and export them to ~/Desktop/sarah-summer"
+- "What did I import this week?" (`addedInLast`), "Find my screenshots from 2024"
+- "Do I have duplicate photos?" (`find-duplicates` groups exact duplicates)
 - "List my albums"
-- "Tell me everything about photo UUID ABC-123"
+- "Tell me everything about photo UUID ABC-123" — including EXIF camera data
 
 The AI assistant communicates with this server, which uses [osxphotos](https://github.com/RhetTbull/osxphotos) to read the Photos library SQLite database directly. All data stays local on your machine.
 
@@ -132,8 +134,11 @@ Auto-setup needs Python 3, `pip`, and network access. If any are missing — or 
 | Feature | Description |
 |---------|-------------|
 | **Library Stats** | Total counts of photos, movies, albums, folders, keywords, persons |
-| **Query** | Search by date range, album, keyword, person, favorite/hidden flags, photo/movie type, title/description substring |
-| **Photo Details** | Full metadata for one photo: dimensions, location, place, EXIF-derived flags (HDR, live, portrait, panorama, raw, edited, etc.) |
+| **Query** | Search by taken-date or import-date range (`addedInLast: "7d"` for "recently imported"), album, keyword, person, ML label, place name, folder, year, file size, media type (screenshot, screen recording, selfie, panorama, live, portrait, time-lapse, slow-mo, burst), favorite/hidden flags, or title/description substring — with `newestFirst` ordering |
+| **Photo Details** | Full metadata for one photo: dimensions, location, place, EXIF camera data (make/model, lens, ISO, aperture, shutter speed, focal length), and type flags (HDR, live, portrait, panorama, raw, edited, etc.) |
+| **Batch Details** | `get-photos` fetches full metadata for up to 50 UUIDs in one call |
+| **Thumbnails** | `get-thumbnail` returns a photo as an inline viewable image (MCP image content block) from Photos' pre-generated derivatives — see photos without exporting |
+| **Find Duplicates** | `find-duplicates` groups exact duplicates using Photos' own fingerprint detection |
 | **List Albums** | All albums with their folder paths and photo counts |
 | **List Folders** | All folders with parent and album/subfolder counts |
 | **List Keywords** | Keywords sorted by usage count |
@@ -230,6 +235,21 @@ For the full filter syntax — accepted date forms, AND/OR combination semantics
 | `movies` | boolean | No | Include movies |
 | `title` | string | No | Substring match on title (case-sensitive, ≤ 1024 chars) |
 | `description` | string | No | Substring match on description (case-sensitive, ≤ 2048 chars) |
+| `addedAfter` | string | No | ISO 8601 **inclusive** lower bound on IMPORT date (`dateAdded` — when the photo entered the library, not when it was taken) |
+| `addedBefore` | string | No | ISO 8601 upper bound on import date; a bare date includes that whole day |
+| `addedInLast` | string | No | Imported within a trailing window — `"<number><unit>"`, unit `s`/`m`/`h`/`d`/`w` (e.g. `"7d"`, `"24h"`) |
+| `label` | string[] | No | ML classification label(s) Photos computed (the `labels` field of `get-photo`, e.g. `Dog`, `Beach`); ANY-match, exact whole-string (max 100) |
+| `folder` | string[] | No | Folder name(s)/path(s) — photos in albums inside the folder; ANY-match (max 100) |
+| `place` | string[] | No | Place-name substring(s) from reverse geocoding (city, region, landmark). **Multiple values are ANDed**, not ORed (max 100) |
+| `hasLocation` | boolean | No | `true` = only photos WITH GPS coordinates; `false` = only photos WITHOUT; omit for no filter |
+| `year` | number[] | No | Taken in calendar year(s); ANY-match (max 100) |
+| `minSize` | number | No | Original file size at least this many bytes |
+| `maxSize` | number | No | Original file size at most this many bytes |
+| `noKeyword` | boolean | No | Only photos carrying no keyword at all |
+| `burst` | boolean | No | Only burst photos |
+| `screenshot` / `screenRecording` / `selfie` / `panorama` / `live` / `portrait` / `timelapse` / `slowMo` | boolean | No | Media-type filters — each `true` narrows to only that type |
+| `video` | boolean | No | Only videos/movies (alias of `movies`) |
+| `newestFirst` | boolean | No | Sort by taken date, newest first, **before** `limit` is applied — so `limit` means "the N most recent matches" |
 | `limit` | number | No | Cap the number of results returned (default `500` when omitted, max `100000`) |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
@@ -253,6 +273,23 @@ Exceeding a cap rejects the call at the input schema, before the library is open
 }
 ```
 
+**Example - The 20 most recent imports:**
+```json
+{
+  "addedInLast": "7d",
+  "newestFirst": true,
+  "limit": 20
+}
+```
+
+**Example - 2024 screenshot cleanup candidates:**
+```json
+{
+  "screenshot": true,
+  "year": [2024]
+}
+```
+
 **Returns:** `count` (the **total** number of matches), `returned` (the number of summaries in this response — capped at `limit`, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden flags, albums, keywords, persons).
 
 ---
@@ -273,9 +310,61 @@ Get full metadata for a single photo by UUID.
 }
 ```
 
-**Returns:** All metadata for the photo: dimensions, original dimensions, dates (taken/added/modified), title, description, location (lat/lon), place (name/country), albums, keywords, persons, labels, type flags (HDR / live / raw / edited / portrait / panorama / selfie / screenshot / slow-mo / time-lapse / burst), file paths (original, edited, raw, live-photo video), file size, UTI.
+**Returns:** All metadata for the photo: dimensions, original dimensions, dates (taken/added/modified), title, description, location (lat/lon), place (name/country), albums, keywords, persons, labels, an `exif` object (camera make/model, lens, ISO, aperture, shutter speed, focal length, exposure bias, flash, and duration/fps/codec for video — `null` when Photos recorded no EXIF, e.g. manufacturer-app uploads and scans), type flags (HDR / live / raw / edited / portrait / panorama / selfie / screenshot / slow-mo / time-lapse / burst), file paths (original, edited, raw, live-photo video), file size, UTI.
 
 **Recently Deleted:** `get-photo` falls back to the trash, so it returns full metadata even for a photo sitting in Recently Deleted. `query` and `export` read the main library only — so a UUID that `get-photo` resolves may return nothing from `query`, and `export` will skip it with reason `UUID not found (deleted or in trash)`.
+
+---
+
+#### `get-photos`
+
+Get full metadata for a **batch** of photos (up to 50) in one call — the batch equivalent of `get-photo`, for dedupe reviews, EXIF audits, and captioning passes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `uuid` | string[] | Yes | 1–50 photo UUIDs, as returned by `query` (same hex-with-dashes format as `get-photo`) |
+| `library` | string | No | Path to a non-default `.photoslibrary` |
+
+**Example:**
+```json
+{
+  "uuid": [
+    "33AC0410-D367-43AE-A839-12C7EF482020",
+    "1EB2B765-0765-43BA-A90C-0F0AE547B343"
+  ]
+}
+```
+
+**Returns:** `count`, `photos` (full per-photo detail — the same shape as `get-photo`, including the `exif` object and the Recently-Deleted fallback), and `notFound` listing any requested UUIDs that matched nothing. Unknown UUIDs never fail the batch.
+
+---
+
+#### `get-thumbnail`
+
+Return one photo as an **inline viewable image** — an MCP image content block (base64 JPEG/PNG) that vision-capable clients render directly. Serves the preview derivatives Photos has already generated, so nothing is exported and originals aren't transferred. Prefer this over `export` whenever the goal is to *look at* a photo rather than to obtain the file.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `uuid` | string | Yes | Photo UUID, as returned by `query` |
+| `minSize` | number | No | Smallest acceptable long-edge size in pixels (default `360`, max `8192`). The smallest qualifying derivative is served — raise it (e.g. `1024`) when you need detail like small text |
+| `library` | string | No | Path to a non-default `.photoslibrary` |
+
+**Returns:** An image content block plus structured metadata: `uuid`, source `path`, `width`/`height`, `mimeType`, `byteSize`, and `isDerivative` (`false` means no suitable derivative existed and the image was rendered from the original via `sips` — never upscaled). Movies get a thumbnail only when Photos generated a poster-frame derivative; an iCloud-only photo with no local derivative or original returns an error suggesting `export` (which downloads on demand).
+
+---
+
+#### `find-duplicates`
+
+Group **exact duplicates** using Photos' own fingerprint-based detection — the same data behind Photos' Duplicates album, no export or hashing required.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | number | No | Max duplicate groups to return (default `100`; `groupCount` reports the total) |
+| `library` | string | No | Path to a non-default `.photoslibrary` |
+
+**Returns:** `groupCount` (total groups), `returned`, and `groups` ordered newest-first — each with the member `uuids` and per-member `filename`, `date`, `size`, `width`/`height`, and `isMovie`. Hidden and Recently-Deleted photos are never group members.
+
+**Exact means exact:** the fingerprint matches identical image data only — edited copies, resized versions, and burst siblings will NOT group. Use `get-thumbnail` on a group's members to eyeball them before acting. This server cannot delete photos (Photos exposes no scriptable delete) — to act on duplicates, collect them into a quarantine album in Photos.app and review/delete there.
 
 ---
 
@@ -407,6 +496,40 @@ AI: [calls query with person=["Mollee"], keyword=["beach"]]
     "Found 109 photos."
 AI: [calls export with the UUIDs and dest="~/Desktop/mollee-beach"]
     "Exported 109 files to ~/Desktop/mollee-beach."
+```
+
+### Seeing Photos: Query then Thumbnail
+
+```
+User: "Show me the best photo from Saturday"
+AI: [calls query with fromDate/toDate for Saturday, newestFirst=true]
+    "Found 14 photos from Saturday."
+AI: [calls get-thumbnail on a few candidates — the images render inline]
+    "This one of the lake at sunset is the standout..."
+```
+
+### Reviewing Recent Imports
+
+```
+User: "What came off the camera this week?"
+AI: [calls query with addedInLast="7d", newestFirst=true, limit=20]
+    "23 items imported in the last 7 days; here are the 20 newest..."
+
+User: "Which of those have no keyword yet?"
+AI: [calls query with addedInLast="7d", noKeyword=true]
+    "9 of them are untagged."
+```
+
+### Duplicate Cleanup
+
+```
+User: "Do I have duplicate photos?"
+AI: [calls find-duplicates]
+    "312 groups of exact duplicates."
+AI: [calls get-thumbnail on members of the first few groups to verify visually]
+    "Each group is byte-identical — e.g. IMG_3588.HEIC appears twice..."
+AI: "I can't delete photos (read-only) — collect one copy of each into a
+     quarantine album in Photos.app and delete from there."
 ```
 
 ### Browsing Library Structure

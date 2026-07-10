@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { PhotosManager } from "./services/photosManager.js";
 import { killActiveSidecars } from "./utils/python.js";
 import type { SidecarProgress } from "./utils/sidecarClient.js";
-import { successResponse, withErrorHandling } from "./tools/respond.js";
+import { imageResponse, successResponse, withErrorHandling } from "./tools/respond.js";
 import { runDoctor, formatDoctorReport } from "./tools/doctor.js";
 import { registerResourcesAndPrompts } from "./tools/resourcesAndPrompts.js";
 import { loadFileConfig } from "./services/fileConfig.js";
@@ -28,11 +28,14 @@ const server = new McpServer({
   name: "apple-photos",
   version,
   description:
-    "MCP server for Apple Photos via osxphotos. Query the Photos library by date, album, " +
-    "keyword, person, or favorite/hidden flags; list albums/folders/keywords/persons; " +
-    "fetch full photo metadata (location, dimensions, EXIF-derived flags); and export " +
-    "originals or edited versions to a directory. Read-only against the Photos library. " +
-    "Read tools also return structuredContent (typed JSON) alongside the text.",
+    "MCP server for Apple Photos via osxphotos. Query the Photos library by date, import " +
+    "date, album, keyword, person, ML label, place, year, media type (screenshot, selfie, " +
+    "panorama, burst, …), file size, or favorite/hidden flags; list " +
+    "albums/folders/keywords/persons; fetch full photo metadata (location, dimensions, " +
+    "EXIF camera data, type flags) singly or in batches; return inline viewable " +
+    "thumbnails; find exact-duplicate groups; and export originals or edited versions to " +
+    "a directory. Read-only against the Photos library. Read tools also return " +
+    "structuredContent (typed JSON) alongside the text.",
 });
 
 const libraryArg = {
@@ -42,6 +45,16 @@ const libraryArg = {
     .optional()
     .describe("Path to a .photoslibrary (default: system Photos library)"),
 };
+
+/** Photos UUIDs are hex segments separated by dashes — reject junk before spawning the sidecar. */
+const uuidSchema = z
+  .string()
+  .max(256)
+  .regex(
+    /^[0-9A-Fa-f-]+$/,
+    "must be a Photos UUID — hexadecimal segments separated by dashes " +
+      "(e.g. 1EB2B765-0765-43BA-A90C-0F0AE547B343)"
+  );
 
 // --- health-check ---
 server.registerTool(
@@ -139,9 +152,9 @@ server.registerTool(
   "query",
   {
     description:
-      "Use when: you need to find photos matching one or more filters — album, keyword, person, ISO date range, favorite/hidden flags, photo/movie type, or title/description substrings — and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID. Hidden photos are excluded unless hidden=true.\n" +
-      "Returns: count (the TOTAL number of matches), returned (the number of summaries in this response — capped at limit, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) — feed a UUID into get-photo for full metadata or into export to copy files.\n" +
-      "Do not use when: you already have a UUID and want full metadata for that one photo — use get-photo; or you just want the catalog of album/keyword/person names — use list-albums / list-keywords / list-persons.",
+      "Use when: you need to find photos matching one or more filters — album, keyword, person, ML label, place, folder, taken-date or import-date range (addedAfter/addedInLast for 'recently imported'), year, file size, media type (screenshot, screen recording, selfie, panorama, live, portrait, time-lapse, slow-mo, burst, video), favorite/hidden flags, or title/description substrings — and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID. Hidden photos are excluded unless hidden=true. Pass newestFirst=true with a limit to get the N most recent matches.\n" +
+      "Returns: count (the TOTAL number of matches), returned (the number of summaries in this response — capped at limit, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) — feed a UUID into get-photo/get-photos for full metadata, get-thumbnail to see it, or export to copy files.\n" +
+      "Do not use when: you already have UUIDs and want full metadata — use get-photo / get-photos; you want to see an image — use get-thumbnail; or you just want the catalog of album/keyword/person names — use list-albums / list-keywords / list-persons.",
     inputSchema: {
       ...libraryArg,
       uuid: z.array(z.string().max(256)).max(1000).optional().describe("Specific UUIDs to fetch"),
@@ -170,6 +183,101 @@ server.registerTool(
       movies: z.boolean().optional().describe("Include movies"),
       title: z.string().max(1024).optional().describe("Substring match on title"),
       description: z.string().max(2048).optional().describe("Substring match on description"),
+      addedAfter: z
+        .string()
+        .max(64)
+        .optional()
+        .describe(
+          "ISO 8601 inclusive lower bound on IMPORT date (dateAdded — when the photo " +
+            "entered the library, not when it was taken)"
+        ),
+      addedBefore: z
+        .string()
+        .max(64)
+        .optional()
+        .describe(
+          "ISO 8601 upper bound on IMPORT date. A bare date includes that whole day; a " +
+            "full datetime is a precise exclusive bound"
+        ),
+      addedInLast: z
+        .string()
+        .max(32)
+        .regex(
+          /^\s*\d+(\.\d+)?\s*[smhdw]\s*$/i,
+          'must be <number><unit> with unit s/m/h/d/w — e.g. "7d", "24h"'
+        )
+        .optional()
+        .describe(
+          'Imported within the trailing duration — "<number><unit>", unit s(econds) / ' +
+            'm(inutes) / h(ours) / d(ays) / w(eeks), e.g. "7d" or "24h". The natural way ' +
+            'to express "recently imported"'
+        ),
+      label: z
+        .array(z.string().max(1024))
+        .max(100)
+        .optional()
+        .describe(
+          "ML classification label(s) from Photos object detection (the labels field of " +
+            "get-photo, e.g. Dog, Beach, Text); ANY-match, exact whole-string"
+        ),
+      folder: z
+        .array(z.string().max(1024))
+        .max(100)
+        .optional()
+        .describe(
+          "Folder name(s)/path(s) — matches photos in albums that live inside the " +
+            "folder; ANY-match (see list-folders for names)"
+        ),
+      place: z
+        .array(z.string().max(1024))
+        .max(100)
+        .optional()
+        .describe(
+          "Place-name substring(s) from reverse geocoding (city, region, landmark). " +
+            "NOTE: multiple values are ANDed, not ORed — a photo must match every value"
+        ),
+      hasLocation: z
+        .boolean()
+        .optional()
+        .describe(
+          "true = only photos WITH GPS coordinates; false = only photos WITHOUT; omit " +
+            "for no location filter"
+        ),
+      year: z
+        .array(z.number().int().min(0).max(9999))
+        .max(100)
+        .optional()
+        .describe("Taken in calendar year(s); ANY-match (e.g. [2024, 2025])"),
+      minSize: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Original file size at least this many bytes"),
+      maxSize: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Original file size at most this many bytes"),
+      noKeyword: z.boolean().optional().describe("Only photos carrying no keyword at all"),
+      burst: z.boolean().optional().describe("Only burst photos"),
+      screenshot: z.boolean().optional().describe("Only screenshots"),
+      screenRecording: z.boolean().optional().describe("Only screen recordings"),
+      selfie: z.boolean().optional().describe("Only selfies (front-camera photos)"),
+      panorama: z.boolean().optional().describe("Only panoramas"),
+      live: z.boolean().optional().describe("Only live photos"),
+      portrait: z.boolean().optional().describe("Only portrait-mode (depth-effect) photos"),
+      timelapse: z.boolean().optional().describe("Only time-lapse videos"),
+      slowMo: z.boolean().optional().describe("Only slow-motion videos"),
+      video: z.boolean().optional().describe("Only videos/movies (alias of movies)"),
+      newestFirst: z
+        .boolean()
+        .optional()
+        .describe(
+          "Sort matches by taken date, newest first, BEFORE limit is applied — so limit " +
+            "means 'the N most recent matches' instead of 'N in database order'"
+        ),
       limit: z
         .number()
         .int()
@@ -224,19 +332,11 @@ server.registerTool(
   {
     description:
       "Use when: you have a single photo's UUID (typically from query) and want its complete metadata.\n" +
-      "Returns: dimensions and original dimensions, dates, title/description, location and place, albums, keywords, persons, labels, file paths, size, and type flags (HDR/live/raw/edited/portrait/panorama/etc.).\n" +
-      "Do not use when: you don't have a UUID yet, or you want to inspect many photos at once — use query to find and summarize matches first.",
+      "Returns: dimensions and original dimensions, dates, title/description, location and place, albums, keywords, persons, labels, file paths, size, EXIF camera data (make/model, lens, ISO, aperture, shutter speed, focal length — null when Photos recorded none), and type flags (HDR/live/raw/edited/portrait/panorama/etc.).\n" +
+      "Do not use when: you don't have a UUID yet — use query to find matches first; you have several UUIDs — use get-photos for one batched call; or you want to see the image — use get-thumbnail.",
     inputSchema: {
       ...libraryArg,
-      uuid: z
-        .string()
-        .max(256)
-        .regex(
-          /^[0-9A-Fa-f-]+$/,
-          "must be a Photos UUID — hexadecimal segments separated by dashes " +
-            "(e.g. 1EB2B765-0765-43BA-A90C-0F0AE547B343)"
-        )
-        .describe("Photo UUID (hex-with-dashes, as returned by query)"),
+      uuid: uuidSchema.describe("Photo UUID (hex-with-dashes, as returned by query)"),
     },
     outputSchema: {
       photo: z.object({}).passthrough().optional(),
@@ -267,8 +367,156 @@ server.registerTool(
     if (p.keywords.length) lines.push(`Keywords:    ${p.keywords.join(", ")}`);
     if (p.persons.length) lines.push(`Persons:     ${p.persons.join(", ")}`);
     if (p.labels.length) lines.push(`Labels:      ${p.labels.join(", ")}`);
+    if (p.exif && (p.exif.cameraMake || p.exif.cameraModel)) {
+      const camera = [p.exif.cameraMake, p.exif.cameraModel].filter(Boolean).join(" ");
+      const settings = [
+        p.exif.iso != null ? `ISO ${p.exif.iso}` : null,
+        p.exif.aperture != null ? `f/${p.exif.aperture}` : null,
+        p.exif.focalLength != null ? `${p.exif.focalLength}mm` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      lines.push(`Camera:      ${camera}${settings ? ` (${settings})` : ""}`);
+    }
     return successResponse(lines.join("\n"), { photo: p });
   }, "get-photo")
+);
+
+// --- get-photos ---
+server.registerTool(
+  "get-photos",
+  {
+    description:
+      "Use when: you have SEVERAL UUIDs (typically from query or find-duplicates) and want full metadata for all of them — a dedupe review, an EXIF audit, a captioning pass. One batched sidecar round-trip (max 50 UUIDs) instead of N get-photo calls.\n" +
+      "Returns: count, photos (full per-photo detail — the same shape as get-photo, including the exif block), and notFound listing any requested UUIDs that matched nothing.\n" +
+      "Do not use when: you have a single UUID — use get-photo; you don't have UUIDs yet — use query; or you want to see the images — use get-thumbnail per photo.",
+    inputSchema: {
+      ...libraryArg,
+      uuid: z.array(uuidSchema).min(1).max(50).describe("Photo UUIDs (1–50, as returned by query)"),
+    },
+    outputSchema: {
+      count: z.number().optional(),
+      photos: z.array(z.object({}).passthrough()).optional(),
+      notFound: z.array(z.string()).optional(),
+    },
+  },
+  withErrorHandling(async ({ library, uuid }) => {
+    const result = await manager.getPhotos(uuid, library);
+    const lines = result.photos.map((p) => {
+      const flags: string[] = [];
+      if (p.favorite) flags.push("★");
+      if (p.hidden) flags.push("hidden");
+      if (p.isMovie) flags.push("movie");
+      if (p.isEdited) flags.push("edited");
+      const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
+      const dims = p.width && p.height ? ` ${p.width}×${p.height}` : "";
+      const camera = p.exif?.cameraModel ? ` — ${p.exif.cameraModel}` : "";
+      return `${p.date ?? "?"} ${p.uuid} — ${p.filename}${dims}${flagStr}${camera}`;
+    });
+    if (result.notFound.length) {
+      lines.push("", `Not found: ${result.notFound.join(", ")}`);
+    }
+    return successResponse(
+      `${result.count} photo(s) (full details in structuredContent):\n\n${lines.join("\n")}`,
+      { count: result.count, photos: result.photos, notFound: result.notFound }
+    );
+  }, "get-photos")
+);
+
+// --- get-thumbnail ---
+server.registerTool(
+  "get-thumbnail",
+  {
+    description:
+      "Use when: you (or the user) want to SEE a photo — visual triage ('show me…'), picking the best shot, eyeballing duplicate groups, or reading text in an image — without exporting anything to disk. Prefer this over export whenever the goal is to LOOK at a photo rather than to obtain the file.\n" +
+      "Returns: the photo as an inline MCP image content block (base64 JPEG/PNG a vision-capable client renders directly), plus a text summary and structured metadata (source path, width/height, MIME type, byte size, isDerivative). It serves the smallest Photos-generated preview derivative whose long edge is at least minSize pixels (default 360) — raise minSize (e.g. 1024) when you need detail like small text; isDerivative=false means no suitable derivative existed and the original was downscaled/converted via sips.\n" +
+      "Do not use when: you need the full-resolution file on disk — use export; or you only need metadata — use get-photo. Movies get a thumbnail only when Photos generated a poster-frame derivative; an iCloud-only photo with no local derivative or original cannot be thumbnailed (export it first, which downloads on demand).",
+    inputSchema: {
+      ...libraryArg,
+      uuid: uuidSchema.describe("Photo UUID (hex-with-dashes, as returned by query)"),
+      minSize: z
+        .number()
+        .int()
+        .positive()
+        .max(8192)
+        .optional()
+        .describe(
+          "Smallest acceptable long-edge size in pixels (default 360). The smallest " +
+            "qualifying derivative is served, so higher values return larger images"
+        ),
+    },
+    outputSchema: {
+      uuid: z.string().optional(),
+      path: z.string().optional(),
+      width: z.number().nullable().optional(),
+      height: z.number().nullable().optional(),
+      mimeType: z.string().optional(),
+      byteSize: z.number().optional(),
+      isDerivative: z.boolean().optional(),
+    },
+  },
+  withErrorHandling(async ({ library, uuid, minSize }) => {
+    const t = await manager.getThumbnail(uuid, minSize, library);
+    // The base64 payload belongs ONLY in the image content block — echoing it
+    // into structuredContent would double a multi-hundred-KB response.
+    const { base64, ...meta } = t;
+    const dims = t.width && t.height ? `${t.width}×${t.height}` : "unknown dimensions";
+    const source = t.isDerivative ? "Photos derivative" : "rendered from original";
+    return imageResponse(
+      `Thumbnail for ${t.uuid}: ${dims} ${t.mimeType}, ${Math.round(t.byteSize / 1024)} KB (${source})`,
+      { data: base64, mimeType: t.mimeType },
+      { ...meta }
+    );
+  }, "get-thumbnail")
+);
+
+// --- find-duplicates ---
+server.registerTool(
+  "find-duplicates",
+  {
+    description:
+      "Use when: you want to find exact duplicates across the library — cleaning up after a double import, checking whether files were re-uploaded, or auditing before a migration/export.\n" +
+      "Returns: groupCount (total duplicate groups found), returned (groups in this response, capped at limit, default 100), and groups ordered newest-first — each with the member UUIDs plus per-member filename, date, size, dimensions, and movie flag. Use get-thumbnail on members to eyeball a group before acting on it.\n" +
+      "Do not use when: you're looking for near-duplicates or similar shots — Photos' fingerprint matches EXACT duplicates (identical image data) only; edited copies, resized versions, and burst siblings will NOT group.\n" +
+      "Safety: read-only. This server cannot delete photos (Photos exposes no scriptable delete) — to act on duplicates, collect them into a quarantine album in Photos.app and review/delete there.",
+    inputSchema: {
+      ...libraryArg,
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(10000)
+        .optional()
+        .describe("Max duplicate groups to return (default 100; groupCount reports the total)"),
+    },
+    outputSchema: {
+      groupCount: z.number().optional(),
+      returned: z.number().optional(),
+      groups: z.array(z.object({}).passthrough()).optional(),
+    },
+  },
+  withErrorHandling(async ({ library, limit }) => {
+    const result = await manager.findDuplicates(limit, library);
+    if (result.groupCount === 0) {
+      return successResponse("No exact duplicates found.", {
+        groupCount: 0,
+        returned: 0,
+        groups: [],
+      });
+    }
+    const lines = result.groups.map((g, i) => {
+      const members = g.photos
+        .map((m) => `${m.filename}${m.size != null ? ` (${Math.round(m.size / 1024)} KB)` : ""}`)
+        .join(" = ");
+      const date = g.photos[0]?.date ?? "?";
+      return `${i + 1}. ${g.count}× ${members} — ${date}\n   ${g.uuids.join(", ")}`;
+    });
+    const header =
+      result.groupCount > result.returned
+        ? `Found ${result.groupCount} duplicate group(s), returning the first ${result.returned} (raise limit for more):`
+        : `Found ${result.groupCount} duplicate group(s):`;
+    return successResponse(`${header}\n\n${lines.join("\n")}`, { ...result });
+  }, "find-duplicates")
 );
 
 // --- list-albums ---

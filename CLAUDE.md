@@ -7,9 +7,11 @@ This file provides guidance for AI agents (Claude, etc.) when using this MCP ser
 This MCP server gives AI assistants **read-only** access to the macOS Apple
 Photos library via [osxphotos](https://github.com/RhetTbull/osxphotos). All
 operations are **local** — nothing leaves the user's machine. You can query the
-library, inspect individual photos, browse its structure (albums, folders,
-keywords, persons), and **export** copies of photos to a directory. You cannot
-modify the library itself.
+library, inspect individual photos (singly or in batches, including EXIF
+camera data), **see** photos inline via thumbnails, find exact-duplicate
+groups, browse the library's structure (albums, folders, keywords, persons),
+and **export** copies of photos to a directory. You cannot modify the library
+itself.
 
 ## Related Documentation
 
@@ -67,18 +69,39 @@ MCP progress notifications when the request carries a `progressToken`.
 ## The core workflow: query, then act
 
 The reliable pattern is **two steps**: use `query` to find photos and get their
-**UUIDs**, then use those UUIDs with `get-photo` (for full details) or `export`
-(to copy files).
+**UUIDs**, then use those UUIDs with `get-photo` / `get-photos` (full details),
+`get-thumbnail` (see the image), or `export` (copy files).
 
 ```
 1. query   → returns photo summaries, each with a UUID
-2a. get-photo uuid="..."   → full metadata for one photo
-2b. export  uuid=["...","..."] dest="..."   → copy files out
+2a. get-photo uuid="..."          → full metadata for one photo
+2b. get-photos uuid=["...", ...]  → full metadata for up to 50 in ONE call
+2c. get-thumbnail uuid="..."      → the photo itself, as an inline image
+2d. export uuid=["...","..."] dest="..."   → copy files out
 ```
 
 UUIDs are the **canonical, reliable handle** for a photo. Filenames and titles
 can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
-`query` into `get-photo` / `export` rather than re-searching by name.
+`query` into the follow-up tools rather than re-searching by name.
+
+**Prefer `get-thumbnail` over `export` when the user wants to LOOK at a
+photo** ("show me", "which one is better", "what does it say") — it returns a
+renderable image block with nothing written to disk. Use `export` only when
+the user wants actual files. **Prefer `get-photos` over N `get-photo` calls**
+whenever you hold more than a couple of UUIDs.
+
+Two worked patterns built from these pieces:
+
+- **Recently-imported sweep:** `query { addedInLast: "7d", newestFirst: true,
+  limit: 20 }` → the newest imports; refine with `noKeyword: true` for the
+  untagged backlog, or `screenshot: true` for cleanup candidates. Import date
+  (`dateAdded`) is not the taken date — `addedInLast` is the right filter for
+  "what just came in".
+- **Dedupe with visual verification:** `find-duplicates` → groups of exact
+  duplicates (Photos' fingerprint; identical image data only) → `get-thumbnail`
+  a member or two per group to eyeball them → since this server cannot delete,
+  have the user collect the extra copies into a quarantine album in Photos.app
+  and delete there.
 
 ## Conventions and behaviors to know
 
@@ -133,8 +156,11 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 | `health-check` | Verify osxphotos is installed and the library opens (while another operation is running it answers immediately with a liveness summary instead of queueing behind it) |
 | `doctor` | Full setup diagnostic — Python interpreter version, osxphotos install, sidecar mode (persistent vs one-shot), library readability, and Full Disk Access, each ok/warn/fail with advice (richer than `health-check`) |
 | `library-info` | High-level counts (photos, movies, albums, folders, keywords, persons) |
-| `query` | Find photos by date/album/keyword/person/flags → returns UUIDs |
-| `get-photo` | Full metadata for one photo by UUID |
+| `query` | Find photos by taken/import date, album, keyword, person, ML label, place, folder, year, size, media type, or flags → returns UUIDs (`newestFirst` for the N most recent) |
+| `get-photo` | Full metadata for one photo by UUID (incl. EXIF camera data) |
+| `get-photos` | Full metadata for up to 50 UUIDs in one batched call |
+| `get-thumbnail` | The photo itself as an inline viewable image (from Photos' derivatives; `minSize` px, default 360) |
+| `find-duplicates` | Groups of exact duplicates via Photos' fingerprint detection |
 | `list-albums` | All albums with folder paths and photo counts |
 | `list-folders` | All folders with parent and album/subfolder counts |
 | `list-keywords` | Keywords sorted by usage count |
@@ -160,7 +186,12 @@ can repeat or be empty; a UUID is unique and stable. Always carry the UUID from
 
 - "How many photos do I have?" → `library-info`
 - "Find X" → `query` (then summarize the UUIDs/filenames returned)
+- "What did I import this week?" → `query` with `addedInLast: "7d"`, `newestFirst: true`
+- "Find my screenshots / selfies / panoramas" → `query` with the media-type flag
 - "Tell me about that photo" → `get-photo` with the UUID from the query
+- "Compare these / audit EXIF across these" → `get-photos` with the UUIDs (one call)
+- "Show me that photo" / "which is better?" → `get-thumbnail` (raise `minSize` to read small text)
+- "Do I have duplicates?" → `find-duplicates`, then `get-thumbnail` to verify visually
 - "Export those" → `export` with the UUIDs and a `dest`
 - "What albums / keywords / people are there?" → `list-albums` / `list-keywords` / `list-persons`
 

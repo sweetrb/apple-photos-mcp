@@ -21,13 +21,28 @@ datetime** (`2025-06-01T14:30:00`, optionally with a UTC offset).
   precise exclusive bound: `toDate: "2025-06-30T18:00:00"` excludes 18:00:00
   and later.
 
+## Import dates: `addedAfter` / `addedBefore` / `addedInLast`
+
+These filter on **when the photo entered the library** (`dateAdded`), not when
+it was taken — the right tool for "recently imported" sweeps.
+
+- **`addedAfter`** (inclusive) and **`addedBefore`** take the same ISO 8601
+  forms as `fromDate`/`toDate`, with the same bare-date convenience: a bare
+  `addedBefore` date includes that whole day.
+- **`addedInLast`** takes a trailing window as `"<number><unit>"` with unit
+  `s`(econds), `m`(inutes), `h`(ours), `d`(ays), or `w`(eeks) — e.g. `"7d"`,
+  `"24h"`. It is the simplest way to say "imported this week".
+
 ## How filters combine: AND across, OR within
 
 - **Different filters are ANDed.** `keyword: ["beach"], person: ["Sarah"]`
   returns photos that have the beach keyword AND contain Sarah.
 - **Values within one array filter are ORed** (ANY-match). `album`, `keyword`,
-  `person`, and `uuid` are arrays: `keyword: ["beach", "lake"]` matches photos
-  carrying either keyword.
+  `person`, `label`, `folder`, `year`, and `uuid` are arrays:
+  `keyword: ["beach", "lake"]` matches photos carrying either keyword.
+- **Exception: `place` values are ANDed.** `place: ["Michigan", "Houghton"]`
+  matches only photos whose place names contain BOTH strings — pass one value
+  for the usual single-place search.
 
 ## Exact match vs. substring
 
@@ -43,6 +58,15 @@ datetime** (`2025-06-01T14:30:00`, optionally with a UTC offset).
   name is escaped as `//`. `list-albums` returns each album's `folder` array
   and `title`, which join to the path `query` expects. Smart albums are never
   matchable (see [LIMITATIONS.md](./LIMITATIONS.md)).
+- **`label` is exact, case-sensitive, whole-string** — like `keyword`, but
+  against the ML classification labels Photos computes automatically (the
+  `labels` field `get-photo` returns, e.g. `Dog`, `Beach`, `Text`). Labels vary
+  by Photos version; check a representative photo's `labels` first.
+- **`folder` matches folder names/paths** — it returns photos in albums that
+  live inside the named folder (same path rules as `album`).
+- **`place` is a case-sensitive substring match** against the photo's
+  reverse-geocoded place names (city, region, landmark, country). Remember:
+  multiple `place` values are ANDed.
 - **`title` and `description` are case-sensitive substring matches** (single
   string each, not arrays).
 
@@ -53,7 +77,19 @@ datetime** (`2025-06-01T14:30:00`, optionally with a UTC offset).
 - **`favorite: true`** = only favorites; **`notFavorite: true`** = exclude them.
 - **`photos` / `movies`**: both kinds are returned by default. `movies: true`
   alone = only movies; `photos: true` alone = only still photos; setting both
-  is the same as the default.
+  is the same as the default. `video: true` is an alias of `movies: true`.
+- **Media-type flags** — each `true` narrows to only that type (they AND with
+  everything else): `screenshot`, `screenRecording`, `selfie`, `panorama`,
+  `live` (live photos), `portrait` (depth-effect), `timelapse`, `slowMo`,
+  `burst`. There are no `not*` counterparts.
+- **`hasLocation`** is tri-state: `true` = only photos WITH GPS coordinates,
+  `false` = only photos WITHOUT, omitted = no location filter. (Radius/nearby
+  search is not supported — filter by `place` names instead.)
+- **`year`** matches the calendar year the photo was taken (`year: [2024, 2025]`).
+- **`minSize` / `maxSize`** bound the ORIGINAL file size in bytes — storage-hog
+  hunting (`minSize: 50000000`) or thumbnail-junk sweeps (`maxSize: 100000`).
+- **`noKeyword: true`** = only photos carrying no keyword at all — the
+  untagged-backlog filter.
 - **`uuid`** fetches specific photos by UUID. Unknown UUIDs are silently
   dropped from the result (no error).
 - **Recently Deleted is never searched.** `query` reads the main library only.
@@ -63,23 +99,21 @@ datetime** (`2025-06-01T14:30:00`, optionally with a UTC offset).
 
 ## What is NOT filterable
 
-`get-photo` returns location/place, `labels` (Photos' ML classifications),
-`dateAdded`, file size, and the type flags (`isScreenshot`, `isSelfie`,
-`isPanorama`, `isPortrait`, `isBurst`, `isLive`, `isRaw`, `isEdited`, `isHDR`,
-`isSlowMo`, `isTimeLapse`) — but **none of these can be used as `query`
-filters**, and neither can filename or folder. "Find my screenshots" or
-"photos near Chicago" cannot be expressed as a single query: narrow with the
-filters that DO exist (dates, keywords, persons, albums, favorite,
-photo/movie), then inspect candidates with `get-photo`.
+`get-photo` returns a few fields that still have **no `query` filter**:
+filename, EXIF camera make/model/settings, and the `isRaw` / `isEdited` /
+`isHDR` / `isMissing` flags. GPS **radius** search ("photos within 5 km of…")
+is also unsupported — `hasLocation` and `place` (name substrings) are the
+location filters that exist. For these, narrow with the filters that DO exist,
+then inspect candidates with `get-photos` (batch) and post-filter.
 
 ## Ordering, `limit`, and `count` vs `returned`
 
-- **Results are unordered.** Photos come back in database order, and the
-  keyword/person/album filters deduplicate through a set, which can scramble
-  order further. There is **no sort parameter** (no `newest_first`), and
-  `limit` slices the match list **before any sorting** — so `limit: 50` is NOT
-  "the 50 most recent". To get the newest N, bound the search with `fromDate`
-  (or fetch more and sort by `date` yourself).
+- **Results are unordered by default.** Photos come back in database order,
+  and the keyword/person/album filters deduplicate through a set, which can
+  scramble order further. A plain `limit: 50` is NOT "the 50 most recent".
+- **`newestFirst: true` sorts by taken date, newest first, BEFORE the `limit`
+  slice** — so `newestFirst: true, limit: 50` IS "the 50 most recent matches".
+  Photos with no date sort last.
 - **`count` is the TOTAL number of matches; `returned` is the page size.**
   When `limit` is omitted, a **default limit of 500** applies. Check
   `count > returned` to detect truncation and raise `limit` (max 100000) if
@@ -90,10 +124,13 @@ photo/movie), then inspect candidates with `get-photo`.
 | Parameter | Cap |
 |-----------|-----|
 | `uuid` | max 1000 entries, each ≤ 256 chars |
-| `album` / `keyword` / `person` | max 100 entries, each ≤ 1024 chars |
-| `fromDate` / `toDate` | ≤ 64 chars |
+| `album` / `keyword` / `person` / `label` / `folder` / `place` | max 100 entries, each ≤ 1024 chars |
+| `year` | max 100 entries, each 0–9999 |
+| `fromDate` / `toDate` / `addedAfter` / `addedBefore` | ≤ 64 chars |
+| `addedInLast` | ≤ 32 chars, must match `<number><unit>` (`s`/`m`/`h`/`d`/`w`) |
 | `title` | ≤ 1024 chars |
 | `description` | ≤ 2048 chars |
+| `minSize` / `maxSize` | positive integer (bytes) |
 | `limit` | positive integer ≤ 100000 |
 | `library` | ≤ 4096 chars |
 
@@ -117,3 +154,19 @@ All of June 2025, inclusive of June 30.
 ```
 Up to 25 movies from the "Vacation 2024" album inside the "Trips" folder
 (`count` still reports the total number of matches).
+
+```json
+{ "addedInLast": "7d", "newestFirst": true, "limit": 20 }
+```
+The 20 most recent of everything imported this week — the
+"what just came off the camera/SD card" sweep.
+
+```json
+{ "screenshot": true, "year": [2024], "maxSize": 500000 }
+```
+Small screenshots taken in 2024 — a typical cleanup candidate list.
+
+```json
+{ "label": ["Dog"], "hasLocation": true, "newestFirst": true, "limit": 10 }
+```
+The 10 newest geotagged photos Photos itself classified as containing a dog.

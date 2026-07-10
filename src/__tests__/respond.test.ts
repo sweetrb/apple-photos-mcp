@@ -3,6 +3,7 @@ import {
   successResponse,
   errorResponse,
   textResponse,
+  imageResponse,
   withErrorHandling,
 } from "@/tools/respond.js";
 
@@ -29,6 +30,25 @@ describe("respond helpers", () => {
   it("textResponse is a plain text result", () => {
     const r = textResponse("plain");
     expect(r).toEqual({ content: [{ type: "text", text: "plain" }] });
+  });
+
+  it("imageResponse carries a text summary followed by an image content block", () => {
+    const r = imageResponse(
+      "a thumbnail",
+      { data: "aGVsbG8=", mimeType: "image/jpeg" },
+      { uuid: "A", byteSize: 5 }
+    );
+    expect(r.content).toEqual([
+      { type: "text", text: "a thumbnail" },
+      { type: "image", data: "aGVsbG8=", mimeType: "image/jpeg" },
+    ]);
+    expect(r.structuredContent).toEqual({ uuid: "A", byteSize: 5 });
+    expect(r.isError).toBeUndefined();
+  });
+
+  it("imageResponse omits structuredContent when not provided", () => {
+    const r = imageResponse("t", { data: "x", mimeType: "image/png" });
+    expect(r.structuredContent).toBeUndefined();
   });
 
   it("withErrorHandling passes through a successful result", async () => {
