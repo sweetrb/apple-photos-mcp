@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Documentation
+- **`docs/WRITE-BACKEND.md`** — records why reads use osxphotos (direct Photos DB) while the opt-in write tools use photoscript/AppleScript, and why the split can't be collapsed: direct SQLite writes would corrupt/desync the library, osxphotos's own write ops *are* AppleScript underneath, and PhotoKit writes require an app bundle + entitlements (unsolved even in osxphotos). Linked from the README write-tools section and CLAUDE.md.
+
 ## [2.0.0] - 2026-07-10
 
 **New: opt-in write tools — the server stays read-only by default, with behavior unchanged from 1.x unless you set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`.**
