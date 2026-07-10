@@ -15,7 +15,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
   <img src="https://raw.githubusercontent.com/sweetrb/apple-photos-mcp/main/codex/assets/screenshot.png" alt="Apple Photos MCP — search, browse, and export the macOS Photos library from Codex, Claude, and other AI assistants" width="680">
 </p>
 
-> **Read-only by default.** Out of the box the library is never modified — exports write files to a directory you choose, nothing more. A set of **opt-in [write tools](#write-tools-opt-in)** (albums, titles, descriptions, keywords, favorites — never deletion) unlocks only when you explicitly set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`; without that flag, 2.x behaves exactly like the read-only 1.x releases.
+> **Read-only by default.** Out of the box the library is never modified — exports write files to a directory you choose, nothing more. A set of **opt-in [write tools](#write-tools-opt-in)** (albums, titles, descriptions, keywords, favorites, dates, imports — never deletion) unlocks only when you explicitly set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`; without that flag, 2.x behaves exactly like the read-only 1.x releases.
 
 ## What is This?
 
@@ -135,9 +135,10 @@ Auto-setup needs Python 3, `pip`, and network access. If any are missing — or 
 | Feature | Description |
 |---------|-------------|
 | **Library Stats** | Total counts of photos, movies, albums, folders, keywords, persons |
-| **Query** | Search by taken-date or import-date range (`addedInLast: "7d"` for "recently imported"), album, keyword, person, ML label, place name, folder, year, file size, media type (screenshot, screen recording, selfie, panorama, live, portrait, time-lapse, slow-mo, burst), favorite/hidden flags, or title/description substring — with `newestFirst` ordering |
-| **Photo Details** | Full metadata for one photo: dimensions, location, place, EXIF camera data (make/model, lens, ISO, aperture, shutter speed, focal length), and type flags (HDR, live, portrait, panorama, raw, edited, etc.) |
+| **Query** | Search by taken-date or import-date range (`addedInLast: "7d"` for "recently imported"), album, keyword, person, ML label, place name, GPS radius (`near`), folder, year, file size, media type (screenshot, screen recording, selfie, panorama, live, portrait, time-lapse, slow-mo, burst), aesthetic score (`minScore`), OCR-detected text (`detectedText`), favorite/hidden flags, or title/description substring — with `newestFirst` ordering |
+| **Photo Details** | Full metadata for one photo: dimensions, location, place, EXIF camera data (make/model, lens, ISO, aperture, shutter speed, focal length), Photos' ML intelligence (aesthetic `score`, OCR `detectedText`), shared-album social data (owner, comments, likes), optional burst-sibling expansion, and type flags (HDR, live, portrait, panorama, raw, edited, etc.) |
 | **Batch Details** | `get-photos` fetches full metadata for up to 50 UUIDs in one call |
+| **Selection Bridge** | `get-selected-photos` returns the photos currently selected in the Photos.app window — "act on *these* photos" |
 | **Thumbnails** | `get-thumbnail` returns a photo as an inline viewable image (MCP image content block) from Photos' pre-generated derivatives — see photos without exporting |
 | **Find Duplicates** | `find-duplicates` groups exact duplicates using Photos' own fingerprint detection |
 | **List Albums** | All albums with their folder paths and photo counts |
@@ -165,8 +166,10 @@ Auto-setup needs Python 3, `pip`, and network access. If any are missing — or 
 | **Remove from Album** | `remove-from-album` takes photos out of an album — never out of the library (see [the caveats](#write-tools-opt-in)) |
 | **Set Metadata** | `set-photo-metadata` sets title / description / favorite, echoing before/after values so changes can be reverted |
 | **Set Keywords** | `set-keywords` adds/removes keywords with **union semantics** — existing keywords you don't mention are always preserved |
+| **Set Date** | `set-photo-date` fixes a photo's date/time (absolute or shifted by seconds) — **dry run by default**, with before/after echoed for reverts; Photos-library date only, EXIF untouched |
+| **Import** | `import-photos` brings files into the library (optionally into an existing album) — add-only, with source paths validated against the same allowlist as export |
 
-All five are **disabled unless `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`** — see [Write tools (opt-in)](#write-tools-opt-in). None of them can delete a photo.
+All seven are **disabled unless `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`** — see [Write tools (opt-in)](#write-tools-opt-in). None of them can delete a photo.
 
 ### Diagnostics
 
@@ -188,7 +191,7 @@ package common workflows: `find-photos`, `export-photos`, `photo-summary`.
 
 ## Write tools (opt-in)
 
-**The server is read-only by default — nothing changes for existing users.** Version 2.0.0 adds five tools that can modify the Photos library (`create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`), and every one of them is refused with a clear error until you opt in:
+**The server is read-only by default — nothing changes for existing users.** Version 2.0.0 added five tools that can modify the Photos library (`create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`), and 2.1.0 adds two more (`set-photo-date`, `import-photos`) behind the same gate. Every one of them is refused with a clear error until you opt in:
 
 **Enable via environment variable** (e.g. in your MCP server config's `env` block, where the host honors it):
 
@@ -210,10 +213,10 @@ The write tools stay **registered** even while disabled (MCP clients cache the t
 
 ### Safety design
 
-- **No deletion, ever.** There is deliberately no tool that deletes a photo, an album, or a folder. `remove-from-album` changes album *membership* only — the photos stay in All Photos and every other album. For actual deletion, quarantine photos into an album (the [dedupe pattern](#duplicate-cleanup)) and delete inside Photos.app, where Recently Deleted gives you a 30-day safety net.
-- **Explicit targets only.** Every write takes explicit UUIDs or names — there are no "current selection" or wildcard/all-photos operations, and every target is validated to exist before anything is modified (unknown UUIDs come back as clear errors or per-UUID `notFound` lists).
-- **Bounded batches.** Album operations accept at most 100 UUIDs per call.
-- **Reversible by design.** Metadata writes echo before/after values so an agent can revert; `set-keywords` uses union semantics (read-merge-write) so keywords you don't mention are never clobbered; album adds are idempotent.
+- **No deletion, ever.** There is deliberately no tool that deletes a photo, an album, or a folder. `remove-from-album` changes album *membership* only — the photos stay in All Photos and every other album. For actual deletion, quarantine photos into an album (the [dedupe pattern](#duplicate-cleanup)) and delete inside Photos.app, where Recently Deleted gives you a 30-day safety net. The same no-delete rule cuts the other way for `import-photos`: an import **cannot be programmatically undone** (Photos' AppleScript has no photo-delete verb), so removing a mistaken import is a by-hand operation in Photos.app.
+- **Explicit targets only.** Every write takes explicit UUIDs, names, or file paths — there are no wildcard/all-photos operations, and every target is validated to exist before anything is modified (unknown UUIDs come back as clear errors or per-UUID `notFound` lists; import source paths must exist under the same allowlist roots as export).
+- **Bounded batches.** Album operations accept at most 100 UUIDs per call; imports at most 50 files.
+- **Reversible by design.** Metadata writes echo before/after values so an agent can revert; `set-keywords` uses union semantics (read-merge-write) so keywords you don't mention are never clobbered; album adds are idempotent; `set-photo-date` is a **dry run by default** — it writes nothing until you pass `dryRun: false`, and always echoes before/after so an applied change can be reverted.
 - **The mechanism:** writes drive **Photos.app via AppleScript** (the [photoscript](https://github.com/RhetTbull/photoscript) library). Photos is launched if it isn't running, and macOS asks for **Automation permission** for the host app with a one-time system prompt on the first write. Writes always target the library **currently open in Photos.app** (normally the system library) — the `library` parameter of the read tools does not apply. (Reads, by contrast, go through osxphotos straight to the Photos database — fast and prompt-free. Why writes *can't* use that same path — and why osxphotos/PhotoKit aren't an escape from AppleScript — is spelled out in [docs/WRITE-BACKEND.md](docs/WRITE-BACKEND.md).)
 - **One quirk to know:** Photos' AppleScript dictionary has no "remove from album" verb, so `remove-from-album` **rebuilds the album** (same name, remaining photos): the album's UUID changes (the response reports old and new) and any custom manual sort order is lost.
 
@@ -288,6 +291,7 @@ For the full filter syntax — accepted date forms, AND/OR combination semantics
 | `folder` | string[] | No | Folder name(s)/path(s) — photos in albums inside the folder; ANY-match (max 100) |
 | `place` | string[] | No | Place-name substring(s) from reverse geocoding (city, region, landmark). **Multiple values are ANDed**, not ORed (max 100) |
 | `hasLocation` | boolean | No | `true` = only photos WITH GPS coordinates; `false` = only photos WITHOUT; omit for no filter |
+| `near` | string | No | GPS-radius filter: `"lat,lon,radiusKm"` (e.g. `"46.5,-87.4,5"`) — only photos within the great-circle radius of the point. Composes (AND) with every other filter; photos without GPS data never match |
 | `year` | number[] | No | Taken in calendar year(s); ANY-match (max 100) |
 | `minSize` | number | No | Original file size at least this many bytes |
 | `maxSize` | number | No | Original file size at most this many bytes |
@@ -295,6 +299,8 @@ For the full filter syntax — accepted date forms, AND/OR combination semantics
 | `burst` | boolean | No | Only burst photos |
 | `screenshot` / `screenRecording` / `selfie` / `panorama` / `live` / `portrait` / `timelapse` / `slowMo` | boolean | No | Media-type filters — each `true` narrows to only that type |
 | `video` | boolean | No | Only videos/movies (alias of `movies`) |
+| `minScore` | number | No | Only photos whose Photos-computed overall **aesthetic score** (0–1) is at least this (e.g. `0.7` for "the good ones"). Post-filter; photos without a computed score never match |
+| `detectedText` | string | No | Case-insensitive substring over the text Photos' own **OCR** indexed per photo (macOS 13+) — receipts, signs, screenshots. Post-filter that reads per-photo search info, so combine with narrowing filters on big libraries |
 | `newestFirst` | boolean | No | Sort by taken date, newest first, **before** `limit` is applied — so `limit` means "the N most recent matches" |
 | `limit` | number | No | Cap the number of results returned (default `500` when omitted, max `100000`) |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
@@ -336,6 +342,16 @@ Exceeding a cap rejects the call at the input schema, before the library is open
 }
 ```
 
+**Example - The best shots taken near the cabin:**
+```json
+{
+  "near": "46.51,-87.42,5",
+  "minScore": 0.6,
+  "newestFirst": true,
+  "limit": 20
+}
+```
+
 **Returns:** `count` (the **total** number of matches), `returned` (the number of summaries in this response — capped at `limit`, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden flags, albums, keywords, persons).
 
 ---
@@ -347,6 +363,7 @@ Get full metadata for a single photo by UUID.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `uuid` | string | Yes | Photo UUID, as returned by `query` (hexadecimal segments separated by dashes, max 256 chars — anything else is rejected before the library is even opened) |
+| `burstPhotos` | boolean | No | `true` = also return `burstPhotos`: the **other** frames of this photo's burst set (UUID, filename, date each; empty when the photo isn't a burst member) |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
 **Example:**
@@ -356,7 +373,7 @@ Get full metadata for a single photo by UUID.
 }
 ```
 
-**Returns:** All metadata for the photo: dimensions, original dimensions, dates (taken/added/modified), title, description, location (lat/lon), place (name/country), albums, keywords, persons, labels, an `exif` object (camera make/model, lens, ISO, aperture, shutter speed, focal length, exposure bias, flash, and duration/fps/codec for video — `null` when Photos recorded no EXIF, e.g. manufacturer-app uploads and scans), type flags (HDR / live / raw / edited / portrait / panorama / selfie / screenshot / slow-mo / time-lapse / burst), file paths (original, edited, raw, live-photo video), file size, UTI.
+**Returns:** All metadata for the photo: dimensions, original dimensions, dates (taken/added/modified), title, description, location (lat/lon), place (name/country), albums, keywords, persons, labels, an `exif` object (camera make/model, lens, ISO, aperture, shutter speed, focal length, exposure bias, flash, and duration/fps/codec for video — `null` when Photos recorded no EXIF, e.g. manufacturer-app uploads and scans), Photos' ML intelligence (`score` — the overall aesthetic score 0–1; `detectedText` — the text Photos' OCR indexed, macOS 13+; both `null` on library versions without them), iCloud shared-album social data (`owner`, `comments`, `likes` — only populated for shared assets), type flags (HDR / live / raw / edited / portrait / panorama / selfie / screenshot / slow-mo / time-lapse / burst), file paths (original, edited, raw, live-photo video), file size, UTI.
 
 **Recently Deleted:** `get-photo` falls back to the trash, so it returns full metadata even for a photo sitting in Recently Deleted. `query` and `export` read the main library only — so a UUID that `get-photo` resolves may return nothing from `query`, and `export` will skip it with reason `UUID not found (deleted or in trash)`.
 
@@ -381,7 +398,22 @@ Get full metadata for a **batch** of photos (up to 50) in one call — the batch
 }
 ```
 
-**Returns:** `count`, `photos` (full per-photo detail — the same shape as `get-photo`, including the `exif` object and the Recently-Deleted fallback), and `notFound` listing any requested UUIDs that matched nothing. Unknown UUIDs never fail the batch.
+**Returns:** `count`, `photos` (full per-photo detail — the same shape as `get-photo`, including the `exif` object, `score`, `detectedText`, shared-album `owner`/`comments`/`likes`, and the Recently-Deleted fallback), and `notFound` listing any requested UUIDs that matched nothing. Unknown UUIDs never fail the batch.
+
+---
+
+#### `get-selected-photos`
+
+Get the photos **currently selected in the Photos.app window** — the bridge from "act on *these* photos" to UUIDs you can feed into `get-photos`, `get-thumbnail`, `export`, or `add-to-album`.
+
+No parameters.
+
+**Requirements & behavior:**
+- Photos.app must be **running with a visible selection**; the tool returns a clear error otherwise, and **never launches Photos itself**.
+- Read-only and **not** gated behind the writes flag, but it reads the selection over AppleScript, so the host app needs macOS **Automation permission** for Photos (one-time system prompt on first use).
+- The selection comes from the library currently open in Photos.app; there is no `library` parameter.
+
+**Returns:** `count`, `photos` (the same summary shape as `query` results — UUID, filename, date, dimensions, flags), and `notFound` for selected items the library index doesn't know yet (e.g. a just-finished import Photos hasn't checkpointed — reported with their filenames).
 
 ---
 
@@ -578,6 +610,35 @@ At least one of `add` / `remove` is required; a keyword in both is rejected.
 
 **Returns:** `uuid`, `before` / `after` keyword lists, `added` / `removed` (what actually changed — adding an existing keyword is a no-op), and `changed`. If the merge changes nothing, no write is performed.
 
+#### `set-photo-date`
+
+Fix a photo's date/time — set an absolute date or shift by a number of seconds. **Dry run by default**: nothing is written until you pass `dryRun: false`. This rewrites the date in the Photos **library database** only (the same thing Photos.app's *Adjust Date & Time* does) — the file's EXIF is never modified.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `uuid` | string | Yes | Photo UUID |
+| `date` | string | * | Absolute new date-time, ISO 8601 (e.g. `"2026-05-14T06:32:00"`), interpreted in the Mac's local timezone unless a UTC offset is included |
+| `shiftSeconds` | number | * | Shift the current date by this many seconds (negative = earlier; `-86400` = one day back) |
+| `dryRun` | boolean | No | **Default `true`** — preview the before/after dates without writing. Pass `false` to apply |
+
+\* Exactly one of `date` / `shiftSeconds` is required.
+
+**Returns:** `uuid`, `before`, `after` (the would-be date on a dry run), `shiftSeconds` (the effective delta), `applied`, and `dryRun`. Revert an applied change by re-running with `date` = the echoed `before` and `dryRun: false`.
+
+#### `import-photos`
+
+Import image/video files from disk into the Photos library, optionally straight into an **existing** album. Add-only: nothing is modified or deleted, and source files stay where they are (Photos copies them in).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `paths` | string[] | Yes | 1–50 absolute (or `~`-prefixed) file paths. Each must exist, under your home directory, `/tmp`, `/private/tmp`, or `/Volumes` |
+| `album` | string | No | Existing album (name or UUID) to file the imports into — create it with `create-album` first; a missing album is an error, not auto-created |
+| `skipDuplicateCheck` | boolean | No | Default `false`: Photos checks for duplicates, and a found duplicate raises a **blocking dialog in Photos.app** that a human must answer. `true` skips the check — duplicates WILL be re-imported silently |
+
+**Returns:** `requestedCount`, `importedCount`, `imported` (`uuid` + `filename` per new item), and `album` when one was targeted. `importedCount < requestedCount` usually means Photos skipped duplicates.
+
+**Cannot be undone programmatically:** Photos' AppleScript has no photo-delete verb, so removing a mistaken import means deleting it by hand in Photos.app.
+
 ---
 
 ## Usage Patterns
@@ -664,6 +725,29 @@ AI: [calls add-to-album album="Trailcam" uuid=[...]]
 AI: [calls set-keywords per photo, add=["trailcam"]]
     "Filed 34 photos and tagged them 'trailcam' — existing keywords untouched
      (set-keywords merges, never replaces)."
+```
+
+### Fixing Wrong Dates (write tools — dry-run first)
+
+```
+User: "Those trailcam photos are stamped with the upload time, not the capture
+       time. The strip in the image says 05/14/2026 06:32."
+AI: [calls set-photo-date uuid=... date="2026-05-14T06:32:00"]         (dryRun defaults to TRUE)
+    "Preview: 2026-07-09T21:14:03 → 2026-05-14T06:32:00. Apply?"
+User: "Yes"
+AI: [calls set-photo-date uuid=... date="2026-05-14T06:32:00" dryRun=false]
+    "Done — and the response echoed the old date, so I can revert if needed."
+```
+
+Whole batches with the same clock offset shift with `shiftSeconds` instead of an absolute `date`. Only the Photos-library date changes — the file's EXIF is untouched (same as Photos.app's *Adjust Date & Time*).
+
+### Acting on the Photos.app Selection
+
+```
+User: [selects six photos in Photos.app] "Add these to the Yearbook album"
+AI: [calls get-selected-photos] → 6 UUIDs
+AI: [calls add-to-album album="Yearbook" uuid=[...]]
+    "Filed the 6 selected photos into Yearbook."
 ```
 
 ### Browsing Library Structure
@@ -788,7 +872,7 @@ All configuration is optional — the server works out of the box.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `APPLE_PHOTOS_MCP_ENABLE_WRITES` | unset (**read-only**) | Set to `1` to enable the [write tools](#write-tools-opt-in) (`create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`). Until then every write tool returns a clear opt-in error and the server cannot modify the library. Restart the server after changing it. |
+| `APPLE_PHOTOS_MCP_ENABLE_WRITES` | unset (**read-only**) | Set to `1` to enable the [write tools](#write-tools-opt-in) (`create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`, `set-photo-date`, `import-photos`). Until then every write tool returns a clear opt-in error and the server cannot modify the library. Restart the server after changing it. |
 | `APPLE_PHOTOS_MCP_MAX_BUFFER` | `104857600` (100 MB) | Max bytes captured from the Python sidecar's stdout. Raise it if a very large library/query is truncated; lower it to cap memory. |
 | `APPLE_PHOTOS_MCP_TIMEOUT` | `60000` (60 s) | Default per-command timeout, in milliseconds, for the Python sidecar. The first (cold) call parses the whole Photos database, and on very large libraries (100k+ photos) that load alone can exceed 60 s — raise this if tools report "Operation timed out". `export` keeps its own 30-minute window. |
 | `APPLE_PHOTOS_MCP_PERSISTENT_SIDECAR` | unset (persistent mode on) | Set to `0` (or `false`) to disable the long-lived serve-mode sidecar and spawn a fresh Python process per call (pre-1.4.0 behavior). Every call then re-pays the full library parse — only useful for debugging. |
@@ -851,7 +935,7 @@ This is the same TS + Python-sidecar pattern used by [apple-numbers-mcp](https:/
 ## Security and Privacy
 
 - **Local only** — All operations happen locally via osxphotos. No data is sent to external servers.
-- **Read-only by default** — the library is never modified unless you explicitly set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (see [Write tools (opt-in)](#write-tools-opt-in)). Even with writes enabled, the tools are limited to album membership and photo metadata — **nothing can delete a photo** — and every write requires explicit UUIDs/names (no wildcard operations).
+- **Read-only by default** — the library is never modified unless you explicitly set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` (see [Write tools (opt-in)](#write-tools-opt-in)). Even with writes enabled, the tools are limited to album membership, photo metadata (titles, keywords, favorites, dates), and add-only imports — **nothing can delete a photo** — and every write requires explicit UUIDs/names/paths (no wildcard operations).
 - **Exports write to disk** — `export` writes files to the destination directory you specify, and only into an allowlisted location: the destination must resolve (symlinks included) to a path under your home directory, `/tmp`, `/private/tmp`, or `/Volumes`. Confirm destinations before running on shared machines.
 - **No credential storage** — The server doesn't store any passwords or authentication tokens.
 
@@ -864,7 +948,7 @@ For the full rundown — read-only scope, iCloud export caveats, face/album beha
 | Limitation | Reason |
 |------------|--------|
 | macOS only | Apple Photos and osxphotos are macOS-specific |
-| Read-only by default | osxphotos reads the Photos library directly; the [write tools](#write-tools-opt-in) are opt-in (`APPLE_PHOTOS_MCP_ENABLE_WRITES=1`) and limited to albums + metadata |
+| Read-only by default | osxphotos reads the Photos library directly; the [write tools](#write-tools-opt-in) are opt-in (`APPLE_PHOTOS_MCP_ENABLE_WRITES=1`) and limited to albums, metadata (incl. dates), and add-only imports |
 | No photo deletion | Deliberate: no tool deletes photos, albums, or folders — quarantine into an album and delete in Photos.app |
 | `remove-from-album` rebuilds the album | Photos' AppleScript has no remove verb — the album's UUID changes and manual sort order is lost |
 | Writes target the open library | AppleScript talks to whatever library Photos.app has open — the `library` parameter applies to read tools only |

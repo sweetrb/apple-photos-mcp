@@ -35,6 +35,28 @@ export interface ExifData {
   codec: string | null;
 }
 
+/** One comment on an iCloud shared-album photo. */
+export interface SharedComment {
+  user: string | null;
+  text: string | null;
+  date: string | null;
+  isMine: boolean;
+}
+
+/** One like on an iCloud shared-album photo. */
+export interface SharedLike {
+  user: string | null;
+  date: string | null;
+  isMine: boolean;
+}
+
+/** A sibling frame of a burst set (get-photo burstPhotos=true). */
+export interface BurstSibling {
+  uuid: string;
+  filename: string;
+  date: string | null;
+}
+
 export interface PhotoDetail extends PhotoSummary {
   currentFilename: string;
   dateAdded: string | null;
@@ -65,6 +87,18 @@ export interface PhotoDetail extends PhotoSummary {
   place: { name: string | null; country: string | null } | null;
   /** null when Photos recorded no EXIF for this asset. */
   exif: ExifData | null;
+  /** Photos' overall aesthetic score 0..1; null when unavailable. */
+  score: number | null;
+  /** Text Photos' OCR indexed for this photo; null when search info is unavailable. */
+  detectedText: string[] | null;
+  /** Shared-album owner name; null for non-shared assets. */
+  owner: string | null;
+  /** Shared-album comments ([] for non-shared assets). */
+  comments: SharedComment[];
+  /** Shared-album likes ([] for non-shared assets). */
+  likes: SharedLike[];
+  /** Present only when get-photo is called with burstPhotos=true. */
+  burstPhotos?: BurstSibling[];
 }
 
 /** Result of the batch get-photos command. */
@@ -212,6 +246,21 @@ export interface QueryFilters {
   /** Alias of movies (only videos). */
   video?: boolean;
   newestFirst?: boolean;
+  /** GPS-radius post-filter: "lat,lon,radiusKm". */
+  near?: string;
+  /** Minimum Photos aesthetic score 0..1 (post-filter). */
+  minScore?: number;
+  /** Case-insensitive substring over Photos' OCR-indexed text (post-filter). */
+  detectedText?: string;
+}
+
+/** Result of the get-selected-photos command. */
+export interface SelectedPhotosResult {
+  count: number;
+  /** Same summary shape as query results. */
+  photos: PhotoSummary[];
+  /** Selected items the osxphotos library index doesn't know (yet). */
+  notFound: { uuid: string; filename: string | null }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -281,4 +330,26 @@ export interface SetKeywordsResult {
   /** Keywords actually removed (requested removes not present are omitted). */
   removed: string[];
   changed: boolean;
+}
+
+export interface SetPhotoDateResult {
+  uuid: string;
+  /** The photo's date before the operation (ISO 8601, local time). */
+  before: string;
+  /** The new date — the would-be date on a dry run, the written date otherwise. */
+  after: string;
+  /** Effective delta in seconds (after - before). */
+  shiftSeconds: number;
+  /** True only when the date was actually written (dryRun=false). */
+  applied: boolean;
+  dryRun: boolean;
+}
+
+export interface ImportPhotosResult {
+  /** Number of validated source files handed to Photos. */
+  requestedCount: number;
+  importedCount: number;
+  imported: { uuid: string; filename: string | null }[];
+  /** Present when the import targeted an album. */
+  album?: WriteAlbumRef;
 }

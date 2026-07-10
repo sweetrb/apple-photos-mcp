@@ -57,15 +57,17 @@ describe("PhotosManager", () => {
   });
 
   describe("healthCheck", () => {
-    it("returns failure when osxphotos isn't installed", async () => {
-      checkMock.mockResolvedValue({ ok: false, message: "not installed" });
+    it("surfaces a missing-dep failure from the health command itself (no separate probe)", async () => {
+      // The sidecar layer classifies missing deps and attaches the setup hint;
+      // healthCheck just relays it. No upfront checkDependencies spawn.
+      runMock.mockResolvedValue({ error: "osxphotos not installed. Install it with: ..." });
       const result = await manager.healthCheck();
       expect(result.ok).toBe(false);
-      expect(runMock).not.toHaveBeenCalled();
+      expect(result.message).toContain("osxphotos not installed");
+      expect(checkMock).not.toHaveBeenCalled();
     });
 
     it("returns success summary when osxphotos works", async () => {
-      checkMock.mockResolvedValue({ ok: true, message: "0.69.0 available" });
       runMock.mockResolvedValue({
         data: {
           ok: true,
@@ -78,6 +80,16 @@ describe("PhotosManager", () => {
       expect(result.ok).toBe(true);
       expect(result.message).toContain("0.69.0");
       expect(result.message).toContain("1234");
+    });
+
+    it("optimistic-first (PERF-6): a healthy call never spawns the import probe", async () => {
+      runMock.mockResolvedValue({
+        data: { ok: true, osxphotosVersion: "0.69.0", libraryPath: "/L", photoCount: 1 },
+      });
+      await manager.healthCheck();
+      expect(checkMock).not.toHaveBeenCalled();
+      expect(runMock).toHaveBeenCalledTimes(1);
+      expect(runMock.mock.calls[0][0]).toBe("health");
     });
 
     it("answers immediately from the pure-TS liveness path while a sidecar operation is in flight", async () => {
@@ -274,6 +286,37 @@ describe("PhotosManager", () => {
       await manager.query({ video: true, movies: true });
       expect(runMock.mock.calls[0][1]).toEqual(["--movies"]);
     });
+
+    it("translates the 2.1.0 post-filters (near, minScore, detectedText) to CLI flags", async () => {
+      runMock.mockResolvedValue({ data: { count: 0, returned: 0, photos: [] } });
+      await manager.query({
+        near: "46.5, -87.4, 5",
+        minScore: 0.7,
+        detectedText: "receipt",
+        limit: 10,
+      });
+      const [, args] = runMock.mock.calls[0];
+      expect(args).toEqual([
+        "--near=46.5,-87.4,5", // canonicalized (whitespace stripped)
+        "--min-score=0.7",
+        "--detected-text=receipt",
+        "--limit=10",
+      ]);
+    });
+
+    it("rejects malformed and out-of-range near filters before spawning", async () => {
+      for (const near of [
+        "46.5,-87.4", // two parts
+        "a,b,c", // not numbers
+        "95,-87.4,5", // latitude out of range
+        "46.5,-190,5", // longitude out of range
+        "46.5,-87.4,0", // zero radius
+        "46.5,-87.4,-5", // negative radius
+      ]) {
+        await expect(manager.query({ near })).rejects.toThrow(/near/i);
+      }
+      expect(runMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("getPhotos (batch)", () => {
@@ -466,6 +509,34 @@ describe("PhotosManager", () => {
       await manager.getPhoto("X", "/tmp/Other.photoslibrary");
       const [, args] = runMock.mock.calls[0];
       expect(args).toEqual(["--library=/tmp/Other.photoslibrary", "--uuid=X"]);
+    });
+
+    it("passes --burst-photos only when burst expansion is requested", async () => {
+      runMock.mockResolvedValue({ data: { photo: { uuid: "X" } } });
+      await manager.getPhoto("X", undefined, true);
+      expect(runMock.mock.calls[0][1]).toEqual(["--uuid=X", "--burst-photos"]);
+
+      runMock.mockClear();
+      await manager.getPhoto("X");
+      expect(runMock.mock.calls[0][1]).toEqual(["--uuid=X"]);
+    });
+  });
+
+  describe("getSelectedPhotos", () => {
+    it("runs the get-selected-photos command with no args and a 2-minute timeout", async () => {
+      const data = { count: 1, photos: [{ uuid: "SEL1" }], notFound: [] };
+      runMock.mockResolvedValue({ data });
+      const result = await manager.getSelectedPhotos();
+      const [command, args, timeout] = runMock.mock.calls[0];
+      expect(command).toBe("get-selected-photos");
+      expect(args).toEqual([]);
+      expect(timeout).toBe(2 * 60 * 1000);
+      expect(result).toEqual(data);
+    });
+
+    it("surfaces the sidecar's no-selection error verbatim", async () => {
+      runMock.mockResolvedValue({ error: "No photos are selected in Photos.app." });
+      await expect(manager.getSelectedPhotos()).rejects.toThrow(/No photos are selected/);
     });
   });
 
@@ -834,6 +905,12 @@ describe("PhotosManager write tools", () => {
     statMock.mockImplementation(() => {
       throw new Error("ENOENT: no such file");
     });
+    // importPhotos resolves + existence-checks source paths via node:fs —
+    // default to "everything exists, symlink-free" like the outer suite.
+    existsMock.mockReset();
+    existsMock.mockReturnValue(true);
+    realpathMock.mockReset();
+    realpathMock.mockImplementation(((p: unknown) => String(p)) as typeof realpathSync);
     savedGate = process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES;
     process.env.APPLE_PHOTOS_MCP_ENABLE_WRITES = "1";
   });
@@ -875,6 +952,19 @@ describe("PhotosManager write tools", () => {
 
     it("setKeywords is refused before anything spawns", async () => {
       await expect(manager.setKeywords("A1B2", { add: ["k"] })).rejects.toThrow(gatedError);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("setPhotoDate is refused before anything spawns — even a dry run", async () => {
+      await expect(manager.setPhotoDate("A1B2", { shiftSeconds: 60 })).rejects.toThrow(gatedError);
+      await expect(
+        manager.setPhotoDate("A1B2", { shiftSeconds: 60, dryRun: true })
+      ).rejects.toThrow(gatedError);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("importPhotos is refused before anything spawns", async () => {
+      await expect(manager.importPhotos(["/tmp/scan.jpg"])).rejects.toThrow(gatedError);
       expect(runMock).not.toHaveBeenCalled();
     });
 
@@ -1044,6 +1134,118 @@ describe("PhotosManager write tools", () => {
 
     it("rejects when neither add nor remove is provided, without spawning", async () => {
       await expect(manager.setKeywords("U1", {})).rejects.toThrow(/nothing to do/i);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("setPhotoDate", () => {
+    const dryResult = {
+      data: {
+        uuid: "U1",
+        before: "2026-01-01T12:00:00",
+        after: "2026-01-01T13:00:00",
+        shiftSeconds: 3600,
+        applied: false,
+        dryRun: true,
+      },
+    };
+
+    it("is a DRY RUN by default — no --apply token", async () => {
+      runMock.mockResolvedValue(dryResult);
+      await manager.setPhotoDate("U1", { shiftSeconds: 3600 });
+      expect(runMock).toHaveBeenCalledWith(
+        "set-photo-date",
+        ["--uuid=U1", "--shift-seconds=3600"],
+        expect.any(Number),
+        undefined
+      );
+    });
+
+    it("dryRun: true (explicit) also omits --apply", async () => {
+      runMock.mockResolvedValue(dryResult);
+      await manager.setPhotoDate("U1", { shiftSeconds: 3600, dryRun: true });
+      expect(runMock.mock.calls[0][1]).toEqual(["--uuid=U1", "--shift-seconds=3600"]);
+    });
+
+    it("only dryRun: false adds --apply (and negative shifts stay dash-safe)", async () => {
+      runMock.mockResolvedValue({
+        data: { ...dryResult.data, applied: true, dryRun: false },
+      });
+      await manager.setPhotoDate("U1", { shiftSeconds: -86400, dryRun: false });
+      expect(runMock.mock.calls[0][1]).toEqual(["--uuid=U1", "--shift-seconds=-86400", "--apply"]);
+    });
+
+    it("passes an absolute date through", async () => {
+      runMock.mockResolvedValue(dryResult);
+      await manager.setPhotoDate("U1", { date: "2026-05-14T06:32:00" });
+      expect(runMock.mock.calls[0][1]).toEqual(["--uuid=U1", "--date=2026-05-14T06:32:00"]);
+    });
+
+    it("rejects BOTH date and shiftSeconds without spawning", async () => {
+      await expect(
+        manager.setPhotoDate("U1", { date: "2026-01-01T00:00:00", shiftSeconds: 60 })
+      ).rejects.toThrow(/exactly one/i);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects NEITHER date nor shiftSeconds without spawning", async () => {
+      await expect(manager.setPhotoDate("U1", {})).rejects.toThrow(/exactly one/i);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("importPhotos", () => {
+    const okResult = {
+      data: {
+        requestedCount: 1,
+        importedCount: 1,
+        imported: [{ uuid: "IMP001", filename: "scan.jpg" }],
+      },
+    };
+
+    it("resolves sources and builds --path tokens (duplicate check on by default)", async () => {
+      runMock.mockResolvedValue(okResult);
+      await manager.importPhotos(["/tmp/scan.jpg", "~/Pictures/scan2.jpg"]);
+      const [command, args, timeout] = runMock.mock.calls[0];
+      expect(command).toBe("import-photos");
+      expect(args).toEqual(["--path=/tmp/scan.jpg", `--path=${homedir()}/Pictures/scan2.jpg`]);
+      expect(args).not.toContain("--skip-duplicate-check");
+      expect(timeout).toBe(10 * 60 * 1000);
+    });
+
+    it("passes --album and --skip-duplicate-check when requested", async () => {
+      runMock.mockResolvedValue(okResult);
+      await manager.importPhotos(["/tmp/scan.jpg"], {
+        album: "Scans 1970s",
+        skipDuplicateCheck: true,
+      });
+      expect(runMock.mock.calls[0][1]).toEqual([
+        "--path=/tmp/scan.jpg",
+        "--album=Scans 1970s",
+        "--skip-duplicate-check",
+      ]);
+    });
+
+    it("rejects an empty path list without spawning", async () => {
+      await expect(manager.importPhotos([])).rejects.toThrow(/at least one/i);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects relative paths without spawning", async () => {
+      await expect(manager.importPhotos(["relative/scan.jpg"])).rejects.toThrow(
+        /must be absolute/i
+      );
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects sources outside the allowed roots without spawning", async () => {
+      await expect(manager.importPhotos(["/etc/passwd"])).rejects.toThrow(/allowed roots/);
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects missing source files (canonical path) without spawning", async () => {
+      existsMock.mockReturnValue(false);
+      await expect(manager.importPhotos(["/tmp/missing.jpg"])).rejects.toThrow(/not found/i);
       expect(runMock).not.toHaveBeenCalled();
     });
   });

@@ -69,6 +69,13 @@ describe("PhotosManager construction", () => {
     expect(typeof m.removeFromAlbum).toBe("function");
     expect(typeof m.setPhotoMetadata).toBe("function");
     expect(typeof m.setKeywords).toBe("function");
+    expect(typeof m.setPhotoDate).toBe("function");
+    expect(typeof m.importPhotos).toBe("function");
+  });
+
+  it("exposes the selection bridge", () => {
+    const m = new PhotosManager();
+    expect(typeof m.getSelectedPhotos).toBe("function");
   });
 });
 
@@ -99,9 +106,7 @@ describe("write tools are gated off by default", () => {
   it("createAlbum is refused with the opt-in recipe", async () => {
     const m = new PhotosManager();
     await expect(m.createAlbum("Gate Test")).rejects.toThrow(gated);
-    await expect(m.createAlbum("Gate Test")).rejects.toThrow(
-      /APPLE_PHOTOS_MCP_ENABLE_WRITES=1/
-    );
+    await expect(m.createAlbum("Gate Test")).rejects.toThrow(/APPLE_PHOTOS_MCP_ENABLE_WRITES=1/);
   });
 
   it("addToAlbum is refused", async () => {
@@ -122,6 +127,21 @@ describe("write tools are gated off by default", () => {
   it("setKeywords is refused", async () => {
     const m = new PhotosManager();
     await expect(m.setKeywords("0000-0000", { add: ["x"] })).rejects.toThrow(gated);
+  });
+
+  it("setPhotoDate is refused — even as a dry run", async () => {
+    const m = new PhotosManager();
+    await expect(m.setPhotoDate("0000-0000", { shiftSeconds: 60 })).rejects.toThrow(gated);
+    await expect(
+      m.setPhotoDate("0000-0000", { date: "2026-01-01T00:00:00", dryRun: true })
+    ).rejects.toThrow(gated);
+  });
+
+  it("importPhotos is refused", async () => {
+    const m = new PhotosManager();
+    // __filename exists and lives under an allowed root, so path validation
+    // passes and the refusal is provably the GATE, not a validation error.
+    await expect(m.importPhotos([__filename])).rejects.toThrow(gated);
   });
 });
 
@@ -205,6 +225,53 @@ describe("live Photos library", { timeout: 120_000 }, () => {
     expect(detail.uuid).toBe(uuid);
     // 1.5.0: detail carries the exif projection — an object or null, never absent.
     expect(detail).toHaveProperty("exif");
+    // 2.1.0: ML + shared-album projections — null-graceful, never absent.
+    expect(detail).toHaveProperty("score");
+    expect(detail).toHaveProperty("detectedText");
+    expect(detail).toHaveProperty("owner");
+    expect(Array.isArray(detail.comments)).toBe(true);
+    expect(Array.isArray(detail.likes)).toBe(true);
+    // burstPhotos is opt-in: absent without the flag, an array with it.
+    expect(detail).not.toHaveProperty("burstPhotos");
+    const withBurst = await mgr.getPhoto(uuid, undefined, true);
+    expect(Array.isArray(withBurst.burstPhotos)).toBe(true);
+  });
+
+  it("minScore composes as a post-filter and count reflects it", async (ctx) => {
+    if (!live) ctx.skip();
+    const all = await mgr.query({ limit: 1 });
+    const scored = await mgr.query({ minScore: 0.5, limit: 5 });
+    expect(scored.count).toBeLessThanOrEqual(all.count);
+    if (scored.returned < 1) return; // no scored photos — filter still worked
+    const details = await mgr.getPhotos(scored.photos.map((p) => p.uuid));
+    for (const d of details.photos) {
+      expect(d.score).not.toBeNull();
+      expect(d.score as number).toBeGreaterThanOrEqual(0.5);
+    }
+  });
+
+  it("near returns only photos within the radius of a known photo's location", async (ctx) => {
+    if (!live) ctx.skip();
+    // Anchor on a real photo WITH location, then search around it.
+    const located = await mgr.query({ hasLocation: true, limit: 5 });
+    if (located.returned < 1) {
+      ctx.skip();
+      return;
+    }
+    const anchor = await mgr.getPhoto(located.photos[0].uuid);
+    const loc = anchor.location;
+    if (!loc) {
+      ctx.skip();
+      return;
+    }
+    const nearby = await mgr.query({ near: `${loc.latitude},${loc.longitude},1`, limit: 10 });
+    // The anchor itself must match its own 1 km radius.
+    expect(nearby.count).toBeGreaterThanOrEqual(1);
+    // And a photo with NO location must never appear: verify per-match coords.
+    const details = await mgr.getPhotos(nearby.photos.slice(0, 10).map((p) => p.uuid));
+    for (const d of details.photos) {
+      expect(d.location).not.toBeNull();
+    }
   });
 
   it("sorts newest-first before the limit slice (newestFirst)", async (ctx) => {

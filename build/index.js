@@ -21354,7 +21354,7 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname as dirname3, join as join6 } from "node:path";
 
 // src/services/photosManager.ts
-import { statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync3, statSync as statSync2 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join4, resolve as resolve2 } from "node:path";
 
@@ -22155,7 +22155,7 @@ async function checkDependencies() {
 // src/utils/exportPath.ts
 import { existsSync as existsSync2, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname as dirname2, join as join3, resolve, sep } from "node:path";
+import { basename, dirname as dirname2, isAbsolute, join as join3, resolve, sep } from "node:path";
 var ALLOWED_EXPORT_ROOTS = [homedir(), "/tmp", "/private/tmp", "/Volumes"];
 var ALLOWED_EXPORT_ROOTS_TEXT = "your home directory, /tmp, /private/tmp, or /Volumes";
 function isPathWithinAllowedRoots(resolvedPath) {
@@ -22191,6 +22191,19 @@ function resolveExportDest(dest) {
   if (!isPathWithinAllowedRoots(resolved)) {
     throw new Error(
       `Export destination "${dest}" resolves to "${resolved}", which is outside the allowed export roots (${ALLOWED_EXPORT_ROOTS_TEXT}). Choose a destination under one of those roots.`
+    );
+  }
+  return resolved;
+}
+function resolveImportSource(path) {
+  const expanded = expandTilde(path);
+  if (!isAbsolute(expanded)) {
+    throw new Error(`Import paths must be absolute (or ~-prefixed): "${path}"`);
+  }
+  const resolved = realpathDeepestExisting(resolve(expanded));
+  if (!isPathWithinAllowedRoots(resolved)) {
+    throw new Error(
+      `Import source "${path}" resolves to "${resolved}", which is outside the allowed roots (${ALLOWED_EXPORT_ROOTS_TEXT}).`
     );
   }
   return resolved;
@@ -22240,6 +22253,28 @@ var CACHEABLE_COMMANDS = /* @__PURE__ */ new Set([
 var MAX_CACHE_ENTRIES = 8;
 var WRITE_TIMEOUT_MS = 5 * 60 * 1e3;
 var ALBUM_REBUILD_TIMEOUT_MS = 10 * 60 * 1e3;
+var IMPORT_TIMEOUT_MS = 10 * 60 * 1e3;
+var SELECTION_TIMEOUT_MS = 2 * 60 * 1e3;
+function validateNear(near) {
+  const parts = near.split(",").map((s) => s.trim());
+  const nums = parts.map(Number);
+  if (parts.length !== 3 || parts.some((s) => s === "") || nums.some((n) => !Number.isFinite(n))) {
+    throw new Error(
+      `Invalid near filter "${near}": must be "lat,lon,radiusKm" \u2014 three numbers, e.g. "46.5,-87.4,5"`
+    );
+  }
+  const [lat, lon, radiusKm] = nums;
+  if (lat < -90 || lat > 90) {
+    throw new Error(`Invalid near filter: latitude ${lat} out of range [-90, 90]`);
+  }
+  if (lon < -180 || lon > 180) {
+    throw new Error(`Invalid near filter: longitude ${lon} out of range [-180, 180]`);
+  }
+  if (!(radiusKm > 0) || radiusKm > 40075) {
+    throw new Error(`Invalid near filter: radiusKm ${radiusKm} must be > 0 and <= 40075`);
+  }
+  return `${lat},${lon},${radiusKm}`;
+}
 function flagArg(flag, value) {
   return `${flag}=${value}`;
 }
@@ -22335,8 +22370,6 @@ var PhotosManager = class {
         message: `server responsive; a sidecar operation is currently in flight, so the library probe was skipped (Python deps: ${isVenvReady() ? "venv ready" : "not verified"}). Re-run health-check after the operation completes for the full result.`
       };
     }
-    const dep = await checkDependencies();
-    if (!dep.ok) return dep;
     try {
       const result = await this.run("health", []);
       return {
@@ -22401,15 +22434,28 @@ var PhotosManager = class {
     if (filters.timelapse) args.push("--time-lapse");
     if (filters.slowMo) args.push("--slow-mo");
     if (filters.newestFirst) args.push("--newest-first");
+    if (filters.near !== void 0) args.push(flagArg("--near", validateNear(filters.near)));
+    if (filters.minScore !== void 0) args.push(flagArg("--min-score", filters.minScore));
+    if (filters.detectedText !== void 0) {
+      args.push(flagArg("--detected-text", filters.detectedText));
+    }
     if (filters.limit !== void 0) args.push(flagArg("--limit", filters.limit));
     return this.run("query", args);
   }
-  async getPhoto(uuid2, library) {
-    const result = await this.run("get-photo", [
-      ...this.libraryArgs(library),
-      flagArg("--uuid", uuid2)
-    ]);
+  async getPhoto(uuid2, library, burstPhotos) {
+    const args = [...this.libraryArgs(library), flagArg("--uuid", uuid2)];
+    if (burstPhotos) args.push("--burst-photos");
+    const result = await this.run("get-photo", args);
     return result.photo;
+  }
+  /**
+   * The photos currently selected in the Photos.app GUI, as query-shaped
+   * summaries. Read-only (not gated), but it drives Photos.app over
+   * AppleScript, so it needs Photos running (it never launches Photos itself)
+   * and macOS Automation permission.
+   */
+  async getSelectedPhotos() {
+    return this.run("get-selected-photos", [], SELECTION_TIMEOUT_MS);
   }
   /**
    * Full details for a batch of UUIDs in ONE sidecar round-trip — the batch
@@ -22558,6 +22604,48 @@ var PhotosManager = class {
     }
     return this.runWrite("set-keywords", args, WRITE_TIMEOUT_MS);
   }
+  /**
+   * Set or shift one photo's date. DRY RUN unless dryRun === false — the
+   * default previews before/after without writing anything. Exactly one of
+   * date (absolute ISO 8601, local time) or shiftSeconds (relative, negative
+   * = earlier) is required. Photos-DB date only; EXIF is never touched.
+   */
+  async setPhotoDate(uuid2, opts) {
+    const hasDate = opts.date !== void 0;
+    const hasShift = opts.shiftSeconds !== void 0;
+    if (hasDate === hasShift) {
+      throw new Error(
+        "Pass exactly one of date (absolute ISO 8601 datetime) or shiftSeconds (relative shift in seconds, negative = earlier)"
+      );
+    }
+    const args = [flagArg("--uuid", uuid2)];
+    if (opts.date !== void 0) args.push(flagArg("--date", opts.date));
+    if (opts.shiftSeconds !== void 0) {
+      args.push(flagArg("--shift-seconds", opts.shiftSeconds));
+    }
+    if (opts.dryRun === false) args.push("--apply");
+    return this.runWrite("set-photo-date", args, WRITE_TIMEOUT_MS);
+  }
+  /**
+   * Import files into the Photos library (optionally into an existing album).
+   * Source paths must be absolute (or ~-prefixed), inside the same allowlist
+   * roots as export, and must exist — all validated against the canonical
+   * (symlink-resolved) path BEFORE the sidecar spawns.
+   */
+  async importPhotos(paths, opts = {}) {
+    if (paths.length === 0) {
+      throw new Error("At least one path is required");
+    }
+    const resolved = paths.map((p) => resolveImportSource(p));
+    const missing = resolved.filter((p) => !existsSync3(p));
+    if (missing.length > 0) {
+      throw new Error(`Import path(s) not found: ${missing.join(", ")}`);
+    }
+    const args = resolved.map((p) => flagArg("--path", p));
+    if (opts.album !== void 0) args.push(flagArg("--album", opts.album));
+    if (opts.skipDuplicateCheck) args.push("--skip-duplicate-check");
+    return this.runWrite("import-photos", args, IMPORT_TIMEOUT_MS);
+  }
   async exportPhotos(uuids, dest, options = {}) {
     if (uuids.length === 0) {
       throw new Error("At least one UUID is required to export");
@@ -22612,7 +22700,7 @@ function withErrorHandling(handler, prefix) {
 }
 
 // src/tools/doctor.ts
-import { existsSync as existsSync3 } from "node:fs";
+import { existsSync as existsSync4 } from "node:fs";
 var PHOTOS_APP_PATH = "/System/Applications/Photos.app";
 function looksLikePermissionError(message) {
   return /not permitted|permission|full disk|denied|unable to open/i.test(message);
@@ -22687,15 +22775,15 @@ async function runDoctor(manager2) {
       checks.push({
         name: "writes",
         status: "ok",
-        detail: `disabled \u2014 server is read-only (the default). To enable the write tools (create-album, add-to-album, remove-from-album, set-photo-metadata, set-keywords), set ${WRITES_ENV}=1 in the server env or config.json and restart. See ${WRITE_TOOLS_URL}`
+        detail: `disabled \u2014 server is read-only (the default). To enable the write tools (create-album, add-to-album, remove-from-album, set-photo-metadata, set-keywords, set-photo-date, import-photos), set ${WRITES_ENV}=1 in the server env or config.json and restart. See ${WRITE_TOOLS_URL}`
       });
     } else {
       const ps = await checkPhotoscript();
-      const photosAppPresent = existsSync3(PHOTOS_APP_PATH);
+      const photosAppPresent = existsSync4(PHOTOS_APP_PATH);
       checks.push({
         name: "writes",
         status: !ps.ok ? "fail" : photosAppPresent ? "ok" : "warn",
-        detail: `ENABLED \u2014 the write tools can modify this Photos library (album membership, titles, descriptions, keywords, favorites; never deleting photos). ${ps.message}; Photos.app ${photosAppPresent ? "present" : `NOT found at ${PHOTOS_APP_PATH}`}. Writes drive Photos.app via AppleScript and need macOS Automation permission for the host app \u2014 macOS asks via a one-time prompt on the first write (not verifiable here without triggering that prompt).`
+        detail: `ENABLED \u2014 the write tools can modify this Photos library (album membership, titles, descriptions, keywords, favorites, dates, imports; never deleting photos). ${ps.message}; Photos.app ${photosAppPresent ? "present" : `NOT found at ${PHOTOS_APP_PATH}`}. Writes drive Photos.app via AppleScript and need macOS Automation permission for the host app \u2014 macOS asks via a one-time prompt on the first write (not verifiable here without triggering that prompt).`
       });
     }
   } catch (e) {
@@ -22861,7 +22949,7 @@ function registerResourcesAndPrompts(server2, manager2) {
 }
 
 // src/services/fileConfig.ts
-import { existsSync as existsSync4, readFileSync as readFileSync2 } from "node:fs";
+import { existsSync as existsSync5, readFileSync as readFileSync2 } from "node:fs";
 import { join as join5 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 function fileConfigPath(env = process.env) {
@@ -22872,7 +22960,7 @@ function fileConfigPath(env = process.env) {
 function loadFileConfig(env = process.env, path = fileConfigPath(env)) {
   const applied = [];
   try {
-    if (!existsSync4(path)) return applied;
+    if (!existsSync5(path)) return applied;
     const parsed = JSON.parse(readFileSync2(path, "utf8"));
     if (!parsed || typeof parsed !== "object") return applied;
     for (const [k, v] of Object.entries(parsed)) {
@@ -22898,7 +22986,7 @@ var manager = new PhotosManager();
 var server = new McpServer({
   name: "apple-photos",
   version: version2,
-  description: "MCP server for Apple Photos via osxphotos. Query the Photos library by date, import date, album, keyword, person, ML label, place, year, media type (screenshot, selfie, panorama, burst, \u2026), file size, or favorite/hidden flags; list albums/folders/keywords/persons; fetch full photo metadata (location, dimensions, EXIF camera data, type flags) singly or in batches; return inline viewable thumbnails; find exact-duplicate groups; and export originals or edited versions to a directory. Read-only against the Photos library BY DEFAULT: the write tools (create-album, add-to-album, remove-from-album, set-photo-metadata, set-keywords) only work when the user opts in with APPLE_PHOTOS_MCP_ENABLE_WRITES=1, and can never delete photos. Read tools also return structuredContent (typed JSON) alongside the text."
+  description: "MCP server for Apple Photos via osxphotos. Query the Photos library by date, import date, album, keyword, person, ML label, place, GPS radius, year, media type (screenshot, selfie, panorama, burst, \u2026), file size, aesthetic score, OCR-detected text, or favorite/hidden flags; list albums/folders/keywords/persons; fetch full photo metadata (location, dimensions, EXIF camera data, ML score, detected text, shared-album comments/likes, burst siblings, type flags) singly or in batches; read the live Photos.app selection; return inline viewable thumbnails; find exact-duplicate groups; and export originals or edited versions to a directory. Read-only against the Photos library BY DEFAULT: the write tools (create-album, add-to-album, remove-from-album, set-photo-metadata, set-keywords, set-photo-date, import-photos) only work when the user opts in with APPLE_PHOTOS_MCP_ENABLE_WRITES=1, and can never delete photos. Read tools also return structuredContent (typed JSON) alongside the text."
 });
 var libraryArg = {
   library: external_exports.string().max(4096).optional().describe("Path to a .photoslibrary (default: system Photos library)")
@@ -22983,7 +23071,7 @@ Persons:   ${info.personCount}`,
 server.registerTool(
   "query",
   {
-    description: "Use when: you need to find photos matching one or more filters \u2014 album, keyword, person, ML label, place, folder, taken-date or import-date range (addedAfter/addedInLast for 'recently imported'), year, file size, media type (screenshot, screen recording, selfie, panorama, live, portrait, time-lapse, slow-mo, burst, video), favorite/hidden flags, or title/description substrings \u2014 and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID. Hidden photos are excluded unless hidden=true. Pass newestFirst=true with a limit to get the N most recent matches.\nReturns: count (the TOTAL number of matches), returned (the number of summaries in this response \u2014 capped at limit, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) \u2014 feed a UUID into get-photo/get-photos for full metadata, get-thumbnail to see it, or export to copy files.\nDo not use when: you already have UUIDs and want full metadata \u2014 use get-photo / get-photos; you want to see an image \u2014 use get-thumbnail; or you just want the catalog of album/keyword/person names \u2014 use list-albums / list-keywords / list-persons.",
+    description: "Use when: you need to find photos matching one or more filters \u2014 album, keyword, person, ML label, place, GPS radius (near), folder, taken-date or import-date range (addedAfter/addedInLast for 'recently imported'), year, file size, media type (screenshot, screen recording, selfie, panorama, live, portrait, time-lapse, slow-mo, burst, video), aesthetic score (minScore), OCR-detected text (detectedText), favorite/hidden flags, or title/description substrings \u2014 and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID. Hidden photos are excluded unless hidden=true. Pass newestFirst=true with a limit to get the N most recent matches.\nReturns: count (the TOTAL number of matches), returned (the number of summaries in this response \u2014 capped at limit, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) \u2014 feed a UUID into get-photo/get-photos for full metadata, get-thumbnail to see it, or export to copy files.\nDo not use when: you already have UUIDs and want full metadata \u2014 use get-photo / get-photos; you want to see an image \u2014 use get-thumbnail; or you just want the catalog of album/keyword/person names \u2014 use list-albums / list-keywords / list-persons.",
     inputSchema: {
       ...libraryArg,
       uuid: external_exports.array(external_exports.string().max(256)).max(1e3).optional().describe("Specific UUIDs to fetch"),
@@ -23040,6 +23128,18 @@ server.registerTool(
       timelapse: external_exports.boolean().optional().describe("Only time-lapse videos"),
       slowMo: external_exports.boolean().optional().describe("Only slow-motion videos"),
       video: external_exports.boolean().optional().describe("Only videos/movies (alias of movies)"),
+      near: external_exports.string().max(128).regex(
+        /^\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*,\s*\d+(\.\d+)?\s*$/,
+        'must be "lat,lon,radiusKm" \u2014 three numbers, e.g. "46.5,-87.4,5"'
+      ).optional().describe(
+        'GPS-radius filter: "lat,lon,radiusKm" \u2014 only photos within radiusKm of the point (great-circle distance). Composes (AND) with every other filter. Requires location data: photos without GPS coordinates never match'
+      ),
+      minScore: external_exports.number().min(0).max(1).optional().describe(
+        "Only photos whose Photos-computed overall aesthetic score (0\u20131) is at least this \u2014 e.g. 0.7 for 'the good ones'. Post-filter over the other filters' matches; photos without a computed score never match"
+      ),
+      detectedText: external_exports.string().min(1).max(256).optional().describe(
+        "Case-insensitive substring match over the text Photos' own OCR indexed in each photo (macOS 13+) \u2014 receipts, signs, screenshots. Post-filter that reads per-photo search info over every other filter's matches, so combine it with narrowing filters (dates, album) on big libraries"
+      ),
       newestFirst: external_exports.boolean().optional().describe(
         "Sort matches by taken date, newest first, BEFORE limit is applied \u2014 so limit means 'the N most recent matches' instead of 'N in database order'"
       ),
@@ -23085,17 +23185,20 @@ ${lines.join("\n")}`, {
 server.registerTool(
   "get-photo",
   {
-    description: "Use when: you have a single photo's UUID (typically from query) and want its complete metadata.\nReturns: dimensions and original dimensions, dates, title/description, location and place, albums, keywords, persons, labels, file paths, size, EXIF camera data (make/model, lens, ISO, aperture, shutter speed, focal length \u2014 null when Photos recorded none), and type flags (HDR/live/raw/edited/portrait/panorama/etc.).\nDo not use when: you don't have a UUID yet \u2014 use query to find matches first; you have several UUIDs \u2014 use get-photos for one batched call; or you want to see the image \u2014 use get-thumbnail.",
+    description: "Use when: you have a single photo's UUID (typically from query) and want its complete metadata.\nReturns: dimensions and original dimensions, dates, title/description, location and place, albums, keywords, persons, labels, file paths, size, EXIF camera data (make/model, lens, ISO, aperture, shutter speed, focal length \u2014 null when Photos recorded none), Photos' ML intelligence (score = overall aesthetic 0\u20131, detectedText = OCR-indexed text; null on macOS versions without them), iCloud shared-album social data (owner, comments, likes \u2014 only populated for shared assets), and type flags (HDR/live/raw/edited/portrait/panorama/etc.). Pass burstPhotos=true to also list the sibling frames of a burst (UUID, filename, date each).\nDo not use when: you don't have a UUID yet \u2014 use query to find matches first; you have several UUIDs \u2014 use get-photos for one batched call; or you want to see the image \u2014 use get-thumbnail.",
     inputSchema: {
       ...libraryArg,
-      uuid: uuidSchema.describe("Photo UUID (hex-with-dashes, as returned by query)")
+      uuid: uuidSchema.describe("Photo UUID (hex-with-dashes, as returned by query)"),
+      burstPhotos: external_exports.boolean().optional().describe(
+        "true = include burstPhotos: the OTHER frames of this photo's burst set (empty when the photo is not a burst member)"
+      )
     },
     outputSchema: {
       photo: external_exports.object({}).passthrough().optional()
     }
   },
-  withErrorHandling(async ({ library, uuid: uuid2 }) => {
-    const p = await manager.getPhoto(uuid2, library);
+  withErrorHandling(async ({ library, uuid: uuid2, burstPhotos }) => {
+    const p = await manager.getPhoto(uuid2, library, burstPhotos);
     const lines = [
       `UUID:        ${p.uuid}`,
       `Filename:    ${p.filename}`,
@@ -23125,13 +23228,28 @@ server.registerTool(
       ].filter(Boolean).join(", ");
       lines.push(`Camera:      ${camera}${settings ? ` (${settings})` : ""}`);
     }
+    if (p.score != null) lines.push(`Score:       ${p.score.toFixed(3)} (Photos aesthetic, 0\u20131)`);
+    if (p.detectedText && p.detectedText.length > 0) {
+      const joined = p.detectedText.join(" | ");
+      lines.push(`Text (OCR):  ${joined.length > 300 ? `${joined.slice(0, 300)}\u2026` : joined}`);
+    }
+    if (p.owner) lines.push(`Owner:       ${p.owner} (shared album)`);
+    if (p.comments?.length) {
+      lines.push(`Comments:    ${p.comments.length} (full text in structuredContent)`);
+    }
+    if (p.likes?.length) lines.push(`Likes:       ${p.likes.length}`);
+    if (p.burstPhotos !== void 0) {
+      lines.push(
+        p.burstPhotos.length > 0 ? `Burst:       ${p.burstPhotos.length} sibling frame(s): ` + p.burstPhotos.map((b) => b.uuid).join(", ") : "Burst:       no sibling frames (not a burst member)"
+      );
+    }
     return successResponse(lines.join("\n"), { photo: p });
   }, "get-photo")
 );
 server.registerTool(
   "get-photos",
   {
-    description: "Use when: you have SEVERAL UUIDs (typically from query or find-duplicates) and want full metadata for all of them \u2014 a dedupe review, an EXIF audit, a captioning pass. One batched sidecar round-trip (max 50 UUIDs) instead of N get-photo calls.\nReturns: count, photos (full per-photo detail \u2014 the same shape as get-photo, including the exif block), and notFound listing any requested UUIDs that matched nothing.\nDo not use when: you have a single UUID \u2014 use get-photo; you don't have UUIDs yet \u2014 use query; or you want to see the images \u2014 use get-thumbnail per photo.",
+    description: "Use when: you have SEVERAL UUIDs (typically from query or find-duplicates) and want full metadata for all of them \u2014 a dedupe review, an EXIF audit, a captioning pass. One batched sidecar round-trip (max 50 UUIDs) instead of N get-photo calls.\nReturns: count, photos (full per-photo detail \u2014 the same shape as get-photo, including the exif block, score, detectedText, and shared-album owner/comments/likes), and notFound listing any requested UUIDs that matched nothing.\nDo not use when: you have a single UUID \u2014 use get-photo; you don't have UUIDs yet \u2014 use query; or you want to see the images \u2014 use get-thumbnail per photo.",
     inputSchema: {
       ...libraryArg,
       uuid: external_exports.array(uuidSchema).min(1).max(50).describe("Photo UUIDs (1\u201350, as returned by query)")
@@ -23198,6 +23316,46 @@ server.registerTool(
       { ...meta }
     );
   }, "get-thumbnail")
+);
+server.registerTool(
+  "get-selected-photos",
+  {
+    description: `Use when: the user says "these photos" / "the selected photos" \u2014 they have photos selected in the Photos.app window and you need their identities. This is the GUI-selection bridge: feed the returned UUIDs into get-photos, get-thumbnail, export, or add-to-album.
+Returns: count, the same photo summaries as query (UUID, filename, date, dimensions, flags), and notFound for selected items the library index doesn't know yet (e.g. a just-finished import Photos hasn't checkpointed \u2014 each with its filename for identification).
+Do not use when: you want to FIND photos by criteria \u2014 use query; or Photos.app isn't running / nothing is selected \u2014 both return a clear error, and this tool never launches Photos itself.
+Note: read-only, but it reads the selection from Photos.app via AppleScript, so it requires Photos.app running with a visible selection, and macOS Automation permission for the host app (one-time system prompt on first use). The selection comes from the library currently open in Photos.app.`,
+    inputSchema: {},
+    outputSchema: {
+      count: external_exports.number().optional(),
+      photos: external_exports.array(external_exports.object({}).passthrough()).optional(),
+      notFound: external_exports.array(external_exports.object({}).passthrough()).optional()
+    }
+  },
+  withErrorHandling(async () => {
+    const result = await manager.getSelectedPhotos();
+    const lines = result.photos.map((p) => {
+      const flags = [];
+      if (p.favorite) flags.push("\u2605");
+      if (p.hidden) flags.push("hidden");
+      if (p.isMovie) flags.push("movie");
+      const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
+      const dims = p.width && p.height ? ` ${p.width}\xD7${p.height}` : "";
+      return `${p.date ?? "?"} ${p.uuid} \u2014 ${p.filename}${dims}${flagStr}`;
+    });
+    if (result.notFound.length > 0) {
+      lines.push(
+        "",
+        "Selected but not in the library index yet (likely just imported):",
+        ...result.notFound.map((n) => `  ${n.uuid}${n.filename ? ` \u2014 ${n.filename}` : ""}`)
+      );
+    }
+    return successResponse(
+      `${result.count} selected photo(s) in Photos.app:
+
+${lines.join("\n")}`,
+      { ...result }
+    );
+  }, "get-selected-photos")
 );
 server.registerTool(
   "find-duplicates",
@@ -23534,6 +23692,75 @@ server.registerTool(
     if (result.removed.length) lines.push(`  removed: ${result.removed.join(", ")}`);
     return successResponse(lines.join("\n"), { ...result });
   }, "set-keywords")
+);
+server.registerTool(
+  "set-photo-date",
+  {
+    description: "Use when: a photo's date/time is wrong and you want to fix it \u2014 trailcam or scanner imports stamped with the upload time, a camera with a mis-set clock, scanned prints. Set an absolute date OR shift by a number of seconds (exactly one of date / shiftSeconds). DRY RUN BY DEFAULT: with dryRun omitted (or true) it only reports the current and would-be dates \u2014 preview first, then re-run with dryRun=false to write.\nReturns: uuid, before and after datetimes (on a dry run, after = the would-be date), shiftSeconds (the effective delta), applied, and dryRun. Revert an applied change by re-running with date=<the echoed before> and dryRun=false.\nDo not use when: you want to find photos by date \u2014 use query; or you expect the file's EXIF to change \u2014 this edits the Photos library date only.\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Rewrites the photo's date in the Photos LIBRARY DATABASE only \u2014 the same operation as Photos.app's 'Adjust Date & Time'; the original file's EXIF is never modified. Dates are interpreted in the Mac's local timezone (a timezone-aware ISO datetime is converted to local). Nothing is written unless dryRun=false is passed explicitly, and before/after are always echoed so any change can be reverted. The target photo is validated to exist first. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
+    inputSchema: {
+      uuid: uuidSchema.describe("Photo UUID (hex-with-dashes, as returned by query)"),
+      date: external_exports.string().min(4).max(64).optional().describe(
+        "Absolute new date-time, ISO 8601 (e.g. 2026-05-14T06:32:00), interpreted in the Mac's local timezone unless a UTC offset is included. Exactly one of date / shiftSeconds"
+      ),
+      shiftSeconds: external_exports.number().int().min(-32e8).max(32e8).optional().describe(
+        "Shift the current date by this many seconds (negative = earlier; e.g. -86400 = one day back). Exactly one of date / shiftSeconds"
+      ),
+      dryRun: external_exports.boolean().default(true).describe(
+        "Default TRUE: preview the before/after dates without writing anything. Pass false to actually write the new date"
+      )
+    },
+    outputSchema: {
+      uuid: external_exports.string().optional(),
+      before: external_exports.string().optional(),
+      after: external_exports.string().optional(),
+      shiftSeconds: external_exports.number().optional(),
+      applied: external_exports.boolean().optional(),
+      dryRun: external_exports.boolean().optional()
+    }
+  },
+  withErrorHandling(async ({ uuid: uuid2, date: date3, shiftSeconds, dryRun }) => {
+    const result = await manager.setPhotoDate(uuid2, { date: date3, shiftSeconds, dryRun });
+    const lines = [
+      result.applied ? `Date updated on ${result.uuid}:` : `DRY RUN \u2014 nothing written (re-run with dryRun=false to apply). ${result.uuid}:`,
+      `  before: ${result.before}`,
+      `  after:  ${result.after}`,
+      `  shift:  ${result.shiftSeconds} s`
+    ];
+    return successResponse(lines.join("\n"), { ...result });
+  }, "set-photo-date")
+);
+server.registerTool(
+  "import-photos",
+  {
+    description: "Use when: you have image/video files on disk that belong in the Photos library \u2014 round-trip edits (export \u2192 fix \u2192 import), a folder of scans, an SD-card ingest \u2014 optionally filed straight into an existing album.\nReturns: requestedCount (validated source files), importedCount, imported (uuid + filename per new item \u2014 feed into get-photos / add-to-album / set-photo-date), and the album when one was targeted. importedCount < requestedCount usually means Photos skipped duplicates.\nDo not use when: the target album doesn't exist yet \u2014 call create-album first (a missing album is an error, not auto-created); or the files are outside your home directory, /tmp, /private/tmp, or /Volumes \u2014 those paths are rejected.\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Only ADDS to the library \u2014 never modifies or deletes anything; source files stay where they are (Photos copies them in). But note the reverse door is closed: Photos' AppleScript has no photo-delete verb, so an import cannot be programmatically undone \u2014 removing a mistaken import requires Photos.app by hand. Every path is validated (absolute, exists, allowed root) before anything imports. Duplicate checking is ON by default; a duplicate then makes Photos.app show a BLOCKING dialog a human must answer (the call waits up to its timeout) \u2014 set skipDuplicateCheck=true only when duplicates are acceptable, because they WILL be re-added silently. Drives Photos.app via AppleScript (requires macOS Automation permission; launches Photos if needed). Imports go into the library currently open in Photos.app.",
+    inputSchema: {
+      paths: external_exports.array(external_exports.string().min(1).max(4096)).min(1).max(50).describe(
+        "Absolute (or ~-prefixed) file paths of images/videos to import (1\u201350). Must exist, under your home directory, /tmp, /private/tmp, or /Volumes"
+      ),
+      album: external_exports.string().min(1).max(1024).optional().describe(
+        "EXISTING album (name or UUID) to file the imports into \u2014 create it with create-album first if needed"
+      ),
+      skipDuplicateCheck: external_exports.boolean().default(false).describe(
+        "true = skip Photos' duplicate check: duplicates WILL be re-imported silently. Default false: Photos checks, and a found duplicate raises a blocking dialog in Photos.app that a human must answer"
+      )
+    },
+    outputSchema: {
+      requestedCount: external_exports.number().optional(),
+      importedCount: external_exports.number().optional(),
+      imported: external_exports.array(external_exports.object({}).passthrough()).optional(),
+      ...writeAlbumOutput
+    }
+  },
+  withErrorHandling(async ({ paths, album, skipDuplicateCheck }) => {
+    const result = await manager.importPhotos(paths, { album, skipDuplicateCheck });
+    const lines = [
+      `Imported ${result.importedCount} of ${result.requestedCount} file(s)` + (result.album ? ` into ${result.album.path}` : "") + (result.importedCount < result.requestedCount ? " (the difference was likely skipped as duplicates)" : "")
+    ];
+    for (const item of result.imported) {
+      lines.push(`  ${item.uuid}${item.filename ? ` \u2014 ${item.filename}` : ""}`);
+    }
+    return successResponse(lines.join("\n"), { ...result });
+  }, "import-photos")
 );
 registerResourcesAndPrompts(server, manager);
 async function main() {
