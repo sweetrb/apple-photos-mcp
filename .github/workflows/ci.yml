@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Re-dispatched by dependabot-rebuild.yml after it pushes a rebuilt bundle to
+  # a Dependabot PR branch: a GITHUB_TOKEN push only creates held,
+  # approval-required pull_request runs, so the required checks have to be
+  # re-run via dispatch to complete on the new head.
+  workflow_dispatch:
 
 # Least privilege: CI only needs to read the repo (checkout + npm). Publishing
 # and code-scanning grant their own scoped tokens in their own workflows.
@@ -55,6 +60,14 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+      - name: Verify committed build/ matches source
+        run: |
+          if ! git diff --quiet build/; then
+            echo "::error::build/ is out of date. Run 'pnpm run build' locally and commit the changes."
+            git --no-pager diff --stat build/
+            exit 1
+          fi
 
   # Integration suite (opt-in, real Photos library). On CI the runner has no
   # signed-in Photos library, so the live tests self-skip; the pure tests still
