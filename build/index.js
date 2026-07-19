@@ -22152,6 +22152,14 @@ async function checkDependencies() {
   }
 }
 
+// src/utils/permissionErrors.ts
+function looksLikePermissionError(message) {
+  if (/not permitted|permission|full disk|denied|unable to open/i.test(message)) {
+    return true;
+  }
+  return /error copying\b.*photos\.sqlite/is.test(message);
+}
+
 // src/utils/exportPath.ts
 import { existsSync as existsSync2, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -22226,7 +22234,7 @@ function assertWritesEnabled(env = process.env) {
 
 // src/services/photosManager.ts
 function augmentPermissionError(message) {
-  if (/not permitted|permission|full disk|denied|unable to open/i.test(message)) {
+  if (looksLikePermissionError(message)) {
     return `${message}
 
 This looks like a macOS permission issue: ${FDA_REMEDIATION}`;
@@ -22702,9 +22710,6 @@ function withErrorHandling(handler, prefix) {
 // src/tools/doctor.ts
 import { existsSync as existsSync4 } from "node:fs";
 var PHOTOS_APP_PATH = "/System/Applications/Photos.app";
-function looksLikePermissionError(message) {
-  return /not permitted|permission|full disk|denied|unable to open/i.test(message);
-}
 async function runDoctor(manager2) {
   const checks = [];
   try {

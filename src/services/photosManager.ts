@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { runPhotosReader, sidecarBusy, isVenvReady } from "../utils/python.js";
 import type { SidecarProgress } from "../utils/sidecarClient.js";
 import { FDA_REMEDIATION } from "../utils/docsUrls.js";
+import { looksLikePermissionError } from "../utils/permissionErrors.js";
 import { resolveExportDest, resolveImportSource } from "../utils/exportPath.js";
 import { assertWritesEnabled } from "../utils/writeGate.js";
 import type {
@@ -31,11 +32,13 @@ import type {
 
 /**
  * macOS denies reading the Photos library without Full Disk Access; osxphotos
- * then surfaces a low-level error like "unable to open database file". Append
- * actionable guidance so the failure is self-service rather than cryptic.
+ * then surfaces a low-level error — sometimes "unable to open database file",
+ * sometimes a generic "Error copying …/Photos.sqlite to /tmp/…" (a denied read
+ * of the source DB during osxphotos' temp-copy step). Append actionable
+ * guidance so the failure is self-service rather than cryptic.
  */
 function augmentPermissionError(message: string): string {
-  if (/not permitted|permission|full disk|denied|unable to open/i.test(message)) {
+  if (looksLikePermissionError(message)) {
     return `${message}\n\nThis looks like a macOS permission issue: ${FDA_REMEDIATION}`;
   }
   return message;

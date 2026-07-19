@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **`doctor` and per-tool errors now recognize osxphotos' `Error copying …/Photos.sqlite to /tmp/…` as a Full Disk Access denial** (#37). osxphotos copies the live library database to a temp dir before opening it; when the host process lacks FDA, macOS denies the read of the source and osxphotos surfaces a generic copy failure containing none of the usual permission wording. Previously `doctor` classified it as `full_disk_access: warn "did not look permission-related"`, actively steering users away from the real cause. The permission-error heuristic (now shared between `doctor` and `photosManager` in `src/utils/permissionErrors.ts`) matches this message, so `doctor` reports a Full Disk Access failure with remediation and per-tool errors append the FDA guidance.
+
+### Documentation
+- **`docs/FULL-DISK-ACCESS.md`** — documents the `Error copying …/Photos.sqlite` failure form, and adds a "the host app may be a *nested* bundle" gotcha (#37): a Claude Code-spawned MCP server's file access is attributed to the per-version `~/Library/Application Support/Claude/claude-code/<version>/claude.app` bundle (which needs its own FDA grant and silently resets on Claude auto-update — the tell is a new lowercase "claude" row in the FDA list), not to `/Applications/Claude.app`.
+
 ## [2.1.0] - 2026-07-10
 
 **Roadmap close-out: date fixing, imports, the Photos.app selection bridge, ML/social metadata, and GPS-radius search.** The two new write tools ride the existing `APPLE_PHOTOS_MCP_ENABLE_WRITES` gate — the server remains read-only by default, and still nothing can delete a photo.

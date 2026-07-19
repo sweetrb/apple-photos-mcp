@@ -229,6 +229,27 @@ describe("runDoctor", () => {
     );
   });
 
+  it("flags Full Disk Access when osxphotos fails to copy Photos.sqlite (FDA denial in disguise)", async () => {
+    checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
+    const manager = fakeManager(() => {
+      throw new Error(
+        "Error copying/Users/x/Pictures/Photos Library.photoslibrary/database/Photos.sqlite " +
+          "to /tmp/osxphotos_abcd1234/Photos.sqlite"
+      );
+    });
+
+    const report = await runDoctor(manager);
+
+    expect(report.healthy).toBe(false);
+
+    const lib = report.checks.find((c) => c.name === "photos_library");
+    expect(lib?.status).toBe("fail");
+
+    const fda = report.checks.find((c) => c.name === "full_disk_access");
+    expect(fda?.status).toBe("fail");
+    expect(fda?.detail).toMatch(/Full Disk Access/i);
+  });
+
   it("warns (not fails) on full_disk_access when the library error is unrelated to permissions", async () => {
     checkMock.mockResolvedValue({ ok: true, message: "osxphotos 0.76.1 available" });
     const manager = fakeManager(() => {
