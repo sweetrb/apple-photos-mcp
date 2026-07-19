@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Documentation
+- **`docs/FULL-DISK-ACCESS.md`** — adds a "still failing after granting every host app?" section (#37 follow-up): on at least one confirmed setup, TCC attributed the FDA check directly to the `node` binary itself, not to any wrapper app — responsibility never climbed past `node` to see those grants. Documents the definitive diagnostic (`log stream --predicate 'subsystem == "com.apple.TCC"'`, reading the `Resp:` process from the denial) and the fix (grant FDA to the exact `node` path the log names), plus the ad-hoc-vs-Developer-ID-signature note on why the grant may or may not survive a Node upgrade.
+
+## [2.1.1] - 2026-07-19
+
 ### Fixed
 - **`doctor` and per-tool errors now recognize osxphotos' `Error copying …/Photos.sqlite to /tmp/…` as a Full Disk Access denial** (#37). osxphotos copies the live library database to a temp dir before opening it; when the host process lacks FDA, macOS denies the read of the source and osxphotos surfaces a generic copy failure containing none of the usual permission wording. Previously `doctor` classified it as `full_disk_access: warn "did not look permission-related"`, actively steering users away from the real cause. The permission-error heuristic (now shared between `doctor` and `photosManager` in `src/utils/permissionErrors.ts`) matches this message, so `doctor` reports a Full Disk Access failure with remediation and per-tool errors append the FDA guidance.
 
