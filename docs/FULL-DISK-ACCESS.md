@@ -69,10 +69,45 @@ level and tools fail with a permissions-flavored error. Typical messages:
 
 - `operation not permitted`
 - `unable to open database file`
+- `Error copying …/Photos Library.photoslibrary/database/Photos.sqlite to /tmp/osxphotos_…/Photos.sqlite`
 - a generic "Library not found" / permission error from `health-check`
+
+The `Error copying …/Photos.sqlite to /tmp/…` form is the most misleading: osxphotos
+copies the live library database to a temp directory before opening it, and when
+the host process lacks FDA, macOS denies the **read of the source** — surfaced as a
+generic copy failure with no "permission" wording. It is still an FDA denial. (As of
+v2.1.1 `doctor` classifies this message as a Full Disk Access failure and points here
+rather than reporting "did not look permission-related".)
 
 These are macOS denying access, not a bug in the server. The fix is always the
 same: grant FDA to the host app and **fully restart it** (see above).
+
+### Gotcha: the "host app" for a Claude-spawned server may be a *nested* bundle
+
+If you granted Full Disk Access to `/Applications/Claude.app` (or to your
+terminal), fully restarted, even rebooted — and osxphotos-backed tools **still**
+fail with `Error copying …/Photos.sqlite …` while the exact same
+`osxphotos.PhotosDB()` call succeeds when you run the venv Python directly — the
+grant almost certainly landed on the wrong identity.
+
+macOS attributes a locally-spawned MCP subprocess's file access to the
+**responsible process**, which is not always the app icon you clicked:
+
+- **Claude Code (CLI/desktop Code tab)** spawns MCP servers under a **per-version
+  nested helper bundle**, not `/Applications/Claude.app`. Look for it at
+  `~/Library/Application Support/Claude/claude-code/<version>/claude.app`. This
+  bundle needs its **own** FDA grant, and it **silently resets on every Claude
+  auto-update** — the tell is a new, un-checked lowercase **"claude"** row
+  appearing in the Full Disk Access list.
+- **A terminal-launched server** is attributed to the terminal app
+  (Terminal/iTerm/VS Code), not to `node`.
+
+Fix it: open **System Settings → Privacy & Security → Full Disk Access**, look for
+a **"claude"** entry (distinct from "Claude") or add the nested
+`…/claude-code/<version>/claude.app` bundle via **+**, toggle it **on**, then
+restart the MCP server (a fresh session, or quit/relaunch the host). If it worked
+before and broke after an update, re-check this list first — the grant was reset,
+not lost for good.
 
 ## Note: exporting iCloud-only originals also needs Photos automation
 

@@ -21,6 +21,7 @@ import {
   sidecarBusy,
 } from "../utils/python.js";
 import { FDA_REMEDIATION, TROUBLESHOOTING_URL, WRITE_TOOLS_URL } from "../utils/docsUrls.js";
+import { looksLikePermissionError } from "../utils/permissionErrors.js";
 import { writesEnabled, WRITES_ENV } from "../utils/writeGate.js";
 
 /** Where macOS installs Photos.app (the write tools drive it via AppleScript). */
@@ -35,11 +36,6 @@ export interface DoctorCheck {
 export interface DoctorReport {
   healthy: boolean;
   checks: DoctorCheck[];
-}
-
-/** Heuristic: does this error look like a permission / Full Disk Access failure? */
-function looksLikePermissionError(message: string): boolean {
-  return /not permitted|permission|full disk|denied|unable to open/i.test(message);
 }
 
 /**
