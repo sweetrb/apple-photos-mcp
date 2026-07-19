@@ -109,6 +109,41 @@ restart the MCP server (a fresh session, or quit/relaunch the host). If it worke
 before and broke after an update, re-check this list first — the grant was reset,
 not lost for good.
 
+### Still failing after granting every host app? Check whether TCC attributed it to `node` itself
+
+Every fix above assumes responsibility climbs from the subprocess up to *some*
+app — Claude Desktop, the nested Code bundle, or your terminal. On at least one
+confirmed setup it didn't: TCC attributed the check directly to the `node`
+binary, and none of the wrapper-app grants ever touched it, because
+responsibility never climbed past `node` to see them.
+
+Don't guess between the theories above — the macOS unified log is
+authoritative. Reproduce the failure while streaming:
+
+```
+log stream --style compact --predicate 'subsystem == "com.apple.TCC"' --info
+```
+
+Look for a line like:
+
+```
+Handling access request to kTCCServiceSystemPolicyAllFiles,
+from Sub:{/usr/local/bin/node}
+Resp:{TCCDProcess: identifier=node, pid=…, responsible_path=/usr/local/bin/node, binary_path=/usr/local/bin/node},
+ReqResult(Auth Right: Denied …)
+```
+
+If `Resp:` names `node` (not `claude.app`, not your terminal), grant FDA to the
+**node binary itself**: **+** → ⌘⇧G → type the exact path from `responsible_path`
+above (commonly `/usr/local/bin/node`, `/opt/homebrew/bin/node`, or a
+pinned-runtime path) → toggle on → fully quit and relaunch the host app.
+
+A stable, Developer-ID-signed Node build (check `codesign -dv $(which node)` —
+look for a real `TeamIdentifier`, not `flags=0x2(adhoc)`) keeps this grant
+across Node upgrades. An ad-hoc-signed build (common with some Homebrew
+formulae) gets a new code identity on every rebuild, so the grant can need
+re-doing after `brew upgrade`.
+
 ## Note: exporting iCloud-only originals also needs Photos automation
 
 Full Disk Access covers reading and querying the library, and exporting any
