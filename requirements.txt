@@ -1,6 +1,6 @@
 # Exact-pinned (2026-07-20) so the sidecar environment is reproducible and
 # Dependabot's pip ecosystem can propose auditable bumps.
-osxphotos==0.75.9
+osxphotos==0.76.1
 # Direct dependency of the opt-in write tools (also an osxphotos transitive
 # dep). Pinned because photos_reader.py uses its script_loader.run_script for
 # bulk album-id calls — keep the two pins in step when bumping.
