@@ -76,7 +76,7 @@ jobs:
       built_from: ${{ steps.head.outputs.sha }}
     steps:
       - name: Checkout PR head branch
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.head_ref || github.ref_name }}
           persist-credentials: false
@@ -105,7 +105,7 @@ jobs:
 
       - name: Setup Node.js
         if: steps.guard.outputs.skip != 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: "pnpm"
@@ -158,9 +158,12 @@ jobs:
     steps:
       - name: Checkout PR head branch
         if: needs.rebuild.outputs.changed == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.head_ref || github.ref_name }}
+          # Full history: the auto-bump step below compares package.json's
+          # version at the fork point (merge-base with origin/main).
+          fetch-depth: 0
 
       - name: Abort if the branch moved since the rebuild
         if: needs.rebuild.outputs.changed == 'true'
@@ -191,6 +194,52 @@ jobs:
         with:
           name: rebuilt-bundle
           path: build/
+
+      - name: Auto-bump patch version for shipped-byte change
+        # version-guard now treats build/** as shipped bytes, so every
+        # bundle-changing Dependabot PR needs a version bump — without this
+        # auto-bump they would all fail the guard (and an un-bumped merge
+        # would silently never publish). Deliberately NO pnpm and NO install
+        # here: dependency lifecycle code must never run in the write-token
+        # job (token-split invariant) — plain `node -e` edits plus the
+        # repo-owned, dependency-free sync script only. The changes ride the
+        # existing "[dependabot skip]" commit below.
+        if: needs.rebuild.outputs.changed == 'true'
+        run: |
+          git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+          BASE_SHA="$(git merge-base origin/main HEAD)"
+          basev="$(git show "${BASE_SHA}:package.json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')"
+          headv="$(node -p "require('./package.json').version")"
+          if [ "$basev" != "$headv" ]; then
+            echo "Version already bumped on this branch (${basev} -> ${headv}) — skipping auto-bump."
+            exit 0
+          fi
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const p = pkg.version.split(".");
+            p[2] = String(Number(p[2]) + 1);
+            pkg.version = p.join(".");
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            console.log("Auto-bumped version to " + pkg.version);
+          '
+          node scripts/sync-plugin-version.mjs
+          node -e '
+            const fs = require("fs");
+            const v = require("./package.json").version;
+            const date = new Date().toISOString().slice(0, 10);
+            const entry = "## [" + v + "] - " + date + "\n\n### Changed\n\n- Dependency bump via Dependabot; committed bundle rebuilt. (automated)\n";
+            let c = fs.readFileSync("CHANGELOG.md", "utf8");
+            const m = c.match(/^## \[Unreleased\].*$/m);
+            if (m) {
+              const i = c.indexOf(m[0]) + m[0].length;
+              c = c.slice(0, i) + "\n\n" + entry + c.slice(i);
+            } else {
+              c = entry + "\n" + c;
+            }
+            fs.writeFileSync("CHANGELOG.md", c);
+          '
+          git add package.json CHANGELOG.md build .claude-plugin .agents codex .hermes-plugin .antigravity-plugin 2>/dev/null || true
 
       - name: Commit and push the rebuilt bundle
         if: needs.rebuild.outputs.changed == 'true'
