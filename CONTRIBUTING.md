@@ -71,7 +71,7 @@ When adding a new MCP tool:
 2. **Implement the method** in `src/services/photosManager.ts`.
 3. **Add the command** to the Python sidecar `src/utils/photos_reader.py`.
 4. **Add type definitions** in `src/types.ts`.
-5. **Write tests** and **update** `README.md` + `CHANGELOG.md`.
+5. **Write tests** and **update** `README.md` + `CHANGELOG.md`. If the skill guidance changed, edit `skills/apple-photos/SKILL.md` (the canonical copy) and run `pnpm run sync:skills` — the `codex/` and `.antigravity-plugin/` copies are generated from it and CI fails if they drift.
 
 ## Sidecar Guidelines
 
