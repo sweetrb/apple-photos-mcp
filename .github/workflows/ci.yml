@@ -1,3 +1,6 @@
+# RENAME HAZARD: `name: CI` is publish.yml's workflow_run trigger key, and the
+# `test` job's matrix produces required branch-protection contexts
+# `test (22)` / `test (24)`. Renaming either silently severs publishing/merging.
 name: CI
 
 on:
@@ -27,19 +30,19 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: "pnpm"
 
       - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -57,22 +60,69 @@ jobs:
       - name: Check formatting
         run: pnpm run format:check
 
+      - name: Verify plugin manifests match package.json version
+        run: node scripts/sync-plugin-version.mjs --check
+
       - name: Type check
         run: pnpm run typecheck
 
       - name: Run tests with coverage
         run: pnpm run test:coverage
 
+      - name: Upload coverage reports
+        if: matrix.node-version == 22
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+        continue-on-error: true
+
       - name: Build
         run: pnpm run build
 
       - name: Verify committed build/ matches source
         run: |
+          UNTRACKED=$(git status --porcelain --ignored -- build/ | grep -E '^(\?\?|!!)' || true)
+          if [ -n "$UNTRACKED" ]; then
+            echo "::error::Build emitted files into build/ that are not tracked:"; echo "$UNTRACKED"
+            exit 1
+          fi
           if ! git diff --quiet build/; then
             echo "::error::build/ is out of date. Run 'pnpm run build' locally and commit the changes."
             git --no-pager diff --stat build/
             exit 1
           fi
+
+  # The committed bundle is what npm and marketplace users actually run — prove
+  # it boots by itself (no node_modules, no pnpm) on the OLDEST supported Node
+  # (engines.node >= 20), not just that it rebuilds byte-identically.
+  bundle-boots:
+    name: bundle-boots (standalone, Node 20)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+      - name: Boot the committed bundle standalone (no node_modules, Node 20)
+        # The sidecar .py is not copied: the initialize handshake never spawns
+        # it. macOS runners have no `timeout` binary — the perl alarm survives
+        # exec and kills a hung server after 30s.
+        run: |
+          set -euo pipefail
+          DIR=$(mktemp -d)
+          cp package.json "$DIR/"
+          cp -R build "$DIR/build"
+          cd "$DIR"
+          RESP=$(printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-boot","version":"0"}}}' \
+            | perl -e 'alarm 30; exec @ARGV' node build/index.js | head -1)
+          echo "$RESP" | node -e '
+            let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+              const j=JSON.parse(s);
+              if(!j.result||!j.result.serverInfo||!j.result.serverInfo.version){console.error("no serverInfo in initialize response");process.exit(1)}
+              console.log("bundle boots standalone on Node 20: v"+j.result.serverInfo.version);
+            })'
 
   # Integration suite (opt-in, real Photos library). On CI the runner has no
   # signed-in Photos library, so the live tests self-skip; the pure tests still
@@ -83,19 +133,19 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
       - name: Setup Node.js 22
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: "pnpm"
 
       - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 

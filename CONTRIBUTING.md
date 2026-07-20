@@ -12,10 +12,10 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 2. **Install dependencies**
    ```bash
-   pnpm install
+   corepack enable && pnpm install --frozen-lockfile
    ```
 
-   This repo pins pnpm via `packageManager` in `package.json` — `corepack enable` provides it. Development needs Node >= 22.13 (CI tests on Node 22 and 24); the published server itself runs on Node >= 20.
+   This repo pins pnpm via `packageManager` in `package.json` — `corepack enable` provides it. Development needs Node >= 22.13 (CI tests on Node 22 and 24); the published server itself runs on Node >= 20. npm and yarn are blocked by a `preinstall` guard in git checkouts: they resolve dependencies off-lockfile, so the committed bundle would mismatch CI.
 
 3. **Set up the Python sidecar** (creates a project-local venv with `osxphotos`)
    ```bash
@@ -62,9 +62,17 @@ All new features should include tests. We use Vitest.
 1. Create a feature branch (`git checkout -b feature/your-feature-name`).
 2. Make your changes — follow the existing style, add JSDoc, add tests.
 3. Run all checks: `pnpm run lint && pnpm run typecheck && pnpm run format:check && pnpm test && pnpm run build`.
-4. If you changed shipped code (`src/**` excluding tests, the runtime `dependencies` in `package.json`, or `requirements.txt`), bump the version at least a patch (`pnpm version patch --no-git-tag-version`) and add a CHANGELOG.md entry in the same PR — the `require-version-bump` CI check fails the PR otherwise (docs-only and test-only PRs are exempt). Rebuild and commit the bundled `build/index.js` (`pnpm run build`); CI verifies it matches the source.
+4. Satisfy everything in "What CI requires of your PR" below.
 5. Commit with clear messages referencing any related issues.
 6. Push and open a PR describing what it does and linking related issues.
+
+## What CI requires of your PR
+
+- **A version bump + CHANGELOG entry for shipped code.** If your PR changes shipped bytes — `src/**` (excluding tests), the runtime `dependencies` in `package.json`, `requirements.txt`, or the committed `build/` bundle — bump the version at least a patch (`pnpm version patch --no-git-tag-version`) and add a CHANGELOG.md entry in the same PR. The `require-version-bump` check fails the PR otherwise (docs-only and test-only PRs are exempt), and also rejects a bump to a version that is already published on npm.
+- **A rebuilt, committed `build/index.js`.** Run `pnpm run build` and commit the bundle alongside your source changes — CI rebuilds and fails on any byte difference, and separately boots the committed bundle standalone on Node 20.
+- **Prettier-clean formatting** (`pnpm run format:check`) and a clean ESLint run (`pnpm run lint`).
+- **Green tests with coverage above the enforced thresholds** (`pnpm run test:coverage`), plus the integration suite (`pnpm run test:integration`).
+- **Plugin manifests in sync** — `node scripts/sync-plugin-version.mjs --check` must pass (`pnpm version` keeps them synced automatically).
 
 ## Adding New Tools
 

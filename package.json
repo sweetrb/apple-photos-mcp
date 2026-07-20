@@ -1,6 +1,6 @@
 {
   "name": "apple-photos-mcp",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "packageManager": "pnpm@11.9.0",
   "description": "MCP server for Apple Photos - query, search, export, and inspect the macOS Photos library via Claude and other AI assistants, plus opt-in album/metadata write tools (read-only by default)",
   "type": "module",
@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "setup": "bash scripts/setup.sh",
-    "build": "tsc --noEmit && esbuild src/index.ts --bundle --platform=node --format=esm --outfile=build/index.js --banner:js=\"import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);\"",
+    "build": "tsc --noEmit && esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=build/index.js --banner:js=\"import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);\"",
     "start": "node build/index.js",
     "dev": "tsc --watch",
     "lint": "eslint src",
@@ -35,6 +35,7 @@
     "test:all": "vitest run && vitest run --config vitest.integration.config.ts",
     "version": "node scripts/sync-plugin-version.mjs && git add .claude-plugin .agents/plugins codex .hermes-plugin .antigravity-plugin",
     "prepublishOnly": "pnpm run lint && pnpm test && pnpm run build",
+    "preinstall": "node -e \"const fs=require('fs');const ua=process.env.npm_config_user_agent||'';if(fs.existsSync('.git')&&!ua.startsWith('pnpm')){console.error('\\nThis repo uses pnpm. npm/yarn resolve dependencies off-lockfile and the committed bundle will mismatch CI.\\n\\n  corepack enable && pnpm install --frozen-lockfile\\n');process.exit(1)}\"",
     "prepare": "husky; pnpm run build"
   },
   "volta": {

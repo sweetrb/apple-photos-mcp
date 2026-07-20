@@ -1,0 +1,8 @@
+pnpm exec lint-staged
+# Rebuild the committed bundle when shipped inputs are staged, so a stale
+# build/ can never be committed alongside source (CI's verify step would
+# fail the PR otherwise).
+if git diff --cached --name-only | grep -qE '^(src/|package\.json$|pnpm-lock\.yaml$)'; then
+  pnpm run build
+  git add build
+fi

@@ -1,6 +1,6 @@
 {
   "name": "apple-photos",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Query and export from the macOS Apple Photos library via osxphotos - search by date/album/keyword/person, list albums and folders, fetch metadata, export originals or edited photos, and (opt-in via APPLE_PHOTOS_MCP_ENABLE_WRITES=1) organize albums and set titles/keywords/favorites (macOS only)",
   "author": {
     "name": "Rob Sweet",
