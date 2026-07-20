@@ -12,23 +12,25 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 2. **Install dependencies**
    ```bash
-   npm install
+   pnpm install
    ```
+
+   This repo pins pnpm via `packageManager` in `package.json` — `corepack enable` provides it. Development needs Node >= 22.13 (CI tests on Node 22 and 24); the published server itself runs on Node >= 20.
 
 3. **Set up the Python sidecar** (creates a project-local venv with `osxphotos`)
    ```bash
-   npm run setup        # requires Python 3.11+ (macOS ships 3.9 — install a newer one)
+   pnpm run setup       # requires Python 3.11+ (macOS ships 3.9 — install a newer one)
    ```
 
 4. **Build the project**
    ```bash
-   npm run build
+   pnpm run build
    ```
 
 5. **Run tests**
    ```bash
-   npm test                 # unit tests (fast; mock the sidecar, no Photos library needed)
-   npm run test:integration # live tests; self-skip when no Photos library is available
+   pnpm test                 # unit tests (fast; mock the sidecar, no Photos library needed)
+   pnpm run test:integration # live tests; self-skip when no Photos library is available
    ```
 
    Reading the Photos library requires the host process to have **Full Disk Access** (System Settings → Privacy & Security → Full Disk Access).
@@ -38,10 +40,10 @@ Thank you for your interest in contributing! This document provides guidelines f
 This project uses ESLint and Prettier for code quality and formatting.
 
 ```bash
-npm run lint        # check
-npm run lint:fix    # auto-fix
-npm run format      # format
-npm run format:check
+pnpm run lint        # check
+pnpm run lint:fix    # auto-fix
+pnpm run format      # format
+pnpm run format:check
 ```
 
 ## Testing
@@ -53,15 +55,16 @@ All new features should include tests. We use Vitest.
 - Unit tests mock the Python bridge (`execFileSync`), since `osxphotos` and the Photos library are only available on macOS.
 - The integration suite exercises the real `osxphotos` sidecar and self-skips on machines without a readable Photos library (e.g. CI).
 - Test both success and failure paths, including the permission-denied / Full Disk Access path.
-- Enforced coverage thresholds run in CI (`npm run test:coverage`); keep new code above the floor.
+- Enforced coverage thresholds run in CI (`pnpm run test:coverage`); keep new code above the floor.
 
 ## Pull Request Process
 
 1. Create a feature branch (`git checkout -b feature/your-feature-name`).
 2. Make your changes — follow the existing style, add JSDoc, add tests.
-3. Run all checks: `npm run lint && npm run typecheck && npm test && npm run build`.
-4. Commit with clear messages referencing any related issues.
-5. Push and open a PR describing what it does and linking related issues.
+3. Run all checks: `pnpm run lint && pnpm run typecheck && pnpm run format:check && pnpm test && pnpm run build`.
+4. If you changed shipped code (`src/**` excluding tests, the runtime `dependencies` in `package.json`, or `requirements.txt`), bump the version at least a patch (`pnpm version patch --no-git-tag-version`) and add a CHANGELOG.md entry in the same PR — the `require-version-bump` CI check fails the PR otherwise (docs-only and test-only PRs are exempt). Rebuild and commit the bundled `build/index.js` (`pnpm run build`); CI verifies it matches the source.
+5. Commit with clear messages referencing any related issues.
+6. Push and open a PR describing what it does and linking related issues.
 
 ## Adding New Tools
 
