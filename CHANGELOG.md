@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-07-20
+
+### Changed
+- Bump the Python sidecar's `osxphotos` pin from 0.75.9 to 0.76.1. This is a runtime dependency — the sidecar is what reads the Photos library — so the pin ships. Verified before release against a real 31,463-item library rather than the mocked unit tests: `health` reports osxphotos 0.76.1 and the correct photo count; `library-info` returns 30,892 photos / 571 movies / 47 albums / 44 keywords / 217 persons; and `query`, `list-albums`, `list-keywords` and `list-persons` all return correct records. `photoscript` stays pinned at 0.5.3 — the two are kept in step deliberately, since `photos_reader.py` uses its `script_loader.run_script` for bulk album-id calls.
+
 ## [2.1.2] - 2026-07-20
 
 ### Changed
