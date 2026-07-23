@@ -229,8 +229,12 @@ describe("persistent sidecar (real server over stdio, synthetic serve sidecar)",
       expect(structured?.exportedCount).toBe(3);
       expect(structured?.skippedCount).toBe(0);
 
-      // One notification per photo plus the final done=total line.
-      expect(progress.length).toBe(4);
+      // One notification per photo plus the final done=total line. callTool
+      // resolves on the result message, but the final progress notification is a
+      // separate async message that can still be in flight then — asserting the
+      // count synchronously here raced it (seen: `expected 3 to be 4`). Wait for
+      // all four to land first.
+      await expect.poll(() => progress.length, { timeout: 10_000 }).toBe(4);
       expect(progress[0]).toMatchObject({ progress: 0, total: 3 });
       expect(progress[0].message).toContain("IMG_0000.jpg");
       expect(progress[0].message).toContain("(1/3)");
