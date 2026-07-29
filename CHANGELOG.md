@@ -7,6 +7,7 @@
 
 ### Fixed
 - **`pnpm version` no longer breaks with the `.hermes-plugin/` removal.** The `version` lifecycle script listed `.hermes-plugin` in its `git add`; `git add` exits 128 on a pathspec that matches nothing, which would have broken the documented release step (`pnpm version <patch|minor|major> --no-git-tag-version`) for every subsequent release. The stale path is dropped from the `git add` list.
+- **Flaky `persistent-sidecar` integration test.** The export-progress assertion waits for the final `done=total` notification, which arrives as a separate async message after `callTool` already resolved. Its 10s poll budget still lost the race on a loaded CI runner (`expected 3 to be 4`, seen blocking #52), so unrelated PRs could fail `integration` for no reason. Raised to 30s — this is an "has it arrived yet" wait rather than a latency assertion, and the enclosing test's own 60s budget is still the real bound, so the assertion is not weakened.
 
 ## [2.1.4] - 2026-07-22
 

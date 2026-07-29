@@ -234,7 +234,13 @@ describe("persistent sidecar (real server over stdio, synthetic serve sidecar)",
       // separate async message that can still be in flight then — asserting the
       // count synchronously here raced it (seen: `expected 3 to be 4`). Wait for
       // all four to land first.
-      await expect.poll(() => progress.length, { timeout: 10_000 }).toBe(4);
+      //
+      // The poll ceiling is deliberately generous: a 10s budget still flaked on
+      // a loaded CI runner with the same `expected 3 to be 4` (blocking #52).
+      // This is a "has it arrived yet" wait, not a latency assertion — nothing
+      // is measured here, and the enclosing test's own 60s budget remains the
+      // real bound, so a longer ceiling only costs time on genuine failure.
+      await expect.poll(() => progress.length, { timeout: 30_000 }).toBe(4);
       expect(progress[0]).toMatchObject({ progress: 0, total: 3 });
       expect(progress[0].message).toContain("IMG_0000.jpg");
       expect(progress[0].message).toContain("(1/3)");
