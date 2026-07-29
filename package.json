@@ -33,7 +33,7 @@
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:all": "vitest run && vitest run --config vitest.integration.config.ts",
-    "version": "node scripts/sync-plugin-version.mjs && git add .claude-plugin .agents/plugins codex .hermes-plugin .antigravity-plugin",
+    "version": "node scripts/sync-plugin-version.mjs && git add .claude-plugin .agents/plugins codex .antigravity-plugin",
     "prepublishOnly": "pnpm run lint && pnpm test && pnpm run build",
     "preinstall": "node -e \"const fs=require('fs');const ua=process.env.npm_config_user_agent||'';if(fs.existsSync('.git')&&!ua.startsWith('pnpm')){console.error('\\nThis repo uses pnpm. npm/yarn resolve dependencies off-lockfile and the committed bundle will mismatch CI.\\n\\n  corepack enable && pnpm install --frozen-lockfile\\n');process.exit(1)}\"",
     "prepare": "husky; pnpm run build"
