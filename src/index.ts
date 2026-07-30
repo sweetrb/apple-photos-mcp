@@ -773,6 +773,21 @@ server.registerTool(
     // the terminal `done === total` notification is the one most exposed
     // because it is emitted last. Clients that surface a completion state from
     // it would intermittently never see it.
+    //
+    // The flush narrows that window but CANNOT close it: ordering our writes
+    // does not stop the client tearing its handler down first. Measured on a
+    // loaded runner — server sent 4 notifications, client delivered 1 and
+    // rejected 3 with that error. So the terminal notification is BEST EFFORT
+    // by nature, and the integration test deliberately does not assert it.
+    //
+    // Deliberate decision (2026-07-29): keep emitting it anyway. Do not "clean
+    // up" this seemingly-unreliable send.
+    //   - Nothing depends on it: the tool result carries exportedCount /
+    //     skippedCount, which is the authoritative completion signal.
+    //   - It usually does arrive on a real machine, and a final 100% frame is
+    //     genuinely useful to a progress UI.
+    //   - Dropping it would bake a workaround for a client-side lifecycle bug
+    //     into this server's public behaviour, to be undone if the SDK changes.
     const progressToken = extra?._meta?.progressToken;
     const inFlight: Promise<void>[] = [];
     const onProgress =

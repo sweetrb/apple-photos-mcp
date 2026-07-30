@@ -81,6 +81,18 @@ avoid follow-up calls for cost reasons — a `query` → `get-photo` → `export
 chain costs the parse once, not three times. Batch `export`s report per-photo
 MCP progress notifications when the request carries a `progressToken`.
 
+**Don't rely on the final `done === total` progress notification.** Treat the
+per-photo notifications as the progress signal and the **tool result** (its
+`exportedCount` / `skippedCount`) as the completion signal. An MCP client
+deletes a request's progress handler the moment the response arrives and
+discards any notification for that token afterwards — so a notification emitted
+immediately before the result, which the terminal one is by definition, is
+intermittently thrown away. The server flushes its sends before returning to
+narrow that window but cannot close it; measured on a loaded machine, the server
+sent four notifications and the client delivered one. The terminal notification
+is therefore **best effort**. It is still emitted (useful when it lands, and
+nothing depends on it), and the integration test deliberately does not assert it.
+
 ## The core workflow: query, then act
 
 The reliable pattern is **two steps**: use `query` to find photos and get their
