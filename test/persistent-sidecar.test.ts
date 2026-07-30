@@ -229,18 +229,19 @@ describe("persistent sidecar (real server over stdio, synthetic serve sidecar)",
       expect(structured?.exportedCount).toBe(3);
       expect(structured?.skippedCount).toBe(0);
 
-      // One notification per photo plus the final done=total line. callTool
-      // resolves on the result message, but the final progress notification is a
-      // separate async message that can still be in flight then — asserting the
-      // count synchronously here raced it (seen: `expected 3 to be 4`). Wait for
-      // all four to land first.
+      // One notification per photo plus the final done=total line.
       //
-      // The poll ceiling is deliberately generous: a 10s budget still flaked on
-      // a loaded CI runner with the same `expected 3 to be 4` (blocking #52).
-      // This is a "has it arrived yet" wait, not a latency assertion — nothing
-      // is measured here, and the enclosing test's own 60s budget remains the
-      // real bound, so a longer ceiling only costs time on genuine failure.
-      await expect.poll(() => progress.length, { timeout: 30_000 }).toBe(4);
+      // This is asserted synchronously ON PURPOSE. The `expected 3 to be 4`
+      // flake this test used to show was never a slow message: an MCP client
+      // deletes the request's progress handler the moment the response arrives,
+      // so a notification emitted after it is discarded outright. Waiting
+      // longer could not help — a 30s poll failed exactly like the 10s one.
+      // The export tool now awaits its notification sends before returning
+      // (src/index.ts), so all four are on the wire ahead of the result and are
+      // dispatched by the time callTool resolves. If this ever reads 3 again,
+      // that ordering guarantee has regressed — do NOT reintroduce a poll to
+      // hide it.
+      expect(progress).toHaveLength(4);
       expect(progress[0]).toMatchObject({ progress: 0, total: 3 });
       expect(progress[0].message).toContain("IMG_0000.jpg");
       expect(progress[0].message).toContain("(1/3)");

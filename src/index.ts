@@ -762,24 +762,38 @@ server.registerTool(
     // Forward the sidecar's per-photo progress as MCP progress notifications —
     // but only when the client asked for them by sending a progressToken.
     // Notification failures must never fail the export itself.
+    //
+    // Every send is tracked so it can be flushed BEFORE the tool result. This
+    // ordering is load-bearing, not tidiness: an MCP client deletes the
+    // request's progress handler as soon as the response arrives
+    // (Protocol._onresponse), and a progress notification that arrives after
+    // that is DISCARDED — _onprogress finds no handler and raises "progress
+    // notification for an unknown token". So a fire-and-forget send that loses
+    // the race to the response is lost outright, not merely delivered late, and
+    // the terminal `done === total` notification is the one most exposed
+    // because it is emitted last. Clients that surface a completion state from
+    // it would intermittently never see it.
     const progressToken = extra?._meta?.progressToken;
+    const inFlight: Promise<void>[] = [];
     const onProgress =
       progressToken === undefined
         ? undefined
         : (p: SidecarProgress): void => {
-            void extra
-              .sendNotification({
-                method: "notifications/progress",
-                params: {
-                  progressToken,
-                  progress: p.done,
-                  total: p.total,
-                  message: p.current
-                    ? `Exporting ${p.current} (${p.done + 1}/${p.total})`
-                    : `Exported ${p.done}/${p.total}`,
-                },
-              })
-              .catch(() => {});
+            inFlight.push(
+              extra
+                .sendNotification({
+                  method: "notifications/progress",
+                  params: {
+                    progressToken,
+                    progress: p.done,
+                    total: p.total,
+                    message: p.current
+                      ? `Exporting ${p.current} (${p.done + 1}/${p.total})`
+                      : `Exported ${p.done}/${p.total}`,
+                  },
+                })
+                .catch(() => {})
+            );
           };
     const result = await manager.exportPhotos(uuid, dest, {
       edited,
@@ -789,6 +803,12 @@ server.registerTool(
       library,
       onProgress,
     });
+    // Flush the progress notifications ahead of the result (see above). Each
+    // promise already swallows its own failure, so this can neither throw nor
+    // fail the export; it only orders the writes.
+    if (inFlight.length) {
+      await Promise.all(inFlight);
+    }
     const lines = [
       `Destination: ${result.destination}`,
       `Exported:    ${result.exportedCount} file(s)`,
