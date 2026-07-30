@@ -23516,17 +23516,20 @@ server.registerTool(
   },
   withErrorHandling(async ({ library, uuid: uuid2, dest, edited, live, raw, overwrite }, extra) => {
     const progressToken = extra?._meta?.progressToken;
+    const inFlight = [];
     const onProgress = progressToken === void 0 ? void 0 : (p) => {
-      void extra.sendNotification({
-        method: "notifications/progress",
-        params: {
-          progressToken,
-          progress: p.done,
-          total: p.total,
-          message: p.current ? `Exporting ${p.current} (${p.done + 1}/${p.total})` : `Exported ${p.done}/${p.total}`
-        }
-      }).catch(() => {
-      });
+      inFlight.push(
+        extra.sendNotification({
+          method: "notifications/progress",
+          params: {
+            progressToken,
+            progress: p.done,
+            total: p.total,
+            message: p.current ? `Exporting ${p.current} (${p.done + 1}/${p.total})` : `Exported ${p.done}/${p.total}`
+          }
+        }).catch(() => {
+        })
+      );
     };
     const result = await manager.exportPhotos(uuid2, dest, {
       edited,
@@ -23536,6 +23539,9 @@ server.registerTool(
       library,
       onProgress
     });
+    if (inFlight.length) {
+      await Promise.all(inFlight);
+    }
     const lines = [
       `Destination: ${result.destination}`,
       `Exported:    ${result.exportedCount} file(s)`,
