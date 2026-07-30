@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`version-guard` no longer demands a version bump for byte-neutral `src/` changes.** The shipped-bytes detector treated every non-test file under `src/` as shipped, but TypeScript there reaches users only after esbuild inlines it into `build/index.js` — so a comment-, formatting- or type-only edit that leaves the committed bundle byte-identical was hard-blocked, leaving only two bad options: publish a release of literally nothing, or do not write the comment. `src/**/*.ts` is now a first-cause detector that implies a bump only when `build/**` changed too. The exemption is sound rather than merely convenient: ci.yml's "Verify committed build/ matches source" step rebuilds and requires `git diff --quiet build/`, and it runs in the `test` job whose `test (22)`/`test (24)` contexts are required by branch protection — so at merge time an unchanged `build/` provably matches `src/`. Everything else under `src/` (the verbatim-shipped `*_reader.py` sidecars), `requirements.txt` and `build/**` stay unconditional detectors, and the rule is written fail-safe: only `.ts` counts as bundle-only, so any new file type under `src/` still requires a bump.
+
 ## [2.1.5] - 2026-07-29
 
 ### Fixed
