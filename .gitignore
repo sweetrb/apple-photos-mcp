@@ -16,6 +16,12 @@ build/*
 coverage/
 
 # Python venv (+ the transient cross-process bootstrap lock)
+# Match BOTH the real directory and a symlink named `venv`. The trailing-slash
+# form matches directories only, so an isolated worktree that symlinks venv/ for
+# dep reuse left the symlink UNIGNORED — a `git add -A` then committed it, and CI
+# checked it out as a broken symlink that defeated setup.sh's `[ -d ]` guard
+# (python -m venv then failed with [Errno 17] File exists).
+venv
 venv/
 venv.setup.lock/
 __pycache__/
