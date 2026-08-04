@@ -52,7 +52,11 @@ so writes always target that library (normally the system one) — the read
 tools' `library` parameter does not apply; (3) Photos' AppleScript dictionary
 has **no remove-from-album verb**, so `remove-from-album` rebuilds the album
 (same name, remaining photos): the album's **UUID changes** and custom manual
-sort order is lost; (4) Photos is launched if it isn't running, so the first
+sort order is lost — the replacement is built under a scratch name
+`apple-photos-mcp-tmp-<hex>` and renamed last, so a rebuild killed part-way
+(e.g. its fixed 10-minute budget expiring on a very large album) leaves the
+original album and every photo safe but can strand an `apple-photos-mcp-tmp-…`
+album, one per interrupted attempt; (4) Photos is launched if it isn't running, so the first
 write can be slow; (5) `set-photo-date` rewrites the **Photos library date
 only** — the same thing Photos.app's *Adjust Date & Time* does — the file's
 EXIF is never modified, so an exported original still carries its old EXIF
@@ -62,8 +66,10 @@ duplicate makes Photos.app show a **blocking dialog** a human must answer.
 **What to do:** Run `doctor` first — its `writes` check reports the gate state
 and backend readiness. Grant the Automation prompt once from a GUI session.
 After a `remove-from-album`, use the returned `album.uuid` (or the album name)
-for follow-up calls. Preview date fixes with `set-photo-date`'s default dry
-run before applying.
+for follow-up calls; if one was interrupted, delete any leftover
+`apple-photos-mcp-tmp-…` album in Photos.app (or, if the original vanished,
+rename the scratch album back). Preview date fixes with `set-photo-date`'s
+default dry run before applying.
 
 ## `get-selected-photos` needs a live GUI selection
 
@@ -106,7 +112,7 @@ its dedicated Full Disk Access check reports ok / warn / fail with remediation
 **Why:** Opening a Photos library means starting Python, importing osxphotos,
 and parsing the entire library database — about 4 seconds on a ~30k-photo
 library, and it scales with library size (a 100k+ photo library can take much
-longer, potentially past the default 60 s timeout — raise
+longer, potentially past the default 60 s budget — raise
 `APPLE_PHOTOS_MCP_TIMEOUT` if so). Since 1.4.0 the sidecar is a **persistent
 process**, so this cost is paid **once**: the parsed library stays resident
 and follow-up calls complete in milliseconds. The cold cost recurs only when
@@ -118,7 +124,11 @@ are never stale).
 
 **What to do:** Nothing, usually — chain as many calls as you like; only the
 first pays the parse. If even the cold call times out on a very large library,
-raise `APPLE_PHOTOS_MCP_TIMEOUT` (ms). To keep the sidecar resident longer (or
+raise `APPLE_PHOTOS_MCP_TIMEOUT` (ms) — but note it sets only the **default**
+budget: `export` (30 min), `import-photos` and `remove-from-album` (10 min),
+the other write tools and `find-duplicates` (5 min) and `get-selected-photos`
+(2 min) carry their own fixed budgets that the variable cannot change, and a
+timeout on one of those says so rather than pointing at the variable. To keep the sidecar resident longer (or
 forever), raise `APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS` or set it to `0` — at the
 price of a few hundred MB of resident memory for large libraries. `doctor`'s
 `sidecar_mode` check shows whether the persistent sidecar is active and when

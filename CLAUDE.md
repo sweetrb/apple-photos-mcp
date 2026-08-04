@@ -205,12 +205,15 @@ Rules that keep writes safe and predictable:
 - **`person` depends on named faces.** Only people you've named in Photos are
   filterable; unnamed faces show as `_UNKNOWN_`. Use `list-persons` to see
   available names first.
-- **Export is the only write — and it never touches the library.** `export`
+- **Export is the only tool that writes files outside the library — and it
+  never modifies the library.** `export`
   writes file copies to the `dest` directory (created if missing). `dest` must
   resolve — after `~` expansion and symlink resolution — to a path under the
   home directory, `/tmp`, `/private/tmp`, or `/Volumes`; anything else is
   rejected with an error naming those roots. It never
-  modifies the Photos library. By default it exports the original; use
+  modifies the Photos library (the opt-in write tools modify the library, not a
+  destination directory — see "Write workflow" above). By default it exports
+  the original; use
   `edited: true`, `live: true` (live-photo video), `raw: true`, and
   `overwrite: true` as needed. Without `overwrite`, a photo whose file already
   exists at `dest` is skipped with a per-UUID reason (never duplicated), and
@@ -228,8 +231,13 @@ Rules that keep writes safe and predictable:
   and a concurrent `health-check` returns a quick liveness summary — while
   `doctor` still reports the interpreter/osxphotos checks and marks the
   library probe as skipped — instead of hanging until the operation finishes.
-- **Non-default libraries.** Every tool accepts an optional `library` path to
-  target a `.photoslibrary` other than the system one.
+- **Non-default libraries.** The read tools — `library-info`, `query`,
+  `get-photo`, `get-photos`, `get-thumbnail`, `find-duplicates`, `list-albums`,
+  `list-folders`, `list-keywords`, `list-persons`, `export` — accept an optional
+  `library` path to target a `.photoslibrary` other than the system one. The
+  write tools, `get-selected-photos`, `health-check` and `doctor` do **not**:
+  writes and the selection bridge always target the library currently open in
+  Photos.app.
 
 ## Tools at a glance
 
@@ -272,6 +280,7 @@ Rules that keep writes safe and predictable:
 | "Album not found: '…'" | Wrong album name/UUID, or the album lives in a different library than the one open in Photos.app | `list-albums` for exact names; `create-album` to create it |
 | Write fails with AppleScript error `-1743` / "not authorized" | macOS Automation permission for Photos not granted (or denied) to the host app | Re-enable under System Settings → Privacy & Security → Automation → (host app) → Photos; first write from a GUI session triggers the one-time prompt |
 | "Operation timed out after 60000ms" | Very large library — the first (cold) call after startup, an idle period, or a library change parses the whole Photos DB | Set `APPLE_PHOTOS_MCP_TIMEOUT` (ms) higher; warm calls are then fast |
+| "…timed out … This tool's timeout is fixed at *N*ms" | A tool that carries its OWN budget hit it: `get-selected-photos` 2 min, `find-duplicates` 5 min, the write tools 5 min (`remove-from-album` and `import-photos` 10 min), `export` 30 min | `APPLE_PHOTOS_MCP_TIMEOUT` does **not** apply to these — shrink the request (fewer UUIDs, smaller batch, lower `limit`) and retry |
 | "Export destination ... is outside the allowed export roots" | `dest` resolves outside home, `/tmp`, `/private/tmp`, and `/Volumes` (symlinks are followed) | Pick a destination under one of those roots |
 | Database-lock error | Photos.app is mid-write | Close Photos.app and retry (queries only — iCloud export needs Photos) |
 

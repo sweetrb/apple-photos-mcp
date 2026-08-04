@@ -21826,7 +21826,7 @@ function findSystemPython() {
     }
   }
   throw new Error(
-    `Python 3 not found on PATH. Install Python 3.11+ (stock macOS ships 3.9 \u2014 brew install python@3.12), then retry. See ${REQUIREMENTS_URL}.`
+    `Python 3 not found on PATH. Install Python 3.11+ (stock macOS ships 3.9 \u2014 brew install python@3.12), then retry. Run the doctor tool to diagnose, or see ${REQUIREMENTS_URL}.`
   );
 }
 function resolvePython() {
@@ -21965,10 +21965,11 @@ function mapStructuredError(structured) {
   }
   return structured;
 }
-function timeoutError(timeoutMs) {
-  return `Operation timed out after ${timeoutMs}ms. Library may be very large. Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`;
+function timeoutError(timeoutMs, envConfigurable) {
+  const remedy = envConfigurable ? `Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.` : `This tool's timeout is fixed at ${timeoutMs}ms; ${ENV_PREFIX}_TIMEOUT does not apply to it.`;
+  return `Operation timed out after ${timeoutMs}ms. Library may be very large. ${remedy}`;
 }
-async function execReader(command, args, timeoutMs) {
+async function execReader(command, args, timeoutMs, envConfigurable = true) {
   const python = resolvePython();
   const scriptPath = getScriptPath();
   const fullArgs = [scriptPath, command, ...args];
@@ -22004,7 +22005,7 @@ async function execReader(command, args, timeoutMs) {
     }
     const bufferExceeded = /maxBuffer.*exceeded/i.test(error2.message ?? "");
     if (error2.killed === true && !bufferExceeded || error2.message?.includes("ETIMEDOUT") || error2.message?.includes("timed out")) {
-      return { error: timeoutError(timeoutMs) };
+      return { error: timeoutError(timeoutMs, envConfigurable) };
     }
     if (stderr) {
       return { error: stderr };
@@ -22070,7 +22071,7 @@ function getSidecarInfo() {
   }
   return { mode: "persistent", ...base };
 }
-async function executeSidecar(command, args, timeoutMs, onProgress) {
+async function executeSidecar(command, args, timeoutMs, envConfigurable, onProgress) {
   if (persistentModeEnabled() && serveDisabledReason === null) {
     const outcome = await persistentClient.request(command, args, timeoutMs, onProgress);
     switch (outcome.kind) {
@@ -22089,7 +22090,7 @@ async function executeSidecar(command, args, timeoutMs, onProgress) {
       case "error":
         return { error: mapStructuredError(outcome.error) };
       case "timeout":
-        return { error: timeoutError(timeoutMs) };
+        return { error: timeoutError(timeoutMs, envConfigurable) };
       case "fallback": {
         if (!looksLikeMissingDep(outcome.reason)) {
           serveDisabledReason = outcome.reason;
@@ -22104,17 +22105,18 @@ async function executeSidecar(command, args, timeoutMs, onProgress) {
       }
     }
   }
-  return execReader(command, args, timeoutMs);
+  return execReader(command, args, timeoutMs, envConfigurable);
 }
 async function runPhotosReader(command, args, timeoutMs, onProgress) {
   return sidecarGate(async () => {
     await ensureReady();
+    const envConfigurable = timeoutMs === void 0;
     const timeout = timeoutMs ?? getDefaultTimeout();
-    const result = await executeSidecar(command, args, timeout, onProgress);
+    const result = await executeSidecar(command, args, timeout, envConfigurable, onProgress);
     if (result.error && looksLikeMissingDep(result.error) && !bootstrapAttempted && !autoSetupDisabled()) {
       if (await attemptBootstrap()) {
         persistentClient.kill("venv bootstrapped");
-        return executeSidecar(command, args, timeout, onProgress);
+        return executeSidecar(command, args, timeout, envConfigurable, onProgress);
       }
     }
     return result;
@@ -23494,7 +23496,7 @@ ${lines.join("\n")}`, { count, persons });
 server.registerTool(
   "export",
   {
-    description: "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image. Large batches report per-photo MCP progress notifications when the request carries a progressToken.\nReturns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\nDo not use when: you only need metadata or file paths rather than copies on disk \u2014 use get-photo; or you're still figuring out which photos to export \u2014 use query first.\nSafety: this is the only side-effecting tool \u2014 it writes files into the destination directory (created if missing). dest must resolve (after expanding ~ and following symlinks) to a path under your home directory, /tmp, /private/tmp, or /Volumes; anything else is rejected. With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand \u2014 this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
+    description: "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image. Large batches report per-photo MCP progress notifications when the request carries a progressToken.\nReturns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\nDo not use when: you only need metadata or file paths rather than copies on disk \u2014 use get-photo; or you're still figuring out which photos to export \u2014 use query first.\nSafety: the only side-effecting tool on the read path \u2014 it writes files into the destination directory (created if missing); the opt-in write tools (APPLE_PHOTOS_MCP_ENABLE_WRITES=1) can also modify the library, but nothing else here writes anywhere. dest must resolve (after expanding ~ and following symlinks) to a path under your home directory, /tmp, /private/tmp, or /Volumes; anything else is rejected. With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand \u2014 this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
     inputSchema: {
       ...libraryArg,
       uuid: external_exports.array(external_exports.string().max(256)).min(1).max(1e3).describe("Photo UUID(s) to export"),
@@ -23620,7 +23622,7 @@ server.registerTool(
 server.registerTool(
   "remove-from-album",
   {
-    description: "Use when: you want to take photos OUT of an album \u2014 undoing a mis-filing, or clearing reviewed items from a quarantine album. This removes ALBUM MEMBERSHIP only.\nReturns: the album AFTER the operation ({uuid, name, path} \u2014 note the uuid CHANGES when anything was removed), removedCount, removed, notInAlbum (requested UUIDs that weren't members \u2014 no-ops), albumRecreated, and previousAlbumUuid.\nDo not use when: you want to delete photos from the library \u2014 this server cannot delete photos at all (quarantine them in an album and review in Photos.app instead); or the photos aren't in the album (harmless, but pointless).\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). NEVER deletes photos from the library \u2014 removed photos stay in All Photos and every other album. Photos' AppleScript has no remove-from-album verb, so the album is REBUILT (same name and remaining photos): its UUID changes and any custom manual sort order is lost; re-fetch the album UUID from the response. When none of the UUIDs are members, nothing is rebuilt. Max 100 UUIDs per call. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
+    description: "Use when: you want to take photos OUT of an album \u2014 undoing a mis-filing, or clearing reviewed items from a quarantine album. This removes ALBUM MEMBERSHIP only.\nReturns: the album AFTER the operation ({uuid, name, path} \u2014 note the uuid CHANGES when anything was removed), removedCount, removed, notInAlbum (requested UUIDs that weren't members \u2014 no-ops), albumRecreated, and previousAlbumUuid.\nDo not use when: you want to delete photos from the library \u2014 this server cannot delete photos at all (quarantine them in an album and review in Photos.app instead); or the photos aren't in the album (harmless, but pointless).\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). NEVER deletes photos from the library \u2014 removed photos stay in All Photos and every other album. Photos' AppleScript has no remove-from-album verb, so the album is REBUILT (same name and remaining photos): its UUID changes and any custom manual sort order is lost; re-fetch the album UUID from the response. When none of the UUIDs are members, nothing is rebuilt. The replacement is built under a scratch name `apple-photos-mcp-tmp-<hex>` and renamed last, so a call killed mid-rebuild (e.g. the 10-minute budget expiring while copying a very large album) leaves the original album and every photo intact but can strand an `apple-photos-mcp-tmp-\u2026` album to delete in Photos.app; each interrupted run strands a distinct one. Max 100 UUIDs per call. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
     inputSchema: {
       album: external_exports.string().min(1).max(1024).describe("Album name or UUID (UUID-looking values try the id lookup first)"),
       uuid: external_exports.array(uuidSchema).min(1).max(100).describe("Photo UUID(s) to remove from the album (1\u2013100)")

@@ -10,7 +10,8 @@ ends, explained below.
 | Path | Backend | Why |
 |------|---------|-----|
 | **Reads** — `query`, browse, `export`, diagnostics | **osxphotos**, reading the Photos SQLite DB directly | Fast, no app scripting, no Automation prompt, no Photos.app launch. |
-| **Writes** — `create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords` (opt-in, gated behind `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`) | **photoscript → AppleScript → Photos.app** | The only *safe, supported* way to mutate the live library. |
+| **Writes** — `create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`, `set-photo-date`, `import-photos` (opt-in, gated behind `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`) | **photoscript → AppleScript → Photos.app** | The only *safe, supported* way to mutate the live library. |
+| **`get-selected-photos`** — the one photoscript-backed READ (not gated) | **photoscript → AppleScript → Photos.app**, then osxphotos for the metadata | A live GUI selection exists only inside Photos.app; nothing in the database describes it. |
 
 ## Why not write to the SQLite DB the way we read it?
 
@@ -39,7 +40,7 @@ not grant PhotoKit write access to a bare `python3`/`node` interpreter. osxphoto
 bundles a PhotoKit module, and its own source notes it *"[hasn't] figured out how
 to get the call to requestAuthorization to actually work"* for this case.
 Shipping PhotoKit writes would mean building, signing, notarizing, and
-distributing a native (Swift) helper — a large lift, disproportionate to five
+distributing a native (Swift) helper — a large lift, disproportionate to seven
 opt-in tools, and an unsolved problem even in osxphotos.
 
 ## The accepted trade-off

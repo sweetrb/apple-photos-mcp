@@ -1,10 +1,12 @@
 /**
  * Export-destination allowlist.
  *
- * `export` is the only side-effecting tool — it writes files (and creates
- * directories) wherever `dest` points. Restrict that to a small set of roots
- * so a confused or prompted-injected agent can't scribble into system
- * locations, app bundles, or dotfile directories outside the user's own space.
+ * `export` is the only tool that writes files outside the Photos library — it
+ * writes files (and creates directories) wherever `dest` points. Restrict that
+ * to a small set of roots so a confused or prompted-injected agent can't
+ * scribble into system locations, app bundles, or dotfile directories outside
+ * the user's own space. The same allowlist gates `import-photos`' SOURCE paths
+ * (resolveImportSource below), so reads of user files are bounded too.
  * Mirrors apple-mail-mcp's ALLOWED_SAVE_ROOTS / isPathWithinAllowedRoots.
  *
  * @module utils/exportPath

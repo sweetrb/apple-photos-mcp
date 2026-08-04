@@ -2,8 +2,17 @@
 
 Apple Photos MCP needs **Full Disk Access (FDA)** for the process that runs the
 MCP server. Unlike some Apple MCP servers, this is **not optional** — without it,
-**no tool works**, because every tool ultimately reads the Photos library's
-SQLite database, and that database lives in a macOS-protected directory.
+**no read tool works**: every read (`query`, browse, thumbnails, `export`,
+diagnostics) goes through osxphotos to the Photos library's SQLite database, and
+that database lives in a macOS-protected directory.
+
+The opt-in **write** tools are the one exception to the *mechanism*: they drive
+Photos.app over AppleScript rather than reading the database, so what they need
+is macOS **Automation** permission, not FDA (a write failing with AppleScript
+error `-1743` is an Automation problem — granting FDA will not fix it; see
+[WRITE-BACKEND.md](./WRITE-BACKEND.md)). FDA is still effectively mandatory in
+practice, because the photo UUIDs the write tools operate on come from
+FDA-backed reads.
 
 ## Why it's needed
 
@@ -19,7 +28,7 @@ Everything under `~/Pictures/Photos Library.photoslibrary/` is gated by macOS
 privacy protection. Reading it requires **Full Disk Access** for the *host*
 process — the application that actually launches `node` and spawns the Python
 sidecar. Without that grant, macOS denies the read before osxphotos can open the
-database, and the server can do nothing.
+database, and the read path can do nothing.
 
 (The MCP only ever **reads** the library database; it never writes to it. See
 [LIMITATIONS.md](./LIMITATIONS.md).)
@@ -48,10 +57,10 @@ database, and the server can do nothing.
 ## Verifying it worked
 
 The best verification is the **`doctor`** tool. It runs the full setup
-diagnostic — osxphotos install, Photos library readability, and **Full Disk
-Access** — and reports each as ok / warn / fail. The Full Disk Access check is
-explicit: if the grant took effect it reports `ok`; if it's missing it reports
-`fail` with a pointer back to this guide.
+diagnostic — six checks, including **Full Disk Access** — and reports each as
+ok / warn / fail. The Full Disk Access check is explicit: if the grant took
+effect it reports `ok`; if it's missing it reports `fail` with a pointer back to
+this guide.
 
 For a quicker smoke test, run **`health-check`**. It confirms two things in one
 shot: that osxphotos is installed, and that the Photos library can actually be

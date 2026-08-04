@@ -232,7 +232,7 @@ The write tools stay **registered** even while disabled (MCP clients cache the t
 - **Explicit targets only.** Every write takes explicit UUIDs, names, or file paths — there are no wildcard/all-photos operations, and every target is validated to exist before anything is modified (unknown UUIDs come back as clear errors or per-UUID `notFound` lists; import source paths must exist under the same allowlist roots as export).
 - **Bounded batches.** Album operations accept at most 100 UUIDs per call; imports at most 50 files.
 - **Reversible by design.** Metadata writes echo before/after values so an agent can revert; `set-keywords` uses union semantics (read-merge-write) so keywords you don't mention are never clobbered; album adds are idempotent; `set-photo-date` is a **dry run by default** — it writes nothing until you pass `dryRun: false`, and always echoes before/after so an applied change can be reverted.
-- **The mechanism:** writes drive **Photos.app via AppleScript** (the [photoscript](https://github.com/RhetTbull/photoscript) library). Photos is launched if it isn't running, and macOS asks for **Automation permission** for the host app with a one-time system prompt on the first write. Writes always target the library **currently open in Photos.app** (normally the system library) — the `library` parameter of the read tools does not apply. (Reads, by contrast, go through osxphotos straight to the Photos database — fast and prompt-free. Why writes *can't* use that same path — and why osxphotos/PhotoKit aren't an escape from AppleScript — is spelled out in [docs/WRITE-BACKEND.md](docs/WRITE-BACKEND.md).)
+- **The mechanism:** writes drive **Photos.app via AppleScript** (the [photoscript](https://github.com/RhetTbull/photoscript) library). Photos is launched if it isn't running, and macOS asks for **Automation permission** for the host app with a one-time system prompt on the first write. Writes always target the library **currently open in Photos.app** (normally the system library) — the `library` parameter of the read tools does not apply. (Reads, by contrast, go through osxphotos straight to the Photos database — fast and prompt-free. Why writes *can't* use that same path — and why osxphotos/PhotoKit aren't an escape from AppleScript — is spelled out in [docs/WRITE-BACKEND.md](https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/WRITE-BACKEND.md).)
 - **One quirk to know:** Photos' AppleScript dictionary has no "remove from album" verb, so `remove-from-album` **rebuilds the album** (same name, remaining photos): the album's UUID changes (the response reports old and new) and any custom manual sort order is lost.
 
 ---
@@ -255,7 +255,7 @@ Verify osxphotos is installed and the Photos library can be opened.
 
 #### `doctor`
 
-Run a full setup diagnostic: the resolved Python interpreter (path + version — warns when it's older than the required 3.11, with `brew install python@3.12` advice), osxphotos installation, Photos library readability, and Full Disk Access — each reported as ok / warn / fail with an actionable message. This is the richer counterpart to `health-check`; reach for it first when a tool returns a permission or "unable to open" error.
+Run a full setup diagnostic — six checks: the resolved Python interpreter (path + version — warns when it's older than the required 3.11, with `brew install python@3.12` advice), osxphotos installation, sidecar mode (persistent vs one-shot fallback, plus the last respawn), the write-tools gate (enabled/disabled, with the opt-in recipe and — when enabled — whether the photoscript backend and Photos.app look usable), Photos library readability, and Full Disk Access — each reported as ok / warn / fail with an actionable message. This is the richer counterpart to `health-check`; reach for it first when a tool returns a permission or "unable to open" error.
 
 **Parameters:** None
 
@@ -442,7 +442,7 @@ Return one photo as an **inline viewable image** — an MCP image content block 
 | `minSize` | number | No | Smallest acceptable long-edge size in pixels (default `360`, max `8192`). The smallest qualifying derivative is served — raise it (e.g. `1024`) when you need detail like small text |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
-**Returns:** An image content block plus structured metadata: `uuid`, source `path`, `width`/`height`, `mimeType`, `byteSize`, and `isDerivative` (`false` means no suitable derivative existed and the image was rendered from the original via `sips` — never upscaled). Movies get a thumbnail only when Photos generated a poster-frame derivative; an iCloud-only photo with no local derivative or original returns an error suggesting `export` (which downloads on demand).
+**Returns:** An image content block plus structured metadata: `uuid`, source `path`, `width`/`height`, `mimeType`, `byteSize`, and `isDerivative` (`false` means no suitable derivative existed and the image was rendered from the original via `sips` — never upscaled). Movies get a thumbnail only when Photos generated a poster-frame derivative; an iCloud-only photo with no local derivative or original returns an error suggesting `export` (which downloads on demand). Responses are capped at **8 MB**: derivative selection pre-filters on that cap, but a `sips`-rendered fallback from a very high-resolution original can still exceed it and returns `thumbnail is <n> bytes (cap 8388608); request a smaller minSize` — lower `minSize`, or use `export` for the full file.
 
 ---
 
@@ -452,12 +452,12 @@ Group **exact duplicates** using Photos' own fingerprint-based detection — the
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `limit` | number | No | Max duplicate groups to return (default `100`; `groupCount` reports the total) |
+| `limit` | number | No | Max duplicate groups to return (default `100`, max `10000`; `groupCount` reports the total) |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
 **Returns:** `groupCount` (total groups), `returned`, and `groups` ordered newest-first — each with the member `uuids` and per-member `filename`, `date`, `size`, `width`/`height`, and `isMovie`. Hidden and Recently-Deleted photos are never group members.
 
-**Exact means exact:** the fingerprint matches identical image data only — edited copies, resized versions, and burst siblings will NOT group. Use `get-thumbnail` on a group's members to eyeball them before acting. This server cannot delete photos (Photos exposes no scriptable delete) — to act on duplicates, collect them into a quarantine album in Photos.app and review/delete there.
+**Exact means exact:** the fingerprint matches identical image data only — edited copies, resized versions, and burst siblings will NOT group. Use `get-thumbnail` on a group's members to eyeball them before acting. This server cannot delete photos (Photos exposes no scriptable delete) — to act on duplicates, quarantine the extra copies into an album (`create-album` + `add-to-album` when [writes are enabled](#write-tools-opt-in), otherwise by hand in Photos.app) and review/delete inside Photos.app. See the [dedupe pattern](#duplicate-cleanup).
 
 ---
 
@@ -493,7 +493,7 @@ List keywords sorted by usage count.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `limit` | number | No | Cap to top-N keywords |
+| `limit` | number | No | Cap to top-N keywords (max `100000`) |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
 **Returns:** Keywords with their photo counts, sorted descending.
@@ -506,7 +506,7 @@ List people detected by Photos face recognition, sorted by photo count.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `limit` | number | No | Cap to top-N persons |
+| `limit` | number | No | Cap to top-N persons (max `100000`) |
 | `library` | string | No | Path to a non-default `.photoslibrary` |
 
 **Returns:** Persons with their photo counts, sorted descending. Unidentified faces appear as `_UNKNOWN_`.
@@ -561,7 +561,7 @@ Export one or more photos by UUID to a destination directory.
 
 ### Write (opt-in — see [Write tools](#write-tools-opt-in))
 
-All five tools below require `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` and return a clear opt-in error otherwise. They drive Photos.app via AppleScript (macOS Automation permission; Photos is launched if needed), always target the library currently open in Photos.app (no `library` parameter), and can never delete photos.
+All seven tools below require `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` and return a clear opt-in error otherwise. They drive Photos.app via AppleScript (macOS Automation permission; Photos is launched if needed), always target the library currently open in Photos.app (no `library` parameter), and can never delete photos.
 
 #### `create-album`
 
@@ -598,6 +598,8 @@ Remove photos from an album — **never from the library** (they remain in All P
 
 **Album rebuild caveat:** Photos' AppleScript has no remove verb, so removal rebuilds the album (create replacement → copy the kept photos → delete the original → rename). The album's **UUID changes** (use `album.uuid` from the response) and custom manual sort order is lost. When none of the UUIDs are members, nothing is rebuilt (`albumRecreated: false`).
 
+**If a rebuild is interrupted:** the replacement is built under a scratch name `apple-photos-mcp-tmp-<hex>` and renamed last. If the call is killed mid-rebuild — e.g. the 10-minute rebuild budget expires while copying a very large album — the original album and every photo are safe, but an `apple-photos-mcp-tmp-…` album may be left behind; delete it in Photos.app. In the rare case the kill lands in the brief window *after* the original was deleted, the kept photos are still safe under that scratch name — rename it back. The scratch name is picked fresh (and collision-checked) per call, so repeatedly retrying a timing-out removal strands a *distinct* album each time.
+
 #### `set-photo-metadata`
 
 Set a photo's title, description, and/or favorite flag. Only the fields you pass are touched.
@@ -605,8 +607,8 @@ Set a photo's title, description, and/or favorite flag. Only the fields you pass
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `uuid` | string | Yes | Photo UUID |
-| `title` | string | No | New title (empty string clears it) |
-| `description` | string | No | New description (empty string clears it) |
+| `title` | string | No | New title (≤ 255 chars; empty string clears it) |
+| `description` | string | No | New description (≤ 2048 chars; empty string clears it) |
 | `favorite` | boolean | No | Set or clear the favorite flag |
 
 **Returns:** `uuid`, `updated` (which fields were written), and full `before` / `after` values of all three fields — revert a change by writing the `before` values back.
@@ -618,8 +620,8 @@ Add and/or remove keywords on a photo with **union semantics**: the photo's curr
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `uuid` | string | Yes | Photo UUID |
-| `add` | string[] | No | Keywords to add (≤ 100; created in Photos if new) |
-| `remove` | string[] | No | Keywords to remove from this photo (≤ 100; exact match) |
+| `add` | string[] | No | Keywords to add (≤ 100 entries, each ≤ 255 chars; created in Photos if new) |
+| `remove` | string[] | No | Keywords to remove from this photo (≤ 100 entries, each ≤ 255 chars; exact match) |
 
 At least one of `add` / `remove` is required; a keyword in both is rejected.
 
@@ -889,7 +891,7 @@ All configuration is optional — the server works out of the box.
 |----------|---------|-------------|
 | `APPLE_PHOTOS_MCP_ENABLE_WRITES` | unset (**read-only**) | Set to `1` to enable the [write tools](#write-tools-opt-in) (`create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`, `set-photo-date`, `import-photos`). Until then every write tool returns a clear opt-in error and the server cannot modify the library. Restart the server after changing it. |
 | `APPLE_PHOTOS_MCP_MAX_BUFFER` | `104857600` (100 MB) | Max bytes captured from the Python sidecar's stdout. Raise it if a very large library/query is truncated; lower it to cap memory. |
-| `APPLE_PHOTOS_MCP_TIMEOUT` | `60000` (60 s) | Default per-command timeout, in milliseconds, for the Python sidecar. The first (cold) call parses the whole Photos database, and on very large libraries (100k+ photos) that load alone can exceed 60 s — raise this if tools report "Operation timed out". `export` keeps its own 30-minute window. |
+| `APPLE_PHOTOS_MCP_TIMEOUT` | `60000` (60 s) | Default per-command timeout, in milliseconds, for the Python sidecar. The first (cold) call parses the whole Photos database, and on very large libraries (100k+ photos) that load alone can exceed 60 s — raise this if tools report "Operation timed out". **It sets only the DEFAULT budget** — it applies to `query`, `get-photo`, `get-photos`, `get-thumbnail`, `library-info`, `list-albums`, `list-folders`, `list-keywords`, `list-persons` and `health-check`, and is ignored by every tool that carries a fixed budget: `get-selected-photos` 2 min; `find-duplicates`, `create-album`, `add-to-album`, `set-photo-metadata`, `set-keywords` and `set-photo-date` 5 min; `remove-from-album` and `import-photos` 10 min; `export` 30 min. Those budgets are not configurable — a timeout on one of them says so instead of pointing here. |
 | `APPLE_PHOTOS_MCP_PERSISTENT_SIDECAR` | unset (persistent mode on) | Set to `0` (or `false`) to disable the long-lived serve-mode sidecar and spawn a fresh Python process per call (pre-1.4.0 behavior). Every call then re-pays the full library parse — only useful for debugging. |
 | `APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS` | `300000` (5 min) | How long the persistent sidecar may sit idle before it's killed to free memory (a resident parsed library holds hundreds of MB for large libraries). The next call transparently respawns it, re-paying the one-time parse. `0` = never kill on idle. |
 | `APPLE_PHOTOS_MCP_NO_AUTO_SETUP` | unset (auto-setup on) | Set to `1` (or any truthy value) to disable the automatic first-use venv bootstrap. With it on, you must run `pnpm run setup` (or `pip3 install osxphotos`) yourself. |
