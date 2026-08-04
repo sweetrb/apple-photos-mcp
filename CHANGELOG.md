@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [2.1.7] - 2026-08-03
+
+### Security
+
+- **Floored `fast-uri` on its fix for GHSA-7p8r-x3mc-p8w7 (high) and corrected an exact pin that had silently become a ceiling.** The override was written as the bare pin `fast-uri: 3.1.4` back when 3.1.4 *was* the security floor for an earlier advisory. When 3.1.5 shipped the fix for GHSA-7p8r-x3mc-p8w7, that pin inverted into a **ceiling**: it held the tree on the vulnerable version and made the advisory permanently unclearable, with no warning — an override that pins rather than floors cannot distinguish "this is the minimum safe version" from "this is the only allowed version". The entry is now the caret range `^3.1.5`, which stays inside the major `ajv` expects while letting patch fixes flow in. This one is genuinely in the product rather than the dev toolchain: `fast-uri` arrives via `ajv` → `@modelcontextprotocol/sdk`, and `ajv` is inlined into the committed `build/index.js`, so the published bundle carried the vulnerable parser verbatim. The rebuilt bundle now carries 3.1.5, which is why this release owes a version bump. Every other floor in `pnpm-workspace.yaml` was audited for the same shape; the `brace-expansion` entries are already two-sided ranges and are unaffected. Matches apple-mail-mcp#128.
+- **Floored `ip-address` on 10.3.1 for GHSA-mwp4-54f8-5fhr (high), which also carries GHSA-4xrf-jv44-h6hh and GHSA-22jq-vg5j-6vgg.** Reached as `express-rate-limit` → `@modelcontextprotocol/sdk`, which capped it at 10.2.0 — below the first fully patched release. Written as `^10.3.1` rather than a pin, for the reason above; it resolves 10.4.0. The dependency is runtime-scope, but the SDK's HTTP transport is not part of this server's bundle (no `ip-address` reference appears in `build/index.js`), so the exposure was supply-chain rather than a live code path in the published package.
+- **Floored `postcss` on 8.5.23 for GHSA-fxqj-rqcc-2cmp (moderate)** — the incomplete-fix follow-up to GHSA-6g55-p6wh-862q, where an attacker-controlled `sourceMappingURL` can read arbitrary `.map` files when `from` is unset. Development scope only (`vitest` → `vite` → `postcss`, absent from the shipped bundle), and `vite`'s own range is already `^8.5.6`, so the floor costs nothing; it resolves 8.5.25.
+- **Deferred: `hono` (GHSA-8j4g-w8fx-2239, moderate).** The fix is in 4.12.34, but that release was still inside this repo's declared 1440-minute `minimumReleaseAge` soak, so `pnpm install` refuses it with `ERR_PNPM_NO_MATURE_MATCHING_VERSION`. No `minimumReleaseAgeExclude` carve-out was added and no audit suppression was applied — the soak is a deliberate supply-chain control, and squeezing a release past it by minutes defeats the point of having one. `hono` reaches the tree as `@hono/node-server` → `@modelcontextprotocol/sdk` and is not in the shipped bundle, so nothing in the published package is exposed. The follow-up (add `hono: ^4.12.34`) is recorded as a comment beside the other floors in `pnpm-workspace.yaml`. `pnpm audit --audit-level=high` is clean; this advisory is the single remaining moderate.
+
 ## [2.1.6] - 2026-08-03
 
 ### Added

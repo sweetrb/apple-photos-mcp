@@ -32,4 +32,35 @@ overrides:
   "brace-expansion@>=1.0.0 <1.1.18": 1.1.18
   "brace-expansion@>=2.0.0 <2.1.4": 2.1.4
   "brace-expansion@>=5.0.0 <5.0.9": 5.0.9
-  fast-uri: 3.1.4
+  # GHSA-7p8r-x3mc-p8w7 (high): fast-uri URI parsing can be coerced into
+  # mis-parsing, fixed in 3.1.5. Reached as ajv -> @modelcontextprotocol/sdk,
+  # and ajv is inlined into the shipped build/index.js bundle, so this one is
+  # genuinely in the product, not just the dev toolchain.
+  #
+  # This MUST stay a caret range, not an exact pin. It was written as the exact
+  # pin "3.1.4" as a security floor for an earlier advisory; when 3.1.5 shipped
+  # the fix, that pin silently inverted into a CEILING that held the tree on
+  # the vulnerable version and made the advisory unclearable. A caret keeps us
+  # inside the major ajv expects while letting patch fixes flow in.
+  fast-uri: ^3.1.5
+  # GHSA-mwp4-54f8-5fhr (high), plus GHSA-4xrf-jv44-h6hh and
+  # GHSA-22jq-vg5j-6vgg: fixed in 10.3.1. Reached as express-rate-limit ->
+  # @modelcontextprotocol/sdk, which caps it at 10.2.0. Not present in the
+  # shipped bundle (the SDK's HTTP transport is not bundled), so this is a
+  # supply-chain floor rather than a runtime exposure -- but the dependency is
+  # runtime-scope, so keep it floored.
+  ip-address: ^10.3.1
+  # GHSA-fxqj-rqcc-2cmp (moderate): incomplete fix of GHSA-6g55-p6wh-862q --
+  # an attacker-controlled sourceMappingURL can read arbitrary .map files when
+  # `from` is unset. Fixed in 8.5.23. Development scope only (vitest -> vite ->
+  # postcss) and not in the shipped bundle, but vite's own range is ^8.5.6, so
+  # the caret floor is free.
+  postcss: ^8.5.23
+  # DEFERRED -- GHSA-8j4g-w8fx-2239 (moderate) is fixed in hono 4.12.34, but
+  # that release (published 2026-08-03T02:36:40Z) was still inside the
+  # 1440-minute minimumReleaseAge soak declared above when this landed, so
+  # `pnpm install` rejects it with ERR_PNPM_NO_MATURE_MATCHING_VERSION.
+  # Reached as @hono/node-server -> @modelcontextprotocol/sdk, and NOT present
+  # in the shipped build/index.js bundle, so the exposure is supply-chain only.
+  # Follow-up: add `hono: ^4.12.34` once the release has matured. Do NOT add a
+  # minimumReleaseAgeExclude carve-out -- the soak is deliberate.
