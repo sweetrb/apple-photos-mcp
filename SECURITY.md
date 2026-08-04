@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.x.x   | :white_check_mark: |
+| 2.x.x   | :white_check_mark: |
+| < 2.0   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -24,7 +25,8 @@ You will receive a response within 48 hours acknowledging receipt. Security issu
 
 This MCP server:
 - Runs locally on your machine
-- Uses the `osxphotos` Python library to read the macOS Photos library; it is read-only except for the `export` tool, which writes copies of photos to a directory you specify (never into the library)
+- Uses the `osxphotos` Python library to read the macOS Photos library. **Read-only by default** — the only writes are `export`'s file copies into a directory you specify (never into the library)
+- Ships **seven opt-in write tools** (`create-album`, `add-to-album`, `remove-from-album`, `set-photo-metadata`, `set-keywords`, `set-photo-date`, `import-photos`) that can change album membership and photo metadata. They are refused unless `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` is set, they drive Photos.app via AppleScript (so they also require the macOS **Automation** permission), and none of them can delete a photo. `import-photos` cannot be undone programmatically. See [Write tools (opt-in)](https://github.com/sweetrb/apple-photos-mcp#write-tools-opt-in)
 - Does not transmit data to external servers
 - Does not store credentials or passwords
 

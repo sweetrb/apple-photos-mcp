@@ -148,7 +148,7 @@ function findSystemPython(): string {
   throw new Error(
     "Python 3 not found on PATH. Install Python 3.11+ (stock macOS ships 3.9 — " +
       "brew install python@3.12), then retry. " +
-      `See ${REQUIREMENTS_URL}.`
+      `Run the doctor tool to diagnose, or see ${REQUIREMENTS_URL}.`
   );
 }
 
@@ -386,18 +386,27 @@ function mapStructuredError(structured: string): string {
   return structured;
 }
 
-/** The exact user-facing timeout string — shared by both sidecar modes. */
-function timeoutError(timeoutMs: number): string {
-  return (
-    `Operation timed out after ${timeoutMs}ms. Library may be very large. ` +
-    `Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`
-  );
+/**
+ * The exact user-facing timeout string — shared by both sidecar modes.
+ *
+ * `${ENV_PREFIX}_TIMEOUT` sets only the DEFAULT budget. Commands that pass an
+ * explicit timeout (export, the write tools, `find-duplicates`,
+ * `get-selected-photos`) ignore it entirely, so naming it there would send the
+ * user to a fix that cannot work — `envConfigurable` keeps that advice on the
+ * calls where it actually applies.
+ */
+function timeoutError(timeoutMs: number, envConfigurable: boolean): string {
+  const remedy = envConfigurable
+    ? `Raise ${ENV_PREFIX}_TIMEOUT (ms) if the library needs longer to load.`
+    : `This tool's timeout is fixed at ${timeoutMs}ms; ${ENV_PREFIX}_TIMEOUT does not apply to it.`;
+  return `Operation timed out after ${timeoutMs}ms. Library may be very large. ${remedy}`;
 }
 
 async function execReader<T>(
   command: string,
   args: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  envConfigurable = true
 ): Promise<PythonResult<T>> {
   const python = resolvePython();
   const scriptPath = getScriptPath();
@@ -456,7 +465,7 @@ async function execReader<T>(
       error.message?.includes("ETIMEDOUT") ||
       error.message?.includes("timed out")
     ) {
-      return { error: timeoutError(timeoutMs) };
+      return { error: timeoutError(timeoutMs, envConfigurable) };
     }
     // Surface the Python traceback when there is one — without it the user just
     // sees "Command failed: <python> <args>" with no clue what actually broke.
@@ -485,8 +494,9 @@ const DEFAULT_TIMEOUT_MS = 60_000;
  * Default per-command sidecar timeout in ms, overridable via env. Every call
  * re-opens the Photos DB, and on very large libraries (100k+ photos) that load
  * alone can exceed the 60s default — the override is the escape hatch.
- * Commands that pass an explicit timeout (export's 30-minute iCloud window)
- * are unaffected.
+ * Commands that pass an explicit timeout carry a FIXED budget this cannot
+ * change — export 30 min; import-photos and remove-from-album 10 min; the
+ * other write tools and find-duplicates 5 min; get-selected-photos 2 min.
  */
 function getDefaultTimeout(): number {
   const raw = process.env[`${ENV_PREFIX}_TIMEOUT`];
@@ -607,6 +617,7 @@ async function executeSidecar<T>(
   command: string,
   args: string[],
   timeoutMs: number,
+  envConfigurable: boolean,
   onProgress?: (p: SidecarProgress) => void
 ): Promise<PythonResult<T>> {
   if (persistentModeEnabled() && serveDisabledReason === null) {
@@ -627,7 +638,7 @@ async function executeSidecar<T>(
       case "error":
         return { error: mapStructuredError(outcome.error) };
       case "timeout":
-        return { error: timeoutError(timeoutMs) };
+        return { error: timeoutError(timeoutMs, envConfigurable) };
       case "fallback": {
         // Handshake failed. A missing dependency is transient (bootstrap can
         // fix it and serve mode is retried); anything else disables serve
@@ -647,7 +658,7 @@ async function executeSidecar<T>(
       }
     }
   }
-  return execReader<T>(command, args, timeoutMs);
+  return execReader<T>(command, args, timeoutMs, envConfigurable);
 }
 
 export async function runPhotosReader<T = unknown>(
@@ -658,8 +669,11 @@ export async function runPhotosReader<T = unknown>(
 ): Promise<PythonResult<T>> {
   return sidecarGate(async () => {
     await ensureReady();
+    // Only the default budget answers to the env var — a caller-supplied
+    // timeoutMs is a fixed per-tool budget the user cannot change.
+    const envConfigurable = timeoutMs === undefined;
     const timeout = timeoutMs ?? getDefaultTimeout();
-    const result = await executeSidecar<T>(command, args, timeout, onProgress);
+    const result = await executeSidecar<T>(command, args, timeout, envConfigurable, onProgress);
 
     // Belt-and-suspenders: if the deps still look missing and we haven't tried a
     // bootstrap yet, attempt it once and retry — covers a venv that exists but is
@@ -674,7 +688,7 @@ export async function runPhotosReader<T = unknown>(
         // The serve process (if any) was talking to the OLD interpreter/env —
         // kill it so the retry respawns against the freshly built venv.
         persistentClient.kill("venv bootstrapped");
-        return executeSidecar<T>(command, args, timeout, onProgress);
+        return executeSidecar<T>(command, args, timeout, envConfigurable, onProgress);
       }
     }
     return result;

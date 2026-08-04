@@ -1,7 +1,7 @@
 {
   "name": "apple-photos-mcp",
   "metadata": {
-    "description": "Apple Photos integration marketplace for Claude Code, Codex, Hermes, and Antigravity.",
+    "description": "Apple Photos integration marketplace for Claude Code, Codex, and Antigravity.",
     "version": "1.0.0"
   },
   "plugins": [

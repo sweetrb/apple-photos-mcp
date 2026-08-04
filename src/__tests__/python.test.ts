@@ -215,10 +215,27 @@ describe("runPhotosReader", () => {
       "",
       ""
     );
-    const result = await runPhotosReader("query", [], 5000);
+    const result = await runPhotosReader("query", []);
+    expect(result.error).toMatch(/timed out after \d+ms/i);
+    expect(result.error).toContain("Raise APPLE_PHOTOS_MCP_TIMEOUT");
+  });
+
+  it("tells a fixed-budget command its timeout is NOT settable via the env var", async () => {
+    // find-duplicates/export/the write tools pass an explicit timeoutMs, which
+    // APPLE_PHOTOS_MCP_TIMEOUT cannot change — advertising it would be a no-op fix.
+    execFileFails(
+      Object.assign(new Error("Command failed: python3 photos_reader.py find-duplicates"), {
+        killed: true,
+        signal: "SIGKILL",
+        code: null,
+      }),
+      "",
+      ""
+    );
+    const result = await runPhotosReader("find-duplicates", [], 300000);
     expect(result.error).toMatch(/timed out/i);
-    expect(result.error).toContain("5000");
-    expect(result.error).toContain("APPLE_PHOTOS_MCP_TIMEOUT");
+    expect(result.error).toContain("fixed at 300000ms");
+    expect(result.error).not.toContain("Raise APPLE_PHOTOS_MCP_TIMEOUT");
   });
 
   it("does NOT misreport a maxBuffer overrun (also a kill) as a timeout", async () => {

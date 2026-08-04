@@ -100,10 +100,16 @@ describe("runPhotosReader over the persistent sidecar", () => {
 
   it("maps a serve-mode timeout to the exact one-shot timeout message", async () => {
     requestMock.mockResolvedValue({ kind: "timeout" });
-    const result = await runPhotosReader("query", [], 5000);
+    const result = await runPhotosReader("query", []);
     expect(result.error).toMatch(/timed out/i);
-    expect(result.error).toContain("5000");
-    expect(result.error).toContain("APPLE_PHOTOS_MCP_TIMEOUT");
+    expect(result.error).toContain("Raise APPLE_PHOTOS_MCP_TIMEOUT");
+  });
+
+  it("does not advertise the env var on a fixed-budget (explicit timeout) command", async () => {
+    requestMock.mockResolvedValue({ kind: "timeout" });
+    const result = await runPhotosReader("export", [], 5000);
+    expect(result.error).toContain("fixed at 5000ms");
+    expect(result.error).not.toContain("Raise APPLE_PHOTOS_MCP_TIMEOUT");
   });
 
   it("forwards the onProgress callback to the client", async () => {

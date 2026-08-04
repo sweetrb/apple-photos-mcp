@@ -86,7 +86,8 @@ When adding a new MCP tool:
 
 ## Sidecar Guidelines
 
-- All Photos access goes through the `osxphotos` Python sidecar (`photos_reader.py`); the server is read-only except for `export`.
+- All Photos access goes through the Python sidecar (`photos_reader.py`). Reads use `osxphotos` against the library database; the opt-in write commands use `photoscript` → AppleScript → Photos.app — see [`docs/WRITE-BACKEND.md`](https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/WRITE-BACKEND.md); don't collapse the split.
+- New write tools sit behind the `APPLE_PHOTOS_MCP_ENABLE_WRITES` gate (`src/utils/writeGate.ts`) and omit the `library` parameter (writes always target the library open in Photos.app).
 - Surface sidecar failures as the JSON `{"error": ...}` envelope; keep stdout pure JSON.
 - Permission/Full-Disk-Access failures should point users at the `doctor` tool and the remediation in `docs/FULL-DISK-ACCESS.md`.
 
