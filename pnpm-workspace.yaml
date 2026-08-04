@@ -56,11 +56,11 @@ overrides:
   # postcss) and not in the shipped bundle, but vite's own range is ^8.5.6, so
   # the caret floor is free.
   postcss: ^8.5.23
-  # DEFERRED -- GHSA-8j4g-w8fx-2239 (moderate) is fixed in hono 4.12.34, but
-  # that release (published 2026-08-03T02:36:40Z) was still inside the
-  # 1440-minute minimumReleaseAge soak declared above when this landed, so
-  # `pnpm install` rejects it with ERR_PNPM_NO_MATURE_MATCHING_VERSION.
-  # Reached as @hono/node-server -> @modelcontextprotocol/sdk, and NOT present
-  # in the shipped build/index.js bundle, so the exposure is supply-chain only.
-  # Follow-up: add `hono: ^4.12.34` once the release has matured. Do NOT add a
-  # minimumReleaseAgeExclude carve-out -- the soak is deliberate.
+  # GHSA-8j4g-w8fx-2239 (moderate): ReDoS in Hono's CORS middleware, fixed in
+  # 4.12.34. Deferred earlier the same day because that release was still inside
+  # the 1440-minute minimumReleaseAge soak declared above — it missed by under
+  # three minutes. It matured at 2026-08-04T02:36:40Z and is floored here now.
+  # No minimumReleaseAgeExclude carve-out was ever added; the soak is deliberate.
+  # Reached via @modelcontextprotocol/sdk -> @hono/node-server; not in the
+  # shipped build/index.js bundle, so the exposure was supply-chain only.
+  hono: ^4.12.34
