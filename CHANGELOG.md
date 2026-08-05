@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Security
+- **Bumped the pinned `ossf/scorecard-action` to `2d1146689b8cda280b9bc96326124645441f03bc` (v2.4.4).** Dependabot's weekly `github-actions` group PR landed this in apple-mail-mcp (#134) and apple-numbers-mcp (#56) but skipped this repo and apple-notes-mcp, so `conformance-check.sh` reported `DRIFT: .github/workflows/scorecard.yml differs`. The four servers are meant to carry a byte-identical workflow set, and a silent group-skip is the recurring way that breaks. `.github/` does not ship, so this owes no version bump.
+
 ## [2.1.7] - 2026-08-03
 
 ### Security
