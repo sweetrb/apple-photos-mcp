@@ -1,5 +1,10 @@
 #!/usr/bin/env node
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  McpServer,
+  type RegisteredTool,
+  type ToolCallback,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
@@ -62,7 +67,52 @@ const uuidSchema = z
   );
 
 // --- health-check ---
-server.registerTool(
+/**
+ * Register a tool, advertising its `outputSchema` as PERMISSIVE.
+ *
+ * The MCP **client** validates a result's `structuredContent` against the JSON
+ * Schema the server advertised — not against the server's own zod object. A
+ * bare zod raw shape renders as `additionalProperties: false`, so a payload
+ * carrying any field the schema didn't enumerate is rejected client-side with
+ * `-32602 … data must NOT have additional properties`, discarding a result the
+ * handler produced correctly. The server never sees it, because zod's own parse
+ * silently *strips* unknown keys rather than failing — which is why the
+ * registerTool/outputSchema migration's "all fields optional, no `.strict()`"
+ * was believed to be permissive. It covered optionality; it did not cover
+ * undeclared keys.
+ *
+ * `.passthrough()` advertises `additionalProperties: true`, which is the
+ * contract that migration intended: a declared field documents the shape, an
+ * undeclared one is carried through instead of nuking the whole result. This is
+ * not hypothetical — it took down `get-mail-stats` in the sibling
+ * apple-mail-mcp (sweetrb/apple-mail-mcp#135), where every tool was likewise
+ * advertising `additionalProperties: false` and the one tool whose payload
+ * carried an undeclared key failed on every call. Enforced for every tool here
+ * by the outputSchema contract test.
+ */
+function registerTool<
+  OutputArgs extends z.ZodRawShape,
+  InputArgs extends undefined | z.ZodRawShape = undefined,
+>(
+  name: string,
+  config: {
+    title?: string;
+    description?: string;
+    inputSchema?: InputArgs;
+    outputSchema?: OutputArgs;
+    annotations?: ToolAnnotations;
+  },
+  cb: ToolCallback<InputArgs>
+): RegisteredTool {
+  const { outputSchema, ...rest } = config;
+  return server.registerTool(
+    name,
+    outputSchema ? { ...rest, outputSchema: z.object(outputSchema).passthrough() } : rest,
+    cb
+  );
+}
+
+registerTool(
   "health-check",
   {
     description:
@@ -84,7 +134,7 @@ server.registerTool(
 );
 
 // --- doctor ---
-server.registerTool(
+registerTool(
   "doctor",
   {
     description:
@@ -114,7 +164,7 @@ server.registerTool(
 );
 
 // --- library-info ---
-server.registerTool(
+registerTool(
   "library-info",
   {
     description:
@@ -153,7 +203,7 @@ server.registerTool(
 );
 
 // --- query ---
-server.registerTool(
+registerTool(
   "query",
   {
     description:
@@ -366,7 +416,7 @@ server.registerTool(
 );
 
 // --- get-photo ---
-server.registerTool(
+registerTool(
   "get-photo",
   {
     description:
@@ -447,7 +497,7 @@ server.registerTool(
 );
 
 // --- get-photos ---
-server.registerTool(
+registerTool(
   "get-photos",
   {
     description:
@@ -488,7 +538,7 @@ server.registerTool(
 );
 
 // --- get-thumbnail ---
-server.registerTool(
+registerTool(
   "get-thumbnail",
   {
     description:
@@ -535,7 +585,7 @@ server.registerTool(
 );
 
 // --- get-selected-photos ---
-server.registerTool(
+registerTool(
   "get-selected-photos",
   {
     description:
@@ -576,7 +626,7 @@ server.registerTool(
 );
 
 // --- find-duplicates ---
-server.registerTool(
+registerTool(
   "find-duplicates",
   {
     description:
@@ -625,7 +675,7 @@ server.registerTool(
 );
 
 // --- list-albums ---
-server.registerTool(
+registerTool(
   "list-albums",
   {
     description:
@@ -651,7 +701,7 @@ server.registerTool(
 );
 
 // --- list-folders ---
-server.registerTool(
+registerTool(
   "list-folders",
   {
     description:
@@ -676,7 +726,7 @@ server.registerTool(
 );
 
 // --- list-keywords ---
-server.registerTool(
+registerTool(
   "list-keywords",
   {
     description:
@@ -701,7 +751,7 @@ server.registerTool(
 );
 
 // --- list-persons ---
-server.registerTool(
+registerTool(
   "list-persons",
   {
     description:
@@ -726,7 +776,7 @@ server.registerTool(
 );
 
 // --- export ---
-server.registerTool(
+registerTool(
   "export",
   {
     description:
@@ -864,7 +914,7 @@ const writeAlbumOutput = {
 };
 
 // --- create-album ---
-server.registerTool(
+registerTool(
   "create-album",
   {
     description:
@@ -899,7 +949,7 @@ server.registerTool(
 );
 
 // --- add-to-album ---
-server.registerTool(
+registerTool(
   "add-to-album",
   {
     description:
@@ -944,7 +994,7 @@ server.registerTool(
 );
 
 // --- remove-from-album ---
-server.registerTool(
+registerTool(
   "remove-from-album",
   {
     description:
@@ -992,7 +1042,7 @@ server.registerTool(
 );
 
 // --- set-photo-metadata ---
-server.registerTool(
+registerTool(
   "set-photo-metadata",
   {
     description:
@@ -1031,7 +1081,7 @@ server.registerTool(
 );
 
 // --- set-keywords ---
-server.registerTool(
+registerTool(
   "set-keywords",
   {
     description:
@@ -1075,7 +1125,7 @@ server.registerTool(
 );
 
 // --- set-photo-date ---
-server.registerTool(
+registerTool(
   "set-photo-date",
   {
     description:
@@ -1137,7 +1187,7 @@ server.registerTool(
 );
 
 // --- import-photos ---
-server.registerTool(
+registerTool(
   "import-photos",
   {
     description:
