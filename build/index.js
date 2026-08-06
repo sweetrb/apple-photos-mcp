@@ -23050,7 +23050,15 @@ var uuidSchema = external_exports.string().max(256).regex(
   /^[0-9A-Fa-f-]+$/,
   "must be a Photos UUID \u2014 hexadecimal segments separated by dashes (e.g. 1EB2B765-0765-43BA-A90C-0F0AE547B343)"
 );
-server.registerTool(
+function registerTool(name, config2, cb) {
+  const { outputSchema, ...rest } = config2;
+  return server.registerTool(
+    name,
+    outputSchema ? { ...rest, outputSchema: external_exports.object(outputSchema).passthrough() } : rest,
+    cb
+  );
+}
+registerTool(
   "health-check",
   {
     description: "Use when: you want a quick smoke test that osxphotos is installed and the Photos library can be opened.\nReturns: ok/fail plus the osxphotos version, library path, and total photo count. While another operation (a long query or export) is running, it responds immediately with a liveness summary instead of queueing behind it \u2014 re-run after the operation completes for the full result.\nDo not use when: you need a full setup diagnostic that pinpoints whether the failure is a missing osxphotos, an unreadable library, or denied Full Disk Access \u2014 use doctor instead.",
@@ -23067,7 +23075,7 @@ server.registerTool(
     });
   }, "health-check")
 );
-server.registerTool(
+registerTool(
   "doctor",
   {
     description: "Use when: a tool returns a permission, 'unable to open', or 'write tools are disabled' error, or you want a full setup diagnostic before querying, exporting, or writing.\nReturns: six checks \u2014 Python interpreter (path + version; warns below 3.11), osxphotos install, sidecar mode (persistent vs one-shot, plus last respawn), the write-tools gate (enabled/disabled, with the opt-in recipe and \u2014 when enabled \u2014 whether the photoscript backend and Photos.app look usable), Photos library readability, and Full Disk Access \u2014 each reported ok/warn/fail with actionable advice.\nDo not use when: you only need the lightweight is-it-working smoke test \u2014 use health-check instead.",
@@ -23088,7 +23096,7 @@ server.registerTool(
     return successResponse(formatDoctorReport(report), { ...report });
   }, "doctor")
 );
-server.registerTool(
+registerTool(
   "library-info",
   {
     description: "Use when: you want high-level stats about the whole library \u2014 total counts of photos, movies, albums, folders, keywords, and persons \u2014 or to confirm which library you're targeting before drilling in.\nReturns: the library path, Photos DB and Photos.app versions, and the six counts.\nDo not use when: you want the actual albums/keywords/persons rather than just their counts \u2014 use list-albums / list-keywords / list-persons; or you want to find specific photos \u2014 use query.",
@@ -23123,7 +23131,7 @@ Persons:   ${info.personCount}`,
     );
   }, "library-info")
 );
-server.registerTool(
+registerTool(
   "query",
   {
     description: "Use when: you need to find photos matching one or more filters \u2014 album, keyword, person, ML label, place, GPS radius (near), folder, taken-date or import-date range (addedAfter/addedInLast for 'recently imported'), year, file size, media type (screenshot, screen recording, selfie, panorama, live, portrait, time-lapse, slow-mo, burst, video), aesthetic score (minScore), OCR-detected text (detectedText), favorite/hidden flags, or title/description substrings \u2014 and get back a list of matches. This is the primary search/discovery tool; start here when you don't already have a UUID. Hidden photos are excluded unless hidden=true. Pass newestFirst=true with a limit to get the N most recent matches.\nReturns: count (the TOTAL number of matches), returned (the number of summaries in this response \u2014 capped at limit, default 500), and photo summaries (UUID, filename, date, dimensions, favorite/hidden/movie flags) \u2014 feed a UUID into get-photo/get-photos for full metadata, get-thumbnail to see it, or export to copy files.\nDo not use when: you already have UUIDs and want full metadata \u2014 use get-photo / get-photos; you want to see an image \u2014 use get-thumbnail; or you just want the catalog of album/keyword/person names \u2014 use list-albums / list-keywords / list-persons.",
@@ -23237,7 +23245,7 @@ ${lines.join("\n")}`, {
     });
   }, "query")
 );
-server.registerTool(
+registerTool(
   "get-photo",
   {
     description: "Use when: you have a single photo's UUID (typically from query) and want its complete metadata.\nReturns: dimensions and original dimensions, dates, title/description, location and place, albums, keywords, persons, labels, file paths, size, EXIF camera data (make/model, lens, ISO, aperture, shutter speed, focal length \u2014 null when Photos recorded none), Photos' ML intelligence (score = overall aesthetic 0\u20131, detectedText = OCR-indexed text; null on macOS versions without them), iCloud shared-album social data (owner, comments, likes \u2014 only populated for shared assets), and type flags (HDR/live/raw/edited/portrait/panorama/etc.). Pass burstPhotos=true to also list the sibling frames of a burst (UUID, filename, date each).\nDo not use when: you don't have a UUID yet \u2014 use query to find matches first; you have several UUIDs \u2014 use get-photos for one batched call; or you want to see the image \u2014 use get-thumbnail.",
@@ -23301,7 +23309,7 @@ server.registerTool(
     return successResponse(lines.join("\n"), { photo: p });
   }, "get-photo")
 );
-server.registerTool(
+registerTool(
   "get-photos",
   {
     description: "Use when: you have SEVERAL UUIDs (typically from query or find-duplicates) and want full metadata for all of them \u2014 a dedupe review, an EXIF audit, a captioning pass. One batched sidecar round-trip (max 50 UUIDs) instead of N get-photo calls.\nReturns: count, photos (full per-photo detail \u2014 the same shape as get-photo, including the exif block, score, detectedText, and shared-album owner/comments/likes), and notFound listing any requested UUIDs that matched nothing.\nDo not use when: you have a single UUID \u2014 use get-photo; you don't have UUIDs yet \u2014 use query; or you want to see the images \u2014 use get-thumbnail per photo.",
@@ -23339,7 +23347,7 @@ ${lines.join("\n")}`,
     );
   }, "get-photos")
 );
-server.registerTool(
+registerTool(
   "get-thumbnail",
   {
     description: "Use when: you (or the user) want to SEE a photo \u2014 visual triage ('show me\u2026'), picking the best shot, eyeballing duplicate groups, or reading text in an image \u2014 without exporting anything to disk. Prefer this over export whenever the goal is to LOOK at a photo rather than to obtain the file.\nReturns: the photo as an inline MCP image content block (base64 JPEG/PNG a vision-capable client renders directly), plus a text summary and structured metadata (source path, width/height, MIME type, byte size, isDerivative). It serves the smallest Photos-generated preview derivative whose long edge is at least minSize pixels (default 360) \u2014 raise minSize (e.g. 1024) when you need detail like small text; isDerivative=false means no suitable derivative existed and the original was downscaled/converted via sips.\nDo not use when: you need the full-resolution file on disk \u2014 use export; or you only need metadata \u2014 use get-photo. Movies get a thumbnail only when Photos generated a poster-frame derivative; an iCloud-only photo with no local derivative or original cannot be thumbnailed (export it first, which downloads on demand).",
@@ -23372,7 +23380,7 @@ server.registerTool(
     );
   }, "get-thumbnail")
 );
-server.registerTool(
+registerTool(
   "get-selected-photos",
   {
     description: `Use when: the user says "these photos" / "the selected photos" \u2014 they have photos selected in the Photos.app window and you need their identities. This is the GUI-selection bridge: feed the returned UUIDs into get-photos, get-thumbnail, export, or add-to-album.
@@ -23412,7 +23420,7 @@ ${lines.join("\n")}`,
     );
   }, "get-selected-photos")
 );
-server.registerTool(
+registerTool(
   "find-duplicates",
   {
     description: "Use when: you want to find exact duplicates across the library \u2014 cleaning up after a double import, checking whether files were re-uploaded, or auditing before a migration/export.\nReturns: groupCount (total duplicate groups found), returned (groups in this response, capped at limit, default 100), and groups ordered newest-first \u2014 each with the member UUIDs plus per-member filename, date, size, dimensions, and movie flag. Use get-thumbnail on members to eyeball a group before acting on it.\nDo not use when: you're looking for near-duplicates or similar shots \u2014 Photos' fingerprint matches EXACT duplicates (identical image data) only; edited copies, resized versions, and burst siblings will NOT group.\nSafety: read-only. This server cannot delete photos \u2014 to act on duplicates, quarantine the extra copies into an album (create-album + add-to-album when writes are enabled, otherwise by hand in Photos.app) and review/delete inside Photos.app.",
@@ -23447,7 +23455,7 @@ server.registerTool(
 ${lines.join("\n")}`, { ...result });
   }, "find-duplicates")
 );
-server.registerTool(
+registerTool(
   "list-albums",
   {
     description: "Use when: you want the catalog of albums \u2014 e.g. to discover exact album names before filtering query by album, or to browse the library's organization.\nReturns: every album's title, folder path, photo count, shared status, and UUID.\nDo not use when: you want the photos inside an album \u2014 use query with the album filter; you want the folder hierarchy rather than albums \u2014 use list-folders; or you just want a total album count \u2014 use library-info.",
@@ -23470,7 +23478,7 @@ server.registerTool(
 ${lines.join("\n")}`, { count, albums });
   }, "list-albums")
 );
-server.registerTool(
+registerTool(
   "list-folders",
   {
     description: "Use when: you want the library's folder hierarchy \u2014 the containers that hold albums and subfolders \u2014 to understand how albums are nested.\nReturns: every folder's title, parent folder, album count, and subfolder count.\nDo not use when: you want the albums themselves (with their photo counts) \u2014 use list-albums; or you just want a total folder count \u2014 use library-info.",
@@ -23491,7 +23499,7 @@ server.registerTool(
 ${lines.join("\n")}`, { count, folders });
   }, "list-folders")
 );
-server.registerTool(
+registerTool(
   "list-keywords",
   {
     description: "Use when: you want the catalog of keywords (tags) in the library \u2014 e.g. to discover exact keyword spellings before filtering query by keyword, or to see which tags are most used. Pass limit for the top-N.\nReturns: keywords with their photo counts, sorted most-used first.\nDo not use when: you want photos carrying a keyword \u2014 use query with the keyword filter; or you want people/faces rather than tags \u2014 use list-persons.",
@@ -23513,7 +23521,7 @@ server.registerTool(
 ${lines.join("\n")}`, { count, keywords });
   }, "list-keywords")
 );
-server.registerTool(
+registerTool(
   "list-persons",
   {
     description: "Use when: you want the catalog of named people from Photos face recognition \u2014 e.g. to discover exact person names before filtering query by person, or to see who appears most. Pass limit for the top-N; unidentified faces appear as _UNKNOWN_.\nReturns: persons with their photo counts, sorted most-photographed first.\nDo not use when: you want photos of a person \u2014 use query with the person filter; or you want subject tags rather than people \u2014 use list-keywords.",
@@ -23535,7 +23543,7 @@ server.registerTool(
 ${lines.join("\n")}`, { count, persons });
   }, "list-persons")
 );
-server.registerTool(
+registerTool(
   "export",
   {
     description: "Use when: you want to copy one or more photos (by UUID, typically from query) out to a destination directory on disk. By default exports the original; set edited=true for the edited version, live=true to also include the live-photo video, raw=true to also include the raw image. Large batches report per-photo MCP progress notifications when the request carries a progressToken.\nReturns: the destination path, counts of files exported and skipped, the exported file paths, and a per-UUID reason for anything skipped (e.g. file already exists at the destination, UUID not found / in trash, iCloud download failed).\nDo not use when: you only need metadata or file paths rather than copies on disk \u2014 use get-photo; or you're still figuring out which photos to export \u2014 use query first.\nSafety: the only side-effecting tool on the read path \u2014 it writes files into the destination directory (created if missing); the opt-in write tools (APPLE_PHOTOS_MCP_ENABLE_WRITES=1) can also modify the library, but nothing else here writes anywhere. dest must resolve (after expanding ~ and following symlinks) to a path under your home directory, /tmp, /private/tmp, or /Volumes; anything else is rejected. With overwrite=true it OVERWRITES existing files of the same name in place; without it, existing files are skipped and reported per-UUID. If an original isn't on disk (iCloud 'Optimize Mac Storage'), the export falls back to driving Photos.app via AppleScript to download it on demand \u2014 this is slow for large batches and requires Photos.app installed, signed in to iCloud, and Automation permission granted.",
@@ -23607,7 +23615,7 @@ var writeAlbumOutput = {
     path: external_exports.string().optional()
   }).passthrough().optional()
 };
-server.registerTool(
+registerTool(
   "create-album",
   {
     description: "Use when: you need an album to file photos into \u2014 a new album by name, optionally nested inside a folder path (e.g. for a quarantine album before a dedupe review, or a per-trip album).\nReturns: album {uuid, name, path} and created \u2014 false means an album of that name already existed and was returned instead of creating a duplicate (idempotent: safe to re-run; without folder the name is matched anywhere in the library, with folder only inside that folder).\nDo not use when: you want to list existing albums \u2014 use list-albums; or you want to put photos into the album \u2014 follow up with add-to-album.\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Only creates albums/folders; never deletes, moves, or modifies photos. Drives Photos.app via AppleScript: Photos is launched if not running, and macOS Automation permission is required (one-time system prompt on first write). Writes always target the library currently open in Photos.app \u2014 there is no library parameter.",
@@ -23630,7 +23638,7 @@ server.registerTool(
     });
   }, "create-album")
 );
-server.registerTool(
+registerTool(
   "add-to-album",
   {
     description: "Use when: you have photo UUIDs (from query / find-duplicates) and want to file them into an album \u2014 e.g. collecting duplicate extras into a quarantine album, or filing a trip's photos.\nReturns: the album {uuid, name, path}, addedCount, added (UUIDs newly added), alreadyPresent (UUIDs that were already members \u2014 adding is idempotent), and notFound (requested UUIDs that don't exist in the library). Fails only when the album doesn't exist or NO requested photo exists.\nDo not use when: the album doesn't exist yet \u2014 call create-album first; or you want photos OUT of an album \u2014 use remove-from-album.\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Changes album membership only: photos are never copied, modified, or deleted, and each target is validated to exist first. Max 100 UUIDs per call. Drives Photos.app via AppleScript (launches it if needed; requires macOS Automation permission \u2014 one-time prompt). Writes target the library currently open in Photos.app.",
@@ -23661,7 +23669,7 @@ server.registerTool(
     return successResponse(lines.join("\n"), { ...result });
   }, "add-to-album")
 );
-server.registerTool(
+registerTool(
   "remove-from-album",
   {
     description: "Use when: you want to take photos OUT of an album \u2014 undoing a mis-filing, or clearing reviewed items from a quarantine album. This removes ALBUM MEMBERSHIP only.\nReturns: the album AFTER the operation ({uuid, name, path} \u2014 note the uuid CHANGES when anything was removed), removedCount, removed, notInAlbum (requested UUIDs that weren't members \u2014 no-ops), albumRecreated, and previousAlbumUuid.\nDo not use when: you want to delete photos from the library \u2014 this server cannot delete photos at all (quarantine them in an album and review in Photos.app instead); or the photos aren't in the album (harmless, but pointless).\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). NEVER deletes photos from the library \u2014 removed photos stay in All Photos and every other album. Photos' AppleScript has no remove-from-album verb, so the album is REBUILT (same name and remaining photos): its UUID changes and any custom manual sort order is lost; re-fetch the album UUID from the response. When none of the UUIDs are members, nothing is rebuilt. The replacement is built under a scratch name `apple-photos-mcp-tmp-<hex>` and renamed last, so a call killed mid-rebuild (e.g. the 10-minute budget expiring while copying a very large album) leaves the original album and every photo intact but can strand an `apple-photos-mcp-tmp-\u2026` album to delete in Photos.app; each interrupted run strands a distinct one. Max 100 UUIDs per call. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
@@ -23695,7 +23703,7 @@ server.registerTool(
     return successResponse(lines.join("\n"), { ...result });
   }, "remove-from-album")
 );
-server.registerTool(
+registerTool(
   "set-photo-metadata",
   {
     description: "Use when: you want to set a photo's title, description, or favorite flag \u2014 captioning passes, marking the best shot of a burst, titling scans.\nReturns: uuid, updated (which fields were written), and the full before/after values of all three fields \u2014 so any change can be reverted by writing the before values back.\nDo not use when: you want keywords \u2014 use set-keywords (it has union semantics; this tool doesn't touch keywords); or you only want to READ metadata \u2014 use get-photo.\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Metadata only \u2014 never touches the image asset, and only the fields you pass are modified (an empty string clears title/description). The target photo is validated to exist first. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
@@ -23724,7 +23732,7 @@ server.registerTool(
     return successResponse(lines.join("\n"), { ...result });
   }, "set-photo-metadata")
 );
-server.registerTool(
+registerTool(
   "set-keywords",
   {
     description: "Use when: you want to add and/or remove keywords (tags) on a photo \u2014 tagging workflows, fixing a mis-tag \u2014 without disturbing its other keywords.\nReturns: uuid, before/after keyword lists (revert by re-running with the diff inverted), added and removed (what actually changed \u2014 adding an existing keyword or removing an absent one is a no-op), and changed.\nDo not use when: you want to browse keywords \u2014 use list-keywords; or find photos by keyword \u2014 use query. A keyword passed in both add and remove is rejected.\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). UNION semantics \u2014 the photo's current keywords are read first and edits are merged in, so existing keywords you don't mention are ALWAYS preserved (never a blind replace). Metadata only \u2014 the image asset is untouched; the target photo is validated to exist first. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
@@ -23754,7 +23762,7 @@ server.registerTool(
     return successResponse(lines.join("\n"), { ...result });
   }, "set-keywords")
 );
-server.registerTool(
+registerTool(
   "set-photo-date",
   {
     description: "Use when: a photo's date/time is wrong and you want to fix it \u2014 trailcam or scanner imports stamped with the upload time, a camera with a mis-set clock, scanned prints. Set an absolute date OR shift by a number of seconds (exactly one of date / shiftSeconds). DRY RUN BY DEFAULT: with dryRun omitted (or true) it only reports the current and would-be dates \u2014 preview first, then re-run with dryRun=false to write.\nReturns: uuid, before and after datetimes (on a dry run, after = the would-be date), shiftSeconds (the effective delta), applied, and dryRun. Revert an applied change by re-running with date=<the echoed before> and dryRun=false.\nDo not use when: you want to find photos by date \u2014 use query; or you expect the file's EXIF to change \u2014 this edits the Photos library date only.\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Rewrites the photo's date in the Photos LIBRARY DATABASE only \u2014 the same operation as Photos.app's 'Adjust Date & Time'; the original file's EXIF is never modified. Dates are interpreted in the Mac's local timezone (a timezone-aware ISO datetime is converted to local). Nothing is written unless dryRun=false is passed explicitly, and before/after are always echoed so any change can be reverted. The target photo is validated to exist first. Drives Photos.app via AppleScript (requires macOS Automation permission). Writes target the library currently open in Photos.app.",
@@ -23790,7 +23798,7 @@ server.registerTool(
     return successResponse(lines.join("\n"), { ...result });
   }, "set-photo-date")
 );
-server.registerTool(
+registerTool(
   "import-photos",
   {
     description: "Use when: you have image/video files on disk that belong in the Photos library \u2014 round-trip edits (export \u2192 fix \u2192 import), a folder of scans, an SD-card ingest \u2014 optionally filed straight into an existing album.\nReturns: requestedCount (validated source files), importedCount, imported (uuid + filename per new item \u2014 feed into get-photos / add-to-album / set-photo-date), and the album when one was targeted. importedCount < requestedCount usually means Photos skipped duplicates.\nDo not use when: the target album doesn't exist yet \u2014 call create-album first (a missing album is an error, not auto-created); or the files are outside your home directory, /tmp, /private/tmp, or /Volumes \u2014 those paths are rejected.\nSafety: WRITE tool \u2014 disabled unless APPLE_PHOTOS_MCP_ENABLE_WRITES=1 (run doctor to check). Only ADDS to the library \u2014 never modifies or deletes anything; source files stay where they are (Photos copies them in). But note the reverse door is closed: Photos' AppleScript has no photo-delete verb, so an import cannot be programmatically undone \u2014 removing a mistaken import requires Photos.app by hand. Every path is validated (absolute, exists, allowed root) before anything imports. Duplicate checking is ON by default; a duplicate then makes Photos.app show a BLOCKING dialog a human must answer (the call waits up to its timeout) \u2014 set skipDuplicateCheck=true only when duplicates are acceptable, because they WILL be re-added silently. Drives Photos.app via AppleScript (requires macOS Automation permission; launches Photos if needed). Imports go into the library currently open in Photos.app.",
