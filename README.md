@@ -926,7 +926,7 @@ non-secret config here.
 
 This package is a **TypeScript MCP server with a Python sidecar**:
 
-- The MCP server (Node) speaks the Model Context Protocol over stdio.
+- The MCP server (Node) speaks the Model Context Protocol over stdio. Every tool's `inputSchema` and `outputSchema` is advertised as **JSON Schema 2020-12** — the dialect MCP standardized on and the only one modern clients will validate against. The MCP SDK's zod converter still emits draft-07, so the outgoing `tools/list` payload is normalized at the transport boundary (`src/utils/jsonSchemaDialect.ts`).
 - A bundled Python script (`src/utils/photos_reader.py`) uses `osxphotos` to read the Photos library and returns JSON.
 - The sidecar runs as a **persistent process** (`photos_reader.py --serve`): the TypeScript side spawns it once on first use and sends it line-delimited JSON requests over stdin, behind a serial gate (exactly one request in flight at a time). The Node event loop stays free, so the server keeps answering MCP traffic (pings, `health-check`, `doctor`) even during a long `query` or a minutes-long iCloud `export`.
 - If serve mode is unavailable (old script, broken environment), the server transparently falls back to spawning a fresh one-shot Python process per call — same results, same error messages, just slower. `doctor`'s `sidecar_mode` check reports which mode is active.
@@ -1015,6 +1015,11 @@ For the full rundown — read-only scope, iCloud export caveats, face/album beha
 
 ### Photos.app errors when running
 - Closing Photos.app may resolve database-lock errors. osxphotos opens the library in read-only mode but still requires that no writer holds an exclusive lock.
+
+### Every tool is rejected: "invalid outputSchema … unsupported dialect"
+- The full message is `Tool '<name>' has an invalid outputSchema: JSON Schema declares an unsupported dialect ("$schema": "http://json-schema.org/draft-07/schema#"). The default validator supports JSON Schema 2020-12 only.` The server connects, but no tool is usable.
+- **Upgrade to apple-photos-mcp 2.1.10 or later** (`npx -y apple-photos-mcp@latest`, or `pnpm run build` from a clone) and restart the host app. Versions up to 2.1.9 advertised draft-07 schemas because the MCP SDK's zod converter emits that dialect; 2.1.10 normalizes every advertised schema to 2020-12.
+- Nothing else changes — no tool, parameter, or result differs between the two dialects for this server.
 
 ### `apple-photos` server fails to connect when run from a clone
 - **Launch `claude` from inside the repo directory** so `CLAUDE_PROJECT_DIR` resolves to the repo root. The bare `.` fallback resolves against the launching process's working directory, not the repo, and is unreliable.
