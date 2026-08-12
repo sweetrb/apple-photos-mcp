@@ -4,6 +4,10 @@
 
 ### Security
 
+- **Bumped the pinned `pnpm/action-setup` to v6.0.10 and `github/codeql-action/*` to v4.37.6.** Dependabot's weekly `github-actions` group PR landed these in apple-mail-mcp (#146) and apple-numbers-mcp (#62) but **skipped this repo**, so `conformance-check.sh` reported drift in `ci.yml`, `publish.yml`, `dependabot-rebuild.yml`, `codeql.yml` and `scorecard.yml`. The four servers are meant to carry a byte-identical workflow set, and a silent group-skip is the recurring way that breaks — this is the same failure recorded for the scorecard pin in 2026-08-05. `.github/` does not ship, so this owes no version bump.
+
+### Security
+
 - **Floored `js-yaml` to `^4.3.1`, clearing GHSA-5p4m-2wfm-xmqj (high).** Quadratic CPU consumption while resolving `!!omap` keys — a malicious YAML document can be made to burn CPU superlinearly in the number of map entries. The advisory notes the CVE-2026-59870 fix was never backported to the 3.x line, so 4.3.1 is the first complete release. `js-yaml` reaches the tree as `eslint` -> `js-yaml`, which is **development scope**, and it does not appear in the committed `build/index.js` — verified, 0 references — so no published artifact ever carried it and this owes no version bump. No `js-yaml` override existed here before; apple-mail-mcp carried one pinned at `^4.2.0` — below this fix — which is how the gap was found.
 
 ## [2.1.9] - 2026-08-06
