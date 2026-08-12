@@ -331,7 +331,8 @@ describe("toJsonSchema2020_12 — position awareness (keys are data, not keyword
     // inside patternProperties/$defs are caller-chosen NAMES, not declarations —
     // so count dialect URIs, not the literal key.
     expect(out.$schema).toBe(JSON_SCHEMA_2020_12);
-    expect(JSON.stringify(out).match(/json-schema\.org/g)).toHaveLength(1);
+    const dialectDeclarations = JSON.stringify(out).split(JSON_SCHEMA_2020_12).length - 1;
+    expect(dialectDeclarations).toBe(1);
     expect(JSON.stringify(out)).not.toContain("draft-07");
   });
 
