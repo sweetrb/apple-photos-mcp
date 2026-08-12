@@ -29,6 +29,34 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const SERVER = resolve(__dirname, "../build/index.js");
 
+// Walk schema POSITIONS, not raw text. The keys of a `properties` map are
+// caller-chosen TOOL PARAMETER NAMES, not keywords, so a tool with a parameter
+// named `definitions` or `$schema` is perfectly legal and must not be reported;
+// and enum/const/default hold instance DATA, whose keys mean nothing here.
+// (Same distinction the normalizer itself makes — see src/utils/jsonSchemaDialect.ts.)
+const SCHEMA_MAP_KEYWORDS = ["properties", "patternProperties", "$defs", "dependentSchemas"];
+const DATA_KEYWORDS = ["enum", "const", "default", "examples", "required", "dependentRequired"];
+
+/** Re-enter only the subschema positions of `obj`, reporting each via `visit`. */
+function walkSubschemas(
+  obj: Record<string, unknown>,
+  path: string,
+  visit: (node: unknown, path: string) => void
+): void {
+  for (const [key, value] of Object.entries(obj)) {
+    if (DATA_KEYWORDS.includes(key)) continue;
+    if (SCHEMA_MAP_KEYWORDS.includes(key)) {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        for (const [name, sub] of Object.entries(value as Record<string, unknown>)) {
+          visit(sub, `${path}.${key}.${name}`);
+        }
+      }
+      continue;
+    }
+    visit(value, `${path}.${key}`);
+  }
+}
+
 describe("outputSchema contract (real server over stdio)", () => {
   let client: Client;
 
@@ -144,40 +172,46 @@ describe("outputSchema contract (real server over stdio)", () => {
       for (const key of ["inputSchema", "outputSchema"] as const) {
         const schema = tool[key];
         if (!schema) continue;
-        const serialized = JSON.stringify(schema);
-
-        if (serialized.includes("draft-07")) {
+        if (JSON.stringify(schema).includes("draft-07")) {
           offenders.push(`${tool.name}.${key}: mentions draft-07`);
         }
-        if (serialized.includes('"#/definitions/')) {
-          offenders.push(`${tool.name}.${key}: $ref points into #/definitions/ (now #/$defs/)`);
-        }
-        for (const keyword of DRAFT_07_ONLY) {
-          if (serialized.includes(`"${keyword}":`)) {
-            offenders.push(`${tool.name}.${key}: uses draft-07-only "${keyword}"`);
-          }
-        }
 
-        // A boolean exclusiveMinimum/Maximum is the draft-4 spelling; 2020-12
-        // requires a number.
         const walk = (node: unknown, path: string): void => {
           if (Array.isArray(node)) {
             node.forEach((child, i) => walk(child, `${path}[${i}]`));
             return;
           }
           if (typeof node !== "object" || node === null) return;
-          for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
-            if ((k === "exclusiveMinimum" || k === "exclusiveMaximum") && typeof v === "boolean") {
-              offenders.push(`${tool.name}.${key}: boolean ${k} at ${path}`);
+          const obj = node as Record<string, unknown>;
+
+          for (const keyword of DRAFT_07_ONLY) {
+            if (keyword in obj) {
+              offenders.push(
+                `${tool.name}.${key}: draft-07-only "${keyword}" at ${path || "root"}`
+              );
             }
-            // Only the ROOT may declare a dialect.
-            if (k === "$schema" && path !== "") {
-              offenders.push(`${tool.name}.${key}: nested $schema at ${path}`);
-            }
-            walk(v, `${path}.${k}`);
           }
+          if (Array.isArray(obj.items)) {
+            offenders.push(`${tool.name}.${key}: tuple-form "items" at ${path || "root"}`);
+          }
+          // A boolean exclusiveMinimum/Maximum is the draft-4 spelling; 2020-12
+          // requires a number.
+          for (const k of ["exclusiveMinimum", "exclusiveMaximum"] as const) {
+            if (typeof obj[k] === "boolean") {
+              offenders.push(`${tool.name}.${key}: boolean ${k} at ${path || "root"}`);
+            }
+          }
+          if (typeof obj.$ref === "string" && obj.$ref.startsWith("#/definitions/")) {
+            offenders.push(`${tool.name}.${key}: $ref into #/definitions/ (now #/$defs/)`);
+          }
+          // Only the ROOT may declare a dialect.
+          if (path !== "" && "$schema" in obj) {
+            offenders.push(`${tool.name}.${key}: nested $schema at ${path}`);
+          }
+
+          walkSubschemas(obj, path, walk);
         };
-        walk(schema, "");
+        walk(schema as Record<string, unknown>, "");
       }
     }
     expect(offenders, `advertised schemas must be pure 2020-12: ${offenders.join("; ")}`).toEqual(
