@@ -2,11 +2,23 @@
 
 ## [Unreleased]
 
+## [2.1.10] - 2026-08-12
+
+### Fixed
+
+- **Every tool was refused by the client, because all 42 advertised schemas declared JSON Schema draft-07.** MCP has standardized on **JSON Schema 2020-12**, and clients now reject anything else outright — `Tool '<name>' has an invalid outputSchema: JSON Schema declares an unsupported dialect ("$schema": "http://json-schema.org/draft-07/schema#"). The default validator supports JSON Schema 2020-12 only.` The server connected fine; not one of its 21 tools was usable. The dialect is not ours to choose at the registration site: the SDK's `server/mcp.js` calls `toJsonSchemaCompat(obj, { strictUnions, pipeStrategy })` with **no `target`**, so `mapMiniTarget(undefined)` resolves to `'draft-7'` and both the emitted `inputSchema` and `outputSchema` are stamped draft-07. Upgrading zod does **not** fix it — the v4 (`zod/v4-mini` `toJSONSchema`) branch falls back to the same target, verified empirically against SDK 1.30.0 + zod 4.4.3 — so this is fixed at the transport boundary instead, the only public seam that does not reach into SDK internals: `src/index.ts` wraps the stdio transport in `withJsonSchema2020_12()`, which rewrites the outgoing `tools/list` payload. The converter also handles the keywords whose spelling changed in 2020-12 (`definitions` → `$defs` and the `#/definitions/` refs pointing at it, tuple `items` → `prefixItems`, `additionalItems` → `items`, `dependencies` → `dependentRequired`/`dependentSchemas`, boolean `exclusiveMinimum`/`exclusiveMaximum` → numeric). None of those paths is reachable from today's schemas — they are already dialect-portable, and the rewritten payload is byte-identical to the old one once `$schema` is stripped — so the conversion is a no-op in practice and exists so the seam stays correct if a new zod construct ever introduces one. Origin: sweetrb/apple-mail-mcp#147; fixed identically in all four servers.
+
+### Added
+
+- **The outputSchema contract test now pins the advertised dialect.** Two assertions against the real built server over stdio: every `inputSchema`/`outputSchema` must declare `https://json-schema.org/draft/2020-12/schema`, and no advertised schema may contain a draft-07-only construct (a `draft-07` mention anywhere, a `#/definitions/` `$ref`, a `definitions`/`additionalItems`/`dependencies` keyword, a boolean `exclusiveMinimum`/`exclusiveMaximum`, or a `$schema` on any node but the root). The existing checks could not see this class at all — they inspect schema *contents*, and a schema can be perfectly shaped while declaring a dialect that makes the client discard the tool before it is ever called. A new unit suite covers the converter itself, including the cases today's schemas do not exercise.
+
+### Documentation
+
+- **README's Troubleshooting section now carries the "unsupported dialect" symptom** with the exact error text and the fix (upgrade to 2.1.10, restart the host app), since a user on any earlier version sees it on every tool and has no other way to connect it to a server version. The Architecture section states that schemas are advertised as 2020-12 and points at the normalizer, and CONTRIBUTING.md records the wrapper as load-bearing — it is a `transport.send` interception with no local caller, exactly the shape a later cleanup would remove without knowing that doing so makes the whole server unusable.
+
 ### Security
 
 - **Bumped the pinned `pnpm/action-setup` to v6.0.10 and `github/codeql-action/*` to v4.37.6.** Dependabot's weekly `github-actions` group PR landed these in apple-mail-mcp (#146) and apple-numbers-mcp (#62) but **skipped this repo**, so `conformance-check.sh` reported drift in `ci.yml`, `publish.yml`, `dependabot-rebuild.yml`, `codeql.yml` and `scorecard.yml`. The four servers are meant to carry a byte-identical workflow set, and a silent group-skip is the recurring way that breaks — this is the same failure recorded for the scorecard pin in 2026-08-05. `.github/` does not ship, so this owes no version bump.
-
-### Security
 
 - **Floored `js-yaml` to `^4.3.1`, clearing GHSA-5p4m-2wfm-xmqj (high).** Quadratic CPU consumption while resolving `!!omap` keys — a malicious YAML document can be made to burn CPU superlinearly in the number of map entries. The advisory notes the CVE-2026-59870 fix was never backported to the 3.x line, so 4.3.1 is the first complete release. `js-yaml` reaches the tree as `eslint` -> `js-yaml`, which is **development scope**, and it does not appear in the committed `build/index.js` — verified, 0 references — so no published artifact ever carried it and this owes no version bump. No `js-yaml` override existed here before; apple-mail-mcp carried one pinned at `^4.2.0` — below this fix — which is how the gap was found.
 
