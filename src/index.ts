@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PhotosManager } from "./services/photosManager.js";
 import { killActiveSidecars } from "./utils/python.js";
+import { withJsonSchema2020_12 } from "./utils/jsonSchemaDialect.js";
 import type { SidecarProgress } from "./utils/sidecarClient.js";
 import { imageResponse, successResponse, withErrorHandling } from "./tools/respond.js";
 import { runDoctor, formatDoctorReport } from "./tools/doctor.js";
@@ -1283,7 +1284,7 @@ async function main() {
   process.stdin.on("end", () => shutdown("stdin EOF"));
   process.stdin.on("close", () => shutdown("stdin close"));
 
-  const transport = new StdioServerTransport();
+  const transport = withJsonSchema2020_12(new StdioServerTransport());
   await server.connect(transport);
   console.error(`apple-photos-mcp v${version} running on stdio`);
 }

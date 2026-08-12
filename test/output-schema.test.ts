@@ -12,6 +12,10 @@
  *      structuredContent is missing or fails the schema, which rejects callTool —
  *      so a resolving call proves a real payload validates against its schema.
  *      (Environment failures return isError results, which the SDK exempts.)
+ *   4. every advertised inputSchema/outputSchema declares JSON Schema 2020-12 and
+ *      carries no draft-07-only construct. The SDK emits draft-07 and clients now
+ *      reject that outright ("declares an unsupported dialect"), so this is the
+ *      end-to-end proof that the transport-level normalizer is wired in.
  *
  * Needs no Photos library, so it always runs (including CI). The Python sidecar
  * auto-bootstrap is disabled so the diagnostic round-trip stays fast and offline.
@@ -24,6 +28,34 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const SERVER = resolve(__dirname, "../build/index.js");
+
+// Walk schema POSITIONS, not raw text. The keys of a `properties` map are
+// caller-chosen TOOL PARAMETER NAMES, not keywords, so a tool with a parameter
+// named `definitions` or `$schema` is perfectly legal and must not be reported;
+// and enum/const/default hold instance DATA, whose keys mean nothing here.
+// (Same distinction the normalizer itself makes — see src/utils/jsonSchemaDialect.ts.)
+const SCHEMA_MAP_KEYWORDS = ["properties", "patternProperties", "$defs", "dependentSchemas"];
+const DATA_KEYWORDS = ["enum", "const", "default", "examples", "required", "dependentRequired"];
+
+/** Re-enter only the subschema positions of `obj`, reporting each via `visit`. */
+function walkSubschemas(
+  obj: Record<string, unknown>,
+  path: string,
+  visit: (node: unknown, path: string) => void
+): void {
+  for (const [key, value] of Object.entries(obj)) {
+    if (DATA_KEYWORDS.includes(key)) continue;
+    if (SCHEMA_MAP_KEYWORDS.includes(key)) {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        for (const [name, sub] of Object.entries(value as Record<string, unknown>)) {
+          visit(sub, `${path}.${key}.${name}`);
+        }
+      }
+      continue;
+    }
+    visit(value, `${path}.${key}`);
+  }
+}
 
 describe("outputSchema contract (real server over stdio)", () => {
   let client: Client;
@@ -98,6 +130,93 @@ describe("outputSchema contract (real server over stdio)", () => {
         `additionalProperties:false, so any field they don't enumerate is rejected ` +
         `client-side and the whole result is lost: ${offenders.join(", ")}`
     ).toEqual([]);
+  });
+
+  it("every advertised schema declares JSON Schema 2020-12 (not draft-07)", async () => {
+    // Claude Desktop refuses a tool outright when its schema declares any other
+    // dialect: "Tool '<name>' has an invalid outputSchema: JSON Schema declares
+    // an unsupported dialect (\"$schema\": \"http://json-schema.org/draft-07/
+    // schema#\"). The default validator supports JSON Schema 2020-12 only."
+    // The MCP SDK calls its zod converter with no target, so BOTH its v3 and v4
+    // branches emit draft-07 — upgrading zod does not help. src/index.ts wraps
+    // the stdio transport in withJsonSchema2020_12() to rewrite the outgoing
+    // tools/list payload; this asserts that wrapper is actually in the path.
+    const { tools } = await client.listTools();
+    expect(tools.length).toBeGreaterThan(0);
+
+    const offenders: string[] = [];
+    for (const tool of tools) {
+      for (const key of ["inputSchema", "outputSchema"] as const) {
+        const schema = tool[key] as { $schema?: unknown } | undefined;
+        if (!schema) continue;
+        if (schema.$schema !== "https://json-schema.org/draft/2020-12/schema") {
+          offenders.push(`${tool.name}.${key}: ${JSON.stringify(schema.$schema)}`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      `every schema must declare https://json-schema.org/draft/2020-12/schema: ${offenders.join("; ")}`
+    ).toEqual([]);
+  });
+
+  it("no advertised schema contains a draft-07-only construct", async () => {
+    // The dialect declaration alone is not enough: a schema that says 2020-12
+    // while still using draft-07 spellings would validate differently (or not at
+    // all) under a 2020-12 validator. These are the keywords that changed.
+    const { tools } = await client.listTools();
+    const DRAFT_07_ONLY = ["definitions", "additionalItems", "dependencies"] as const;
+
+    const offenders: string[] = [];
+    for (const tool of tools) {
+      for (const key of ["inputSchema", "outputSchema"] as const) {
+        const schema = tool[key];
+        if (!schema) continue;
+        if (JSON.stringify(schema).includes("draft-07")) {
+          offenders.push(`${tool.name}.${key}: mentions draft-07`);
+        }
+
+        const walk = (node: unknown, path: string): void => {
+          if (Array.isArray(node)) {
+            node.forEach((child, i) => walk(child, `${path}[${i}]`));
+            return;
+          }
+          if (typeof node !== "object" || node === null) return;
+          const obj = node as Record<string, unknown>;
+
+          for (const keyword of DRAFT_07_ONLY) {
+            if (keyword in obj) {
+              offenders.push(
+                `${tool.name}.${key}: draft-07-only "${keyword}" at ${path || "root"}`
+              );
+            }
+          }
+          if (Array.isArray(obj.items)) {
+            offenders.push(`${tool.name}.${key}: tuple-form "items" at ${path || "root"}`);
+          }
+          // A boolean exclusiveMinimum/Maximum is the draft-4 spelling; 2020-12
+          // requires a number.
+          for (const k of ["exclusiveMinimum", "exclusiveMaximum"] as const) {
+            if (typeof obj[k] === "boolean") {
+              offenders.push(`${tool.name}.${key}: boolean ${k} at ${path || "root"}`);
+            }
+          }
+          if (typeof obj.$ref === "string" && obj.$ref.startsWith("#/definitions/")) {
+            offenders.push(`${tool.name}.${key}: $ref into #/definitions/ (now #/$defs/)`);
+          }
+          // Only the ROOT may declare a dialect.
+          if (path !== "" && "$schema" in obj) {
+            offenders.push(`${tool.name}.${key}: nested $schema at ${path}`);
+          }
+
+          walkSubschemas(obj, path, walk);
+        };
+        walk(schema as Record<string, unknown>, "");
+      }
+    }
+    expect(offenders, `advertised schemas must be pure 2020-12: ${offenders.join("; ")}`).toEqual(
+      []
+    );
   });
 
   it("diagnostic tools' real output validates against their outputSchema (when reachable)", async () => {

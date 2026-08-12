@@ -91,6 +91,10 @@ When adding a new MCP tool:
 - Surface sidecar failures as the JSON `{"error": ...}` envelope; keep stdout pure JSON.
 - Permission/Full-Disk-Access failures should point users at the `doctor` tool and the remediation in `docs/FULL-DISK-ACCESS.md`.
 
+## Tool schemas are normalized to JSON Schema 2020-12
+
+`src/index.ts` wraps the stdio transport in `withJsonSchema2020_12()` (`src/utils/jsonSchemaDialect.ts`), which rewrites every `inputSchema`/`outputSchema` in the outgoing `tools/list` payload to declare JSON Schema 2020-12. **Do not remove that wrapper.** The MCP SDK calls its zod converter without a target, so both its zod v3 and v4 branches emit `"$schema": "http://json-schema.org/draft-07/schema#"` — and clients now refuse any tool that advertises a dialect other than 2020-12, which makes the whole server unusable. Upgrading zod does not fix it. New tools need nothing special; the normalizer is generic and `test/output-schema.test.ts` asserts the contract against the real built server.
+
 ## Questions?
 
 Open an issue for any questions about contributing.
