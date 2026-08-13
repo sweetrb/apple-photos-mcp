@@ -274,16 +274,21 @@ describe("outputSchema contract (real server over stdio)", () => {
       }
     }
 
-    // Guard against a vacuous pass (e.g. a future refactor that stops
+    // Order matters. The failures assertion comes FIRST because the incident
+    // this guard exists for — the dialect regressing to draft-07 globally —
+    // makes every schema fail to compile, which also drives `compiled` to 0.
+    // Asserting vacuity first would throw "no schemas were compiled" and hide
+    // ajv's actual diagnostic on precisely the regression we care most about.
+    expect(
+      failures,
+      `every advertised schema must compile under JSON Schema 2020-12: ${failures.join("; ")}`
+    ).toEqual([]);
+    // Then guard against a vacuous pass (e.g. a future refactor that stops
     // advertising schemas, or a listTools that returns nothing useful).
     expect(
       compiled,
       "no schemas were compiled — this assertion would pass vacuously"
     ).toBeGreaterThan(0);
-    expect(
-      failures,
-      `every advertised schema must compile under JSON Schema 2020-12: ${failures.join("; ")}`
-    ).toEqual([]);
   });
 
   it("diagnostic tools' real output validates against their outputSchema (when reachable)", async () => {
