@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [2.1.11] - 2026-08-13
+
+### Documentation
+
+- Retagged the project-scope `.mcp.json` entrypoint excerpt from ```json to ```text. The block is a single `"args": [...]` key/value fragment, not a JSON document, so it never parsed — a reader copying it as JSON got a syntax error. Added guards that keep every documented example honest: every ```json fence across README.md, CLAUDE.md and docs/ must parse, every documented `APPLE_*_MCP_*` environment variable must exist under src/, and the README `## Tool Reference` must document exactly the tools the built server advertises — in both directions, so neither an undocumented new tool nor a leftover entry for a removed one can pass.
+
 ## [2.1.10] - 2026-08-12
 
 ### Fixed

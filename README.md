@@ -841,7 +841,7 @@ Then launch Claude Code from the repo directory and approve the server when prom
 
 The entrypoint is written as:
 
-```json
+```text
 "args": ["${CLAUDE_PROJECT_DIR:-.}/build/index.js"]
 ```
 

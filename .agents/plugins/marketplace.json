@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "apple-photos",
-      "version": "2.1.10",
+      "version": "2.1.11",
       "source": {
         "source": "local",
         "path": "./codex"
