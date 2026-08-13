@@ -16,6 +16,11 @@
  *      carries no draft-07-only construct. The SDK emits draft-07 and clients now
  *      reject that outright ("declares an unsupported dialect"), so this is the
  *      end-to-end proof that the transport-level normalizer is wired in.
+ *   5. every advertised schema actually COMPILES under a real 2020-12 validator
+ *      (ajv's Ajv2020, the same library the MCP SDK validates with). Asserting
+ *      the "$schema" string only proves what we CLAIM; a schema can declare
+ *      2020-12 and still be structurally invalid under it, and the client would
+ *      reject the tool just the same.
  *
  * Needs no Photos library, so it always runs (including CI). The Python sidecar
  * auto-bootstrap is disabled so the diagnostic round-trip stays fast and offline.
@@ -26,8 +31,21 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { resolve } from "path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import Ajv2020Import from "ajv/dist/2020.js";
 
 const SERVER = resolve(__dirname, "../build/index.js");
+
+// ajv is CJS, and `ajv/dist/2020.js` sets BOTH `module.exports = Ajv2020` and
+// `exports.default = Ajv2020` (plus __esModule). Depending on which loader is in
+// play, the ESM default binding is therefore either the class itself or a
+// namespace object whose `.default` is the class. Unwrap one level when needed so
+// this works under vitest/esbuild and plain Node alike.
+//
+// ajv must be a DIRECT devDependency: it is present transitively via the MCP SDK,
+// but pnpm's strict node_modules layout makes a transitive dep unimportable.
+type Ajv2020Ctor = typeof Ajv2020Import;
+const Ajv2020 = ((Ajv2020Import as unknown as { default?: Ajv2020Ctor }).default ??
+  Ajv2020Import) as Ajv2020Ctor;
 
 // Walk schema POSITIONS, not raw text. The keys of a `properties` map are
 // caller-chosen TOOL PARAMETER NAMES, not keywords, so a tool with a parameter
@@ -217,6 +235,60 @@ describe("outputSchema contract (real server over stdio)", () => {
     expect(offenders, `advertised schemas must be pure 2020-12: ${offenders.join("; ")}`).toEqual(
       []
     );
+  });
+
+  it("every advertised schema compiles under a REAL 2020-12 validator (ajv)", async () => {
+    // The dialect assertions above check what we CLAIM; this checks what we
+    // SHIPPED. A schema can declare 2020-12 and still be structurally invalid
+    // under it (a bad "type", a malformed "items", a $ref that resolves
+    // nowhere) — the client rejects the tool either way, and no string
+    // comparison would ever notice. Ajv2020 is the same validator family the
+    // MCP SDK itself uses, so a compile failure here is a real client-side
+    // rejection, not a stylistic quibble.
+    //
+    // `strict: false` on purpose: ajv's strict mode rejects unknown keywords and
+    // would fail on benign annotations the SDK/zod emit. This guard is about
+    // structural validity under the 2020-12 dialect, nothing more.
+    //
+    // No advertised schema currently uses "format" (verified against all 21
+    // tools), so ajv-formats is deliberately not registered. If a tool ever
+    // adds one, add ajv-formats as a devDependency and register it here.
+    const { tools } = await client.listTools();
+    expect(tools.length).toBeGreaterThan(0);
+
+    const failures: string[] = [];
+    let compiled = 0;
+    for (const tool of tools) {
+      for (const key of ["inputSchema", "outputSchema"] as const) {
+        const schema = tool[key];
+        if (!schema) continue;
+        // A fresh instance per schema: ajv caches compiled schemas and would
+        // reject a second registration for reasons unrelated to validity.
+        const ajv = new Ajv2020({ strict: false });
+        try {
+          ajv.compile(schema as object);
+          compiled += 1;
+        } catch (err) {
+          failures.push(`${tool.name}.${key}: ${(err as Error).message}`);
+        }
+      }
+    }
+
+    // Order matters. The failures assertion comes FIRST because the incident
+    // this guard exists for — the dialect regressing to draft-07 globally —
+    // makes every schema fail to compile, which also drives `compiled` to 0.
+    // Asserting vacuity first would throw "no schemas were compiled" and hide
+    // ajv's actual diagnostic on precisely the regression we care most about.
+    expect(
+      failures,
+      `every advertised schema must compile under JSON Schema 2020-12: ${failures.join("; ")}`
+    ).toEqual([]);
+    // Then guard against a vacuous pass (e.g. a future refactor that stops
+    // advertising schemas, or a listTools that returns nothing useful).
+    expect(
+      compiled,
+      "no schemas were compiled — this assertion would pass vacuously"
+    ).toBeGreaterThan(0);
   });
 
   it("diagnostic tools' real output validates against their outputSchema (when reachable)", async () => {

@@ -26,13 +26,14 @@ const DEFINITIONS_REF_PREFIX = "#/definitions/";
 /**
  * Keywords whose value is a map of caller-chosen NAME -> schema.
  *
- * Their keys are user data — a tool is free to declare a parameter literally
- * named "definitions", "$schema", "dependencies" or "additionalItems" — so the
- * keys must never be run through the keyword rewrites below. Only the VALUES
- * are schemas, and only they get converted.
+ * Their keys are user data -- a tool's parameter names -- not schema keywords,
+ * so they must never be run through the keyword rewrites below. Without this,
+ * a tool declaring a parameter named "definitions" would have it renamed to
+ * "$defs" on the wire, and one named "$schema" would be silently DELETED, while
+ * "required" still named the original -- yielding a schema no input satisfies.
  *
- * ("definitions" is deliberately absent: at a schema position it IS a keyword,
- * and its own case in convertNode converts it and renames it to $defs.)
+ * "definitions" is deliberately absent: it is a real keyword at a schema
+ * position, and its own case below converts it and renames it to $defs.
  */
 const SCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set([
   "properties",
@@ -44,8 +45,7 @@ const SCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set([
 /**
  * Keywords whose value is instance DATA rather than a schema. Recursing into
  * them would rewrite a caller's literal values as if they were schema keywords
- * — e.g. `default: { definitions: 1, $schema: "x" }` would lose "$schema" and
- * see "definitions" renamed to "$defs".
+ * (e.g. a default of { definitions: 1, $schema: "x" }), so they pass verbatim.
  */
 const DATA_KEYWORDS: ReadonlySet<string> = new Set([
   "enum",
@@ -89,7 +89,6 @@ function convertNode(node: unknown): unknown {
         break;
 
       case "definitions":
-        // A name -> schema map: rename the keyword, keep the caller's names.
         out.$defs = convertSchemaMap(value);
         break;
 
@@ -152,9 +151,9 @@ function convertNode(node: unknown): unknown {
         break;
 
       default:
-        // Position-aware: instance data passes through verbatim, name -> schema
-        // maps get only their values converted, and everything else is a schema
-        // position and recurses normally.
+        // Position-aware fallthrough: instance data passes verbatim, a
+        // name -> schema map has only its VALUES converted, and anything else
+        // is a schema position and recurses.
         if (DATA_KEYWORDS.has(key)) out[key] = value;
         else if (SCHEMA_MAP_KEYWORDS.has(key)) out[key] = convertSchemaMap(value);
         else out[key] = convertNode(value);
