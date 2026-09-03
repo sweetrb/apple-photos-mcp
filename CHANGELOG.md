@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [2.1.12] - 2026-09-03
+
+### Security
+
+- **Floored the transitive `fast-uri` override from `^3.1.5` to `>=3.1.6 <4`, clearing four
+  open high-severity Dependabot alerts:** [GHSA-jqff-g426-hqxp](https://github.com/advisories/GHSA-jqff-g426-hqxp)
+  (host confusion via percent-encoded scheme normalization), [GHSA-fph4-wmhf-6fwf](https://github.com/advisories/GHSA-fph4-wmhf-6fwf)
+  (SSRF via repeated hostname percent-decoding), [GHSA-f65p-4m7j-42xc](https://github.com/advisories/GHSA-f65p-4m7j-42xc)
+  (SSRF via malformed IPv6 normalization), and [GHSA-5jgf-p345-68v8](https://github.com/advisories/GHSA-5jgf-p345-68v8)
+  (host confusion via skipped IDN canonicalization) — alerts #17-#20. All four are fixed
+  upstream in `fast-uri@3.1.6`. `fast-uri` is reached transitively as `ajv` ->
+  `@modelcontextprotocol/sdk`, and ajv is inlined into the shipped `build/index.js` bundle,
+  so this is a real runtime exposure, not just a dev-toolchain one — Dependabot cannot open
+  a PR for a transitive dependency, so the fix is a `pnpm-workspace.yaml` `overrides:` entry.
+  Kept two-sided (`>=3.1.6 <4`), never an exact pin — see the comment above the override for
+  why an exact pin previously inverted into a ceiling and re-introduced the vulnerability it
+  was meant to fix.
+
 ### Changed
 
 - **Supply-chain soak raised from 1 day to 7 days** (`minimumReleaseAge: 10080` in

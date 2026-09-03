@@ -42,17 +42,23 @@ overrides:
   "brace-expansion@>=1.0.0 <1.1.18": 1.1.18
   "brace-expansion@>=2.0.0 <2.1.4": 2.1.4
   "brace-expansion@>=5.0.0 <5.0.9": 5.0.9
-  # GHSA-7p8r-x3mc-p8w7 (high): fast-uri URI parsing can be coerced into
-  # mis-parsing, fixed in 3.1.5. Reached as ajv -> @modelcontextprotocol/sdk,
+  # GHSA-7p8r-x3mc-p8w7 (high, fixed 3.1.5) plus four more high-severity
+  # advisories fixed in 3.1.6: GHSA-jqff-g426-hqxp (host confusion via
+  # percent-encoded scheme normalization), GHSA-fph4-wmhf-6fwf (SSRF via
+  # repeated hostname percent-decoding), GHSA-f65p-4m7j-42xc (SSRF via
+  # malformed IPv6 normalization), GHSA-5jgf-p345-68v8 (host confusion via
+  # skipped IDN canonicalization). Reached as ajv -> @modelcontextprotocol/sdk,
   # and ajv is inlined into the shipped build/index.js bundle, so this one is
   # genuinely in the product, not just the dev toolchain.
   #
-  # This MUST stay a caret range, not an exact pin. It was written as the exact
+  # This MUST stay two-sided, never an exact pin. It was written as the exact
   # pin "3.1.4" as a security floor for an earlier advisory; when 3.1.5 shipped
   # the fix, that pin silently inverted into a CEILING that held the tree on
-  # the vulnerable version and made the advisory unclearable. A caret keeps us
-  # inside the major ajv expects while letting patch fixes flow in.
-  fast-uri: ^3.1.5
+  # the vulnerable version and made the advisory unclearable. A prior fix
+  # switched it to the caret `^3.1.5`, which is exactly equivalent to the
+  # explicit two-sided form used here -- floored at the newest fix, capped
+  # below the next major ajv expects.
+  "fast-uri": ">=3.1.6 <4"
   # GHSA-mwp4-54f8-5fhr (high), plus GHSA-4xrf-jv44-h6hh and
   # GHSA-22jq-vg5j-6vgg: fixed in 10.3.1. Reached as express-rate-limit ->
   # @modelcontextprotocol/sdk, which caps it at 10.2.0. Not present in the
