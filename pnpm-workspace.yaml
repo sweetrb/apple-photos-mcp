@@ -86,3 +86,13 @@ overrides:
   # shipped build/index.js bundle: nothing vulnerable was ever published. Floored
   # as a caret range, never an exact pin, for the reason recorded on fast-uri above.
   js-yaml: ^4.3.1
+  # GHSA-4mjr-xmp4-gh2g (medium, DoS via attacker-controlled isBuffer) and
+  # GHSA-x5fp-wj9c-mxmx (medium, array-limit bypass via bracket-key comma
+  # parsing), both fixed in 6.16.0. Reached as @modelcontextprotocol/sdk ->
+  # express -> body-parser/express-rate-limit -- the SDK's HTTP transport,
+  # which this server never enters (stdio-only), so exposure was near-zero.
+  # Deferred until 6.16.0 (published 2026-08-29T23:50:15Z) cleared the 7-day
+  # minimumReleaseAge soak above on 2026-09-05T23:50:15Z; it has now cleared
+  # naturally. Two-sided range, never an exact pin, for the reason recorded
+  # on fast-uri above.
+  qs: ">=6.16.0 <7"
