@@ -79,13 +79,32 @@ overrides:
   # No minimumReleaseAgeExclude carve-out was ever added; the soak is deliberate.
   # Reached via @modelcontextprotocol/sdk -> @hono/node-server; not in the
   # shipped build/index.js bundle, so the exposure was supply-chain only.
-  hono: ^4.12.34
+  #
+  # Raised to 4.13.5 for three further advisories, all fixed in that release:
+  # GHSA-gqvv-2mrq-wpjv (incomplete fix for CVE-2026-39408 -- toSSG() still
+  # writes files outside the output directory), GHSA-g6gw-c38x-mqfc (unbounded
+  # dot-notation nesting in parseBody() -> memory exhaustion) and
+  # GHSA-crvj-82cr-hjcx (the query parser reads parameters after the URL
+  # fragment, giving cache-key/proxy interpretation differentials). All three
+  # carry the range < 4.13.5. Same reachability as above -- @modelcontextprotocol/sdk
+  # -> @hono/node-server -- and still absent from the shipped build/index.js
+  # bundle, since the HTTP transports are tree-shaken out of this stdio server,
+  # so the exposure remains supply-chain only. 4.13.6/4.13.7 exist but were
+  # published 2026-09-04 and are still inside the 7-day soak above; 4.13.5 is
+  # the correct floor today and the caret picks up the rest as they mature.
+  hono: ^4.13.5
   # GHSA-5p4m-2wfm-xmqj (high): quadratic CPU consumption resolving !!omap,
   # fixed in 4.3.1 — the CVE-2026-59870 fix was never backported to the 3.x line.
   # Reached as eslint -> js-yaml, so development scope, and absent from the
   # shipped build/index.js bundle: nothing vulnerable was ever published. Floored
   # as a caret range, never an exact pin, for the reason recorded on fast-uri above.
-  js-yaml: ^4.3.1
+  #
+  # Raised to 4.3.2 for GHSA-2883-xcg3-v3hh (range >= 4.0.0 < 4.3.2):
+  # maxTotalMergeKeys does not limit CPU use when the merge sources are empty,
+  # so the quadratic merge-key blowup survives the previous fix. Same
+  # eslint -> @eslint/eslintrc -> js-yaml chain, so still development scope and
+  # still absent from the shipped build/index.js bundle.
+  js-yaml: ^4.3.2
   # GHSA-4mjr-xmp4-gh2g (medium, DoS via attacker-controlled isBuffer) and
   # GHSA-x5fp-wj9c-mxmx (medium, array-limit bypass via bracket-key comma
   # parsing), both fixed in 6.16.0. Reached as @modelcontextprotocol/sdk ->
