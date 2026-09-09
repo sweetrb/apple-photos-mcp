@@ -70,6 +70,73 @@ describe("registerResourcesAndPrompts", () => {
     expect(JSON.parse(out.contents[0].text).uuid).toBe("ABC 123");
   });
 
+  // vitest 4's AST-aware v8 remapping stopped crediting registered-but-never-invoked
+  // callbacks, which exposed that the albums/persons/keywords resources and most of
+  // the catch paths had no test at all. These drive each one directly.
+  it.each([
+    ["albums", { count: 1, albums: [{ uuid: "a", title: "A" }] }],
+    ["persons", { count: 1, persons: [{ name: "Bob", count: 2 }] }],
+    ["keywords", { count: 1, keywords: [{ keyword: "k", count: 5 }] }],
+  ] as const)("%s resource returns the manager's payload as JSON", async (name, expected) => {
+    const server = fakeServer();
+    registerResourcesAndPrompts(server as never, mockManager());
+    const out = (await server.resources.get(name)!(new URL(`photos://${name}`))) as {
+      contents: { uri: string; mimeType: string; text: string }[];
+    };
+    expect(out.contents[0].mimeType).toBe("application/json");
+    expect(JSON.parse(out.contents[0].text)).toEqual(expected);
+  });
+
+  // Every resource catch does `err instanceof Error ? err.message : String(err)`,
+  // so each one is driven with both a thrown Error and a thrown non-Error to
+  // exercise both sides of that ternary.
+  it.each([
+    ["library", "getLibraryInfo"],
+    ["albums", "listAlbums"],
+    ["persons", "listPersons"],
+    ["keywords", "listKeywords"],
+    ["photo", "getPhoto"],
+  ] as const)("%s resource degrades a thrown Error into a JSON error payload", async (name, fn) => {
+    const server = fakeServer();
+    registerResourcesAndPrompts(
+      server as never,
+      mockManager({
+        [fn]: () => {
+          throw new Error("Operation not permitted");
+        },
+      })
+    );
+    const out = (await server.resources.get(name)!(new URL(`photos://${name}`), {
+      uuid: "ZZZ",
+    })) as { contents: { text: string }[] };
+    expect(JSON.parse(out.contents[0].text).error).toBe("Operation not permitted");
+  });
+
+  it.each([
+    ["library", "getLibraryInfo"],
+    ["albums", "listAlbums"],
+    ["persons", "listPersons"],
+    ["keywords", "listKeywords"],
+    ["photo", "getPhoto"],
+  ] as const)(
+    "%s resource stringifies a thrown non-Error rather than losing it",
+    async (name, fn) => {
+      const server = fakeServer();
+      registerResourcesAndPrompts(
+        server as never,
+        mockManager({
+          [fn]: () => {
+            throw "plain string failure";
+          },
+        })
+      );
+      const out = (await server.resources.get(name)!(new URL(`photos://${name}`), {
+        uuid: "ZZZ",
+      })) as { contents: { text: string }[] };
+      expect(JSON.parse(out.contents[0].text).error).toBe("plain string failure");
+    }
+  );
+
   it("a failing resource returns a JSON error payload instead of rejecting", async () => {
     const server = fakeServer();
     registerResourcesAndPrompts(
