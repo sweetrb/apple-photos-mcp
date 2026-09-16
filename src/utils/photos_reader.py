@@ -22,7 +22,7 @@ Two modes:
   JSON requests from stdin ({"id", "command", "args": [argv tokens]}) and
   writes line-delimited JSON responses to stdout:
       {"type": "ready", "protocol": 1}                     (handshake, once)
-      {"id", "type": "result", "data": {...}, "dbCached"}  (per request)
+      {"id", "type": "result", "data": {...}, "dbCached", "dbStale"}
       {"id", "type": "error", "error": "..."}              (per request)
       {"id", "type": "progress", "done", "total", ...}     (export, 0..n times)
   Exactly one request is in flight at a time (the Node serial gate guarantees
@@ -44,6 +44,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -159,6 +160,30 @@ _db_cache: dict[str, dict] = {}
 # in serve-mode response envelopes as "dbCached" so the reuse is observable.
 _db_cache_hit = False
 
+# Whether the most recent _open_db call served a STALE parse while a refresh
+# ran in the background — reported as "dbStale" so callers can tell that a
+# result may predate a just-completed import.
+_db_stale = False
+
+# Opt-in (serve mode): when set, a cache entry whose library changed is served
+# ANYWAY and re-parsed on a background thread, instead of blocking the caller
+# for the length of a full PhotosDB parse. Off by default — enabling it trades
+# freshness for latency, which only pays on libraries big enough for the parse
+# to dominate. On a 15 GB Photos.sqlite a cold parse costs minutes; on a small
+# library it is imperceptible and this flag is not worth setting.
+#
+# Cost: during a refresh TWO PhotosDB instances are resident for that library,
+# so peak memory is roughly double MAX_DB_CACHE_ENTRIES' worth.
+STALE_WHILE_REVALIDATE = os.environ.get("APPLE_PHOTOS_MCP_STALE_WHILE_REVALIDATE") == "1"
+
+# Guards _db_cache and _db_refreshing: the serve loop reads them on the request
+# thread while refresh threads mutate them.
+_db_lock = threading.RLock()
+
+# Library keys with a background re-parse already in flight, so concurrent
+# requests coalesce onto one refresh instead of spawning a thread per call.
+_db_refreshing: set[str] = set()
+
 # Progress sink: None in one-shot mode; serve mode points it at a function
 # that writes an {"id", "type": "progress", ...} line for the current request.
 _progress_sink = None
@@ -184,30 +209,20 @@ def _sqlite_mtime(sqlite_path: Path | None) -> float | None:
         return None
 
 
-def _open_db(library: str | None) -> PhotosDB:
-    """Open the Photos library (None = system default), reusing a cached
-    PhotosDB when the library's Photos.sqlite mtime is unchanged."""
-    global _db_cache_hit
-    key = _library_cache_key(library)
-
-    entry = _db_cache.get(key)
-    if entry is not None:
-        mtime = _sqlite_mtime(entry["sqlite"])
-        if mtime is not None and mtime == entry["mtime"]:
-            _db_cache_hit = True
-            return entry["db"]
-        # Library changed (or became unstatable) — drop and re-parse.
-        del _db_cache[key]
-
-    _db_cache_hit = False
+def _parse_db(library: str | None) -> PhotosDB:
+    """Construct a PhotosDB. This is the expensive call the cache exists to
+    amortize — minutes on a large library."""
     if library:
         path = Path(library).expanduser().resolve()
-        db = PhotosDB(dbfile=str(path))
-    else:
-        db = PhotosDB()
+        return PhotosDB(dbfile=str(path))
+    return PhotosDB()
 
-    # Cache only when the staleness witness is statable; otherwise caching
-    # quietly stays out of the way (mirrors the Node-side cache's behavior).
+
+def _store_db(key: str, db: PhotosDB) -> None:
+    """Record a freshly parsed db against the mtime of its staleness witness.
+    Caller must hold _db_lock. Caches only when the witness is statable;
+    otherwise caching quietly stays out of the way (mirrors the Node-side
+    cache's behavior)."""
     library_path = db.library_path
     sqlite_path = Path(library_path) / "database" / "Photos.sqlite" if library_path else None
     mtime = _sqlite_mtime(sqlite_path)
@@ -215,6 +230,66 @@ def _open_db(library: str | None) -> PhotosDB:
         _db_cache[key] = {"db": db, "sqlite": sqlite_path, "mtime": mtime}
         while len(_db_cache) > MAX_DB_CACHE_ENTRIES:
             _db_cache.pop(next(iter(_db_cache)))
+
+
+def _refresh_db_async(library: str | None, key: str) -> None:
+    """Re-parse in the background and swap the result in. Failures leave the
+    stale entry in place: a library that is mid-write (or briefly unreadable)
+    should degrade to serving the last good parse, not to an error, and the
+    next request retries."""
+    try:
+        db = _parse_db(library)
+    except Exception:  # noqa: BLE001 - background thread must not escalate
+        return
+    else:
+        with _db_lock:
+            _store_db(key, db)
+    finally:
+        with _db_lock:
+            _db_refreshing.discard(key)
+
+
+def _open_db(library: str | None) -> PhotosDB:
+    """Open the Photos library (None = system default), reusing a cached
+    PhotosDB when the library's Photos.sqlite mtime is unchanged.
+
+    With STALE_WHILE_REVALIDATE, a changed library serves the previous parse
+    immediately and refreshes on a background thread; without it (the default)
+    the caller blocks for a full re-parse, as before."""
+    global _db_cache_hit, _db_stale
+    key = _library_cache_key(library)
+
+    with _db_lock:
+        entry = _db_cache.get(key)
+        if entry is not None:
+            mtime = _sqlite_mtime(entry["sqlite"])
+            if mtime is not None and mtime == entry["mtime"]:
+                _db_cache_hit = True
+                _db_stale = False
+                return entry["db"]
+            if STALE_WHILE_REVALIDATE and mtime is not None:
+                # Library changed. Hand back the stale parse now and re-parse
+                # behind it; an unstatable witness falls through to the
+                # blocking path, since there is nothing to revalidate against.
+                _db_cache_hit = True
+                _db_stale = True
+                if key not in _db_refreshing:
+                    _db_refreshing.add(key)
+                    threading.Thread(
+                        target=_refresh_db_async,
+                        args=(library, key),
+                        name="photosdb-refresh",
+                        daemon=True,
+                    ).start()
+                return entry["db"]
+            # Library changed (or became unstatable) — drop and re-parse.
+            del _db_cache[key]
+
+    _db_cache_hit = False
+    _db_stale = False
+    db = _parse_db(library)
+    with _db_lock:
+        _store_db(key, db)
     return db
 
 
@@ -1915,7 +1990,13 @@ def serve() -> int:
                 result = HANDLERS[args.cmd](args)
             finally:
                 _progress_sink = None
-            _write_line({"id": rid, "type": "result", "data": result, "dbCached": _db_cache_hit})
+            _write_line({
+                "id": rid,
+                "type": "result",
+                "data": result,
+                "dbCached": _db_cache_hit,
+                "dbStale": _db_stale,
+            })
         except FileNotFoundError as exc:
             _write_line({"id": rid, "type": "error", "error": f"Library not found: {exc}"})
         except Exception as exc:  # noqa: BLE001 - same message contract as one-shot
