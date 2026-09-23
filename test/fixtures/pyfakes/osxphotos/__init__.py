@@ -11,6 +11,7 @@ no state file configured, construction still refuses (preserving the original
 
 import json
 import os
+import time
 from datetime import datetime
 
 __version__ = "0.0.0-fake"
@@ -40,9 +41,27 @@ class PhotosDB:
         state_path = os.environ.get("FAKE_PHOTOSCRIPT_STATE")
         if not state_path:
             raise RuntimeError("fake osxphotos: reads are unavailable in this test harness")
+        # Simulated parse cost. The PhotosDB cache exists to amortize exactly
+        # this, so the cache tests need it to be observably non-zero.
+        delay = os.environ.get("FAKE_PHOTOSDB_PARSE_DELAY_S")
+        if delay:
+            time.sleep(float(delay))
         with open(state_path) as f:
             self._photos = json.load(f).get("photos", {})
-        self.library_path = None
+        # _open_db only caches when it can stat <library_path>/database/
+        # Photos.sqlite, so a fake library path is what makes the cache
+        # reachable from tests. Unset (the default) keeps the historical
+        # "uncacheable" behavior every other fixture relies on.
+        self.library_path = os.environ.get("FAKE_PHOTOS_LIBRARY_PATH") or None
+        # Minimal stat surface so library-info — the cheapest command that
+        # goes through _open_db, and so the natural probe for cache tests —
+        # can run against the fake.
+        self.db_version = "0-fake"
+        self.photos_version = "0-fake"
+        self.albums = []
+        self.folders = []
+        self.keywords = []
+        self.persons = []
 
     def photos(self, uuid=None, intrash=False):
         if intrash:

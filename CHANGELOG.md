@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+## [2.1.13] - 2026-09-23
+
+### Added
+
+- **Opt-in stale-while-revalidate cache for the PhotosDB sidecar**
+  (`APPLE_PHOTOS_MCP_STALE_WHILE_REVALIDATE=1`). Original design and
+  implementation by [@jamiemortimore](https://github.com/jamiemortimore)
+  ([#87](https://github.com/sweetrb/apple-photos-mcp/pull/87)): the persistent
+  sidecar revalidates its cached `PhotosDB` against `Photos.sqlite`'s mtime on
+  every call and re-parses synchronously when it moved, so on a large library
+  ANY write — a phone sync, an edit, Photos.app housekeeping — makes the next
+  request pay full freight. Measured on a 15.6 GB `Photos.sqlite`: 8m14s of
+  CPU before the tool answered, with two intervening client timeouts. With the
+  flag set, that request now answers from the last good parse immediately and
+  a background thread re-parses behind it, swapping the result in when it
+  completes and coalescing concurrent requests onto one refresh; a failed
+  refresh leaves the stale entry in place rather than surfacing an error.
+  Serve-mode response envelopes gain `dbStale` so callers can tell when a
+  result may predate a just-completed import. Off by default — with the flag
+  unset the blocking path is unchanged.
+
+### Fixed
+
+- **Two SWR cache races found in review, fixed before merge.** (1)
+  `_mark_library_written()` (the write-invalidation hook) cleared `_db_cache`
+  without holding `_db_lock`, so a write tool's invalidation could be silently
+  undone by a background refresh that was already mid-parse when the write
+  landed — the refresh's store call re-populated the cache with the pre-write
+  parse right after the write meant to invalidate it, making the write
+  invisible to the next read. (2) the cache stamped freshness with the mtime
+  read *after* the parse finished rather than the one observed before it
+  started, so a library mutation landing during a multi-minute SWR refresh got
+  silently absorbed as fresh. Fixed by snapshotting the target mtime
+  immediately before triggering a re-parse (both the blocking path and the
+  background refresh) and threading it into the store step instead of
+  re-statting afterward, plus a write-epoch counter that `_mark_library_written`
+  bumps under the lock so a refresh whose parse straddles an explicit write
+  can detect it and discard itself rather than resurrecting stale data; a
+  refresh that discards itself for a still-live (not write-cleared) entry
+  chains straight into another refresh so continuous mutation still converges.
+
 ## [2.1.12] - 2026-09-03
 
 ### Security
