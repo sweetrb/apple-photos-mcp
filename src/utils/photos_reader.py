@@ -176,13 +176,20 @@ _db_stale = False
 # so peak memory is roughly double MAX_DB_CACHE_ENTRIES' worth.
 STALE_WHILE_REVALIDATE = os.environ.get("APPLE_PHOTOS_MCP_STALE_WHILE_REVALIDATE") == "1"
 
-# Guards _db_cache and _db_refreshing: the serve loop reads them on the request
-# thread while refresh threads mutate them.
+# Guards _db_cache, _db_refreshing and _db_write_epoch: the serve loop reads
+# them on the request thread while refresh threads mutate them.
 _db_lock = threading.RLock()
 
 # Library keys with a background re-parse already in flight, so concurrent
 # requests coalesce onto one refresh instead of spawning a thread per call.
 _db_refreshing: set[str] = set()
+
+# Bumped by _mark_library_written() every time a write tool invalidates the
+# cache. A refresh thread that started before a write landed snapshots this
+# alongside the target mtime; if it doesn't match at store time, the write
+# happened while the (possibly minutes-long) parse was running, so the parse
+# already predates it and must not be cached as fresh — see _store_db.
+_db_write_epoch = 0
 
 # Progress sink: None in one-shot mode; serve mode points it at a function
 # that writes an {"id", "type": "progress", ...} line for the current request.
@@ -218,35 +225,84 @@ def _parse_db(library: str | None) -> PhotosDB:
     return PhotosDB()
 
 
-def _store_db(key: str, db: PhotosDB) -> None:
+def _store_db(
+    key: str,
+    db: PhotosDB,
+    snapshot_mtime: float | None = None,
+    snapshot_epoch: int | None = None,
+) -> bool:
     """Record a freshly parsed db against the mtime of its staleness witness.
     Caller must hold _db_lock. Caches only when the witness is statable;
     otherwise caching quietly stays out of the way (mirrors the Node-side
-    cache's behavior)."""
+    cache's behavior).
+
+    snapshot_mtime/snapshot_epoch, when given, are the witness mtime and
+    _db_write_epoch observed right BEFORE _parse_db was called for this
+    result — there was a prior cache entry to compare against (the cold-start
+    case, nothing yet to race with, passes None/None and always stores).
+    _parse_db can run for minutes under SWR, so re-statting the witness only
+    AFTER the parse (the pre-fix behavior) silently absorbs anything that
+    changed during that window: a mutation landing mid-parse gets its mtime
+    attached to a parse that predates it, reading as fully fresh. Comparing
+    against the pre-parse snapshot instead catches that — either the witness
+    moved again mid-parse, or an explicit write (_mark_library_written) fired
+    and bumped the epoch — and refuses to store, since this result already
+    predates whatever happened. Returns whether it was stored as fresh."""
+    if snapshot_epoch is not None and snapshot_epoch != _db_write_epoch:
+        return False
     library_path = db.library_path
     sqlite_path = Path(library_path) / "database" / "Photos.sqlite" if library_path else None
-    mtime = _sqlite_mtime(sqlite_path)
-    if mtime is not None:
-        _db_cache[key] = {"db": db, "sqlite": sqlite_path, "mtime": mtime}
-        while len(_db_cache) > MAX_DB_CACHE_ENTRIES:
-            _db_cache.pop(next(iter(_db_cache)))
+    current_mtime = _sqlite_mtime(sqlite_path)
+    if current_mtime is None:
+        return False
+    if snapshot_mtime is not None and current_mtime != snapshot_mtime:
+        return False
+    _db_cache[key] = {"db": db, "sqlite": sqlite_path, "mtime": current_mtime}
+    while len(_db_cache) > MAX_DB_CACHE_ENTRIES:
+        _db_cache.pop(next(iter(_db_cache)))
+    return True
 
 
-def _refresh_db_async(library: str | None, key: str) -> None:
+def _refresh_db_async(
+    library: str | None, key: str, snapshot_mtime: float | None, snapshot_epoch: int
+) -> None:
     """Re-parse in the background and swap the result in. Failures leave the
     stale entry in place: a library that is mid-write (or briefly unreadable)
     should degrade to serving the last good parse, not to an error, and the
-    next request retries."""
+    next request retries.
+
+    snapshot_mtime/snapshot_epoch are captured by the caller (still holding
+    _db_lock) right before this refresh started, so _store_db can tell
+    whether the library changed again — or was explicitly invalidated by
+    _mark_library_written — while this parse was running. If _store_db
+    refuses to store for that reason, chain straight into another refresh
+    when there's still a live entry to build on (a bare mtime race under
+    continuous writes): otherwise the doubly-stale result would just sit
+    there until some future caller happens to notice and kick one off. A
+    write-triggered refusal has no entry to chain from — _mark_library_written
+    already cleared _db_cache — so the next request starts a clean parse."""
     try:
         db = _parse_db(library)
     except Exception:  # noqa: BLE001 - background thread must not escalate
-        return
-    else:
-        with _db_lock:
-            _store_db(key, db)
-    finally:
         with _db_lock:
             _db_refreshing.discard(key)
+        return
+
+    with _db_lock:
+        stored = _store_db(key, db, snapshot_mtime, snapshot_epoch)
+        _db_refreshing.discard(key)
+        if not stored:
+            entry = _db_cache.get(key)
+            if entry is not None and key not in _db_refreshing:
+                next_mtime = _sqlite_mtime(entry["sqlite"])
+                if next_mtime is not None:
+                    _db_refreshing.add(key)
+                    threading.Thread(
+                        target=_refresh_db_async,
+                        args=(library, key, next_mtime, _db_write_epoch),
+                        name="photosdb-refresh",
+                        daemon=True,
+                    ).start()
 
 
 def _open_db(library: str | None) -> PhotosDB:
@@ -258,6 +314,9 @@ def _open_db(library: str | None) -> PhotosDB:
     the caller blocks for a full re-parse, as before."""
     global _db_cache_hit, _db_stale
     key = _library_cache_key(library)
+
+    snapshot_mtime: float | None = None
+    snapshot_epoch: int | None = None
 
     with _db_lock:
         entry = _db_cache.get(key)
@@ -271,25 +330,33 @@ def _open_db(library: str | None) -> PhotosDB:
                 # Library changed. Hand back the stale parse now and re-parse
                 # behind it; an unstatable witness falls through to the
                 # blocking path, since there is nothing to revalidate against.
+                # Snapshot the witness mtime and write epoch BEFORE the parse
+                # starts (mtime is exactly the value that just proved this
+                # entry stale — reuse it) so _store_db can tell, once the
+                # parse finally finishes, whether either moved again while it
+                # was running rather than trusting a stat taken afterward.
                 _db_cache_hit = True
                 _db_stale = True
                 if key not in _db_refreshing:
                     _db_refreshing.add(key)
                     threading.Thread(
                         target=_refresh_db_async,
-                        args=(library, key),
+                        args=(library, key, mtime, _db_write_epoch),
                         name="photosdb-refresh",
                         daemon=True,
                     ).start()
                 return entry["db"]
-            # Library changed (or became unstatable) — drop and re-parse.
+            # Library changed (or became unstatable) — drop and re-parse,
+            # snapshotting the witness first for the same reason as above.
+            snapshot_mtime = mtime
+            snapshot_epoch = _db_write_epoch
             del _db_cache[key]
 
     _db_cache_hit = False
     _db_stale = False
     db = _parse_db(library)
     with _db_lock:
-        _store_db(key, db)
+        _store_db(key, db, snapshot_mtime, snapshot_epoch)
     return db
 
 
@@ -1320,8 +1387,22 @@ def _run_script(ps, name: str, *args):
 
 
 def _mark_library_written() -> None:
-    """Drop every resident PhotosDB after a write (see invariants above)."""
-    _db_cache.clear()
+    """Drop every resident PhotosDB after a write (see invariants above).
+
+    Must take _db_lock: _open_db/_store_db/_refresh_db_async all mutate
+    _db_cache under it, and an unsynchronized clear() here could land between
+    a background SWR refresh finishing its parse and storing it — the clear
+    would run first, then the refresh's _store_db would re-populate the cache
+    with a parse that predates this write, right after the write meant to
+    invalidate it. Taking the lock only serializes the two operations, though
+    — it can't stop a refresh that's already past this point from storing
+    anyway, so the write epoch bump is what actually breaks the race: it
+    lets _store_db recognize (via its snapshot_epoch argument) that a write
+    landed during its parse and refuse to store regardless of ordering."""
+    global _db_write_epoch
+    with _db_lock:
+        _db_cache.clear()
+        _db_write_epoch += 1
 
 
 def _bare_uuid(media_id: str) -> str:
