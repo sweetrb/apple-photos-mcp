@@ -47,9 +47,10 @@ overrides:
   # percent-encoded scheme normalization), GHSA-fph4-wmhf-6fwf (SSRF via
   # repeated hostname percent-decoding), GHSA-f65p-4m7j-42xc (SSRF via
   # malformed IPv6 normalization), GHSA-5jgf-p345-68v8 (host confusion via
-  # skipped IDN canonicalization). Reached as ajv -> @modelcontextprotocol/sdk,
-  # and ajv is inlined into the shipped build/index.js bundle, so this one is
-  # genuinely in the product, not just the dev toolchain.
+  # skipped IDN canonicalization); plus GHSA-58mr-gqgx-xq4g (high), fixed in
+  # 3.1.7. Reached as ajv -> @modelcontextprotocol/sdk, and ajv is inlined
+  # into the shipped build/index.js bundle, so this one is genuinely in the
+  # product, not just the dev toolchain.
   #
   # This MUST stay two-sided, never an exact pin. It was written as the exact
   # pin "3.1.4" as a security floor for an earlier advisory; when 3.1.5 shipped
@@ -58,7 +59,7 @@ overrides:
   # switched it to the caret `^3.1.5`, which is exactly equivalent to the
   # explicit two-sided form used here -- floored at the newest fix, capped
   # below the next major ajv expects.
-  "fast-uri": ">=3.1.6 <4"
+  "fast-uri": ">=3.1.7 <4"
   # GHSA-mwp4-54f8-5fhr (high), plus GHSA-4xrf-jv44-h6hh and
   # GHSA-22jq-vg5j-6vgg: fixed in 10.3.1. Reached as express-rate-limit ->
   # @modelcontextprotocol/sdk, which caps it at 10.2.0. Not present in the
