@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [2.1.14] - 2026-09-29
+
+### Security
+
+- Raised the `fast-uri` pnpm override floor to `>=3.1.7 <4` (fixes
+  [GHSA-58mr-gqgx-xq4g](https://github.com/advisories/GHSA-58mr-gqgx-xq4g),
+  high). Reached as `ajv` -> `@modelcontextprotocol/sdk`, and `ajv` is
+  inlined into the shipped `build/index.js` bundle.
+
 ## [2.1.13] - 2026-09-23
 
 ### Added
