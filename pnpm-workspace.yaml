@@ -66,7 +66,13 @@ overrides:
   # shipped bundle (the SDK's HTTP transport is not bundled), so this is a
   # supply-chain floor rather than a runtime exposure -- but the dependency is
   # runtime-scope, so keep it floored.
-  ip-address: ^10.3.1
+  #
+  # Raised to >=10.5.1 for GHSA-2vr4-cq9g-pvrc and GHSA-rpw4-54j3-4h4q (both
+  # medium), fixed in 10.5.1. The prior caret floor ^10.3.1 resolved to the
+  # vulnerable 10.4.0. Two-sided range, never an exact pin, for the reason
+  # recorded on fast-uri above -- an exact pin would invert into a ceiling
+  # the moment the next fix ships.
+  ip-address: ">=10.5.1 <11"
   # GHSA-fxqj-rqcc-2cmp (moderate): incomplete fix of GHSA-6g55-p6wh-862q --
   # an attacker-controlled sourceMappingURL can read arbitrary .map files when
   # `from` is unset. Fixed in 8.5.23. Development scope only (vitest -> vite ->
