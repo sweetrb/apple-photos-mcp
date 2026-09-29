@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [2.1.15] - 2026-09-29
+
+### Security
+
+- Raised the `ip-address` pnpm override floor to `>=10.5.1 <11` (fixes
+  [GHSA-2vr4-cq9g-pvrc](https://github.com/advisories/GHSA-2vr4-cq9g-pvrc) and
+  [GHSA-rpw4-54j3-4h4q](https://github.com/advisories/GHSA-rpw4-54j3-4h4q),
+  both medium). The prior caret floor `^10.3.1` resolved to the vulnerable
+  `10.4.0`. Reached as `express-rate-limit` -> `@modelcontextprotocol/sdk`;
+  not present in the shipped `build/index.js` bundle, so this is a
+  supply-chain floor rather than a runtime exposure.
+
 ## [2.1.14] - 2026-09-29
 
 ### Security
