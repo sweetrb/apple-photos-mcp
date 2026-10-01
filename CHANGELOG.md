@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [2.1.18] - 2026-10-02
+### Changed
+- Bumped `osxphotos` from 0.76.1 to 0.77.1 in `requirements.txt` (Dependabot).
+
 ## [2.1.17] - 2026-10-01
 ### Security
 - Raised the `brace-expansion` pnpm override floors to `1.1.21` / `5.0.12`
