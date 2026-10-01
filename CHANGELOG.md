@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [2.1.17] - 2026-10-01
+### Changed
+- Bumped `osxphotos` from 0.76.1 to 0.77.1 in `requirements.txt` (Dependabot).
+
 ## [2.1.16] - 2026-09-30
 ### Changed
 - Dependency bump via Dependabot; committed bundle rebuilt. (automated)
