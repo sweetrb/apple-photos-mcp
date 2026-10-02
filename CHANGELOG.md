@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [2.1.17] - 2026-10-01
+### Security
+- Raised the `brace-expansion` pnpm override floors to `1.1.21` / `5.0.12`
+  (fixes [GHSA-q2hr-2g5m-vwhr](https://github.com/advisories/GHSA-q2hr-2g5m-vwhr),
+  medium). Development scope only — not in the shipped `build/index.js` bundle.
+
 ## [2.1.16] - 2026-09-30
 ### Changed
 - Dependency bump via Dependabot; committed bundle rebuilt. (automated)
