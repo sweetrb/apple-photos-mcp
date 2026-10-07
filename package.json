@@ -1,6 +1,6 @@
 {
   "name": "apple-photos-mcp",
-  "version": "2.1.18",
+  "version": "2.1.19",
   "packageManager": "pnpm@11.9.0",
   "description": "MCP server for Apple Photos - query, search, export, and inspect the macOS Photos library via Claude and other AI assistants, plus opt-in album/metadata write tools (read-only by default)",
   "type": "module",
@@ -68,7 +68,7 @@
     "darwin"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {
