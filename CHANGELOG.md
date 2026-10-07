@@ -5,7 +5,7 @@
 ## [2.1.19] - 2026-10-07
 ### Security
 - **`@modelcontextprotocol/sdk` 1.30.1 -> 1.31.0, clearing [GHSA-6qxp-vccf-f47h](https://github.com/advisories/GHSA-6qxp-vccf-f47h) (OAuth client credential disclosure).** Not reachable here: the advisory concerns the SDK's OAuth *client* code, and this is a stdio *server* that never acts as an OAuth client. The rebuilt `build/index.js` contains none of it (no `oauth`, `OAuthClientProvider`, `client_secret` or client-transport strings), so the shipped bundle was not exposed. Bumped to keep the dependency tree clean, matching `apple-mail-mcp` 2.20.2 and `apple-numbers-mcp` 1.2.6.
-- **`source-map-js` 1.2.1 -> 1.2.2, clearing [GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q).** Development scope only (reached via typescript-eslint tooling) and not in the shipped bundle. Added a two-sided `>=1.2.2 <2` override in `pnpm-workspace.yaml`.
+- **`source-map-js` 1.2.1 -> 1.2.2, clearing [GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q).** Development scope only (reached via vitest → vite → postcss and `@vitest/coverage-v8` → magicast) and not in the shipped bundle. Added a two-sided `>=1.2.2 <2` override in `pnpm-workspace.yaml`.
 
 ## [2.1.18] - 2026-10-02
 ### Changed
