@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [2.1.20] - 2026-10-07
+### Changed
+- Bumped `osxphotos` from 0.77.1 to 0.77.2 and `photoscript` from 0.5.3 to 0.6.1 in `requirements.txt` (Dependabot, [#108](https://github.com/sweetrb/apple-photos-mcp/pull/108)). osxphotos 0.77.2 fixes shared-album reading on macOS 26+ and system-library detection on macOS 27; photoscript 0.6.1 only changes `photosLibraryWaitForPhotos` (no more `-128` timeout waiting on an empty library) — `script_loader.run_script` / `configure_run_script`, which the write tools call directly, are byte-identical to 0.5.3.
+
 ## [2.1.19] - 2026-10-07
 ### Security
 - **`@modelcontextprotocol/sdk` 1.30.1 -> 1.31.0, clearing [GHSA-6qxp-vccf-f47h](https://github.com/advisories/GHSA-6qxp-vccf-f47h) (OAuth client credential disclosure).** Not reachable here: the advisory concerns the SDK's OAuth *client* code, and this is a stdio *server* that never acts as an OAuth client. The rebuilt `build/index.js` contains none of it (no `oauth`, `OAuthClientProvider`, `client_secret` or client-transport strings), so the shipped bundle was not exposed. Bumped to keep the dependency tree clean, matching `apple-mail-mcp` 2.20.2 and `apple-numbers-mcp` 1.2.6.
