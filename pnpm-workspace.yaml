@@ -127,8 +127,9 @@ overrides:
   # on fast-uri above.
   qs: ">=6.16.0 <7"
   # GHSA-68fv-2mgg-jv7q: fixed in 1.2.2 (published 2026-09-30T14:08Z, past the
-  # 7-day soak above). Development scope only -- reached via typescript-eslint
-  # tooling, not via the SDK -- and absent from the shipped build/index.js
+  # 7-day soak above). Development scope only -- reached via vitest -> vite ->
+  # postcss and @vitest/coverage-v8 -> magicast, not via the SDK -- and absent
+  # from the shipped build/index.js
   # bundle. Two-sided range, never an exact pin, for the reason recorded on
   # fast-uri above.
   source-map-js: ">=1.2.2 <2"
