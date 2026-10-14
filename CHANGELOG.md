@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [2.1.21] - 2026-10-14
+### Changed
+- Dependency bump via Dependabot; committed bundle rebuilt. (automated)
+
 ## [2.1.20] - 2026-10-07
 ### Changed
 - Bumped `osxphotos` from 0.77.1 to 0.77.2 and `photoscript` from 0.5.3 to 0.6.1 in `requirements.txt` (Dependabot, [#108](https://github.com/sweetrb/apple-photos-mcp/pull/108)). osxphotos 0.77.2 fixes shared-album reading on macOS 26+ and system-library detection on macOS 27; photoscript 0.6.1 only changes `photosLibraryWaitForPhotos` (no more `-128` timeout waiting on an empty library) — `script_loader.run_script` / `configure_run_script`, which the write tools call directly, are byte-identical to 0.5.3.
