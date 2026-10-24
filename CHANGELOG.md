@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [2.1.22] - 2026-10-23
+### Security
+- **`zod` 3.25.76 -> 4.6.7 (`^4.6.6`), clearing [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5) (high: memory exhaustion validating oversized constrained collections).** Zod is inlined into the shipped `build/index.js`, so this is a runtime fix. The migration keeps every tool's advertised `tools/list` contract (inputSchema, outputSchema, description, annotations) equivalent to 2.1.21: the new `src/utils/toolRegistration.ts` (`registerToolWithContracts`) re-applies Zod 3's `additionalProperties` advertisement to strip/passthrough objects, and `integerNumber()` replaces `z.number().int()` so integer fields keep `"type": "integer"` and the full integer domain rather than Zod 4's safe-integer restriction. Out-of-range and non-integer inputs are still rejected with `-32602`. The osxphotos Python sidecar is untouched. Approach ported from apple-mail-mcp [#326](https://github.com/sweetrb/apple-mail-mcp/pull/326)/[#327](https://github.com/sweetrb/apple-mail-mcp/pull/327) (@jjoanna2-debug).
+- **`ip-address` override floor raised to `>=10.7.4 <11`**, clearing [GHSA-rxp7-6hxx-x8q5](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5) (moderate). Supply-chain only: reached via `@modelcontextprotocol/sdk` -> `express-rate-limit`, not in the shipped bundle.
+- **`vitest` / `@vitest/coverage-v8` raised to `^4.1.12`**, pulling `@vitest/mocker` 4.1.12 and clearing its two moderate advisories (manual-mock code injection, Windows backslash traversal). Development scope only.
+- **`vite` added as a direct devDependency `>=7.3.7 <8`** (resolves 7.3.7), clearing the vite/launch-editor advisories against `<=7.3.6` (one high, plus moderate/low). vite is reached only as a vitest peer dependency, which a pnpm 11 range override does not re-resolve, so a real devDependency edge is used, as in apple-notes-mcp. Development scope only; not in the shipped bundle.
+
 ## [2.1.21] - 2026-10-14
 ### Changed
 - Dependency bump via Dependabot; committed bundle rebuilt. (automated)

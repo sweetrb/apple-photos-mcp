@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { PhotosManager } from "./services/photosManager.js";
 import { killActiveSidecars } from "./utils/python.js";
 import { withJsonSchema2020_12 } from "./utils/jsonSchemaDialect.js";
+import { integerNumber, registerToolWithContracts } from "./utils/toolRegistration.js";
 import type { SidecarProgress } from "./utils/sidecarClient.js";
 import { imageResponse, successResponse, withErrorHandling } from "./tools/respond.js";
 import { runDoctor, formatDoctorReport } from "./tools/doctor.js";
@@ -68,29 +69,7 @@ const uuidSchema = z
   );
 
 // --- health-check ---
-/**
- * Register a tool, advertising its `outputSchema` as PERMISSIVE.
- *
- * The MCP **client** validates a result's `structuredContent` against the JSON
- * Schema the server advertised — not against the server's own zod object. A
- * bare zod raw shape renders as `additionalProperties: false`, so a payload
- * carrying any field the schema didn't enumerate is rejected client-side with
- * `-32602 … data must NOT have additional properties`, discarding a result the
- * handler produced correctly. The server never sees it, because zod's own parse
- * silently *strips* unknown keys rather than failing — which is why the
- * registerTool/outputSchema migration's "all fields optional, no `.strict()`"
- * was believed to be permissive. It covered optionality; it did not cover
- * undeclared keys.
- *
- * `.passthrough()` advertises `additionalProperties: true`, which is the
- * contract that migration intended: a declared field documents the shape, an
- * undeclared one is carried through instead of nuking the whole result. This is
- * not hypothetical — it took down `get-mail-stats` in the sibling
- * apple-mail-mcp (sweetrb/apple-mail-mcp#135), where every tool was likewise
- * advertising `additionalProperties: false` and the one tool whose payload
- * carried an undeclared key failed on every call. Enforced for every tool here
- * by the outputSchema contract test.
- */
+/** Register a tool on this server; see registerToolWithContracts for the schema contract. */
 function registerTool<
   OutputArgs extends z.ZodRawShape,
   InputArgs extends undefined | z.ZodRawShape = undefined,
@@ -105,12 +84,7 @@ function registerTool<
   },
   cb: ToolCallback<InputArgs>
 ): RegisteredTool {
-  const { outputSchema, ...rest } = config;
-  return server.registerTool(
-    name,
-    outputSchema ? { ...rest, outputSchema: z.object(outputSchema).passthrough() } : rest,
-    cb
-  );
+  return registerToolWithContracts(server, name, config, cb);
 }
 
 registerTool(
@@ -300,19 +274,15 @@ registerTool(
             "for no location filter"
         ),
       year: z
-        .array(z.number().int().min(0).max(9999))
+        .array(integerNumber().min(0).max(9999))
         .max(100)
         .optional()
         .describe("Taken in calendar year(s); ANY-match (e.g. [2024, 2025])"),
-      minSize: z
-        .number()
-        .int()
+      minSize: integerNumber()
         .positive()
         .optional()
         .describe("Original file size at least this many bytes"),
-      maxSize: z
-        .number()
-        .int()
+      maxSize: integerNumber()
         .positive()
         .optional()
         .describe("Original file size at most this many bytes"),
@@ -368,9 +338,7 @@ registerTool(
           "Sort matches by taken date, newest first, BEFORE limit is applied — so limit " +
             "means 'the N most recent matches' instead of 'N in database order'"
         ),
-      limit: z
-        .number()
-        .int()
+      limit: integerNumber()
         .positive()
         .max(100000)
         .optional()
@@ -549,9 +517,7 @@ registerTool(
     inputSchema: {
       ...libraryArg,
       uuid: uuidSchema.describe("Photo UUID (hex-with-dashes, as returned by query)"),
-      minSize: z
-        .number()
-        .int()
+      minSize: integerNumber()
         .positive()
         .max(8192)
         .optional()
@@ -637,9 +603,7 @@ registerTool(
       "Safety: read-only. This server cannot delete photos — to act on duplicates, quarantine the extra copies into an album (create-album + add-to-album when writes are enabled, otherwise by hand in Photos.app) and review/delete inside Photos.app.",
     inputSchema: {
       ...libraryArg,
-      limit: z
-        .number()
-        .int()
+      limit: integerNumber()
         .positive()
         .max(10000)
         .optional()
@@ -736,7 +700,7 @@ registerTool(
       "Do not use when: you want photos carrying a keyword — use query with the keyword filter; or you want people/faces rather than tags — use list-persons.",
     inputSchema: {
       ...libraryArg,
-      limit: z.number().int().positive().max(100000).optional().describe("Top-N keywords"),
+      limit: integerNumber().positive().max(100000).optional().describe("Top-N keywords"),
     },
     outputSchema: {
       count: z.number().optional(),
@@ -761,7 +725,7 @@ registerTool(
       "Do not use when: you want photos of a person — use query with the person filter; or you want subject tags rather than people — use list-keywords.",
     inputSchema: {
       ...libraryArg,
-      limit: z.number().int().positive().max(100000).optional().describe("Top-N persons"),
+      limit: integerNumber().positive().max(100000).optional().describe("Top-N persons"),
     },
     outputSchema: {
       count: z.number().optional(),
@@ -1146,9 +1110,7 @@ registerTool(
             "the Mac's local timezone unless a UTC offset is included. Exactly one of " +
             "date / shiftSeconds"
         ),
-      shiftSeconds: z
-        .number()
-        .int()
+      shiftSeconds: integerNumber()
         .min(-3_200_000_000)
         .max(3_200_000_000)
         .optional()

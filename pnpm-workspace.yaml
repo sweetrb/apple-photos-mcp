@@ -76,7 +76,19 @@ overrides:
   # vulnerable 10.4.0. Two-sided range, never an exact pin, for the reason
   # recorded on fast-uri above -- an exact pin would invert into a ceiling
   # the moment the next fix ships.
-  ip-address: ">=10.5.1 <11"
+  #
+  # Raised to >=10.7.4 (2026-10-23) for GHSA-rxp7-6hxx-x8q5 (moderate,
+  # Address6 matches a zone identifier in the address), fixed in 10.7.4, which
+  # has cleared the 7-day soak. Same supply-chain-only reachability as above.
+  ip-address: ">=10.7.4 <11"
+  # NOTE on vite (GHSA advisories against vite <=7.3.6, one high plus
+  # moderate/low, 2026-10-23): vite is reached ONLY as a peerDependency of
+  # vitest/@vitest/coverage-v8/@vitest/mocker. Under pnpm 11 a range override
+  # here does NOT re-resolve an already-chosen peer, so the fix is a real
+  # devDependency range in package.json (">=7.3.7 <8"), as apple-notes-mcp and
+  # apple-mail-mcp do. @vitest/mocker (<4.1.12) is an exact-version dependency
+  # of vitest, so it is fixed by raising vitest/@vitest/coverage-v8 to ^4.1.12
+  # rather than by an override. Dev scope only; not in the shipped bundle.
   # GHSA-fxqj-rqcc-2cmp (moderate): incomplete fix of GHSA-6g55-p6wh-862q --
   # an attacker-controlled sourceMappingURL can read arbitrary .map files when
   # `from` is unset. Fixed in 8.5.23. Development scope only (vitest -> vite ->
