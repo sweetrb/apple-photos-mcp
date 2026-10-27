@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [2.1.23] - 2026-10-27
+### Security
+- **`fast-uri` override floor raised to `>=3.1.9 <4`**, clearing Dependabot [#31](https://github.com/sweetrb/apple-photos-mcp/security/dependabot/31) (low, [GHSA-333x-w4r6-6crp](https://github.com/advisories/GHSA-333x-w4r6-6crp)), [#32](https://github.com/sweetrb/apple-photos-mcp/security/dependabot/32) (medium, [GHSA-wjr9-j795-jxcr](https://github.com/advisories/GHSA-wjr9-j795-jxcr)), [#33](https://github.com/sweetrb/apple-photos-mcp/security/dependabot/33) (low, [GHSA-xhq7-xmqj-769h](https://github.com/advisories/GHSA-xhq7-xmqj-769h)), and [#34](https://github.com/sweetrb/apple-photos-mcp/security/dependabot/34) (medium, [GHSA-w74x-v6f9-j3xg](https://github.com/advisories/GHSA-w74x-v6f9-j3xg)), all fixed in `fast-uri` 3.1.9. Reached as `ajv` -> `@modelcontextprotocol/sdk`, and `ajv` is inlined into the shipped `build/index.js` bundle, so this is a runtime fix, not just supply-chain. The 3.1.9 release cleared the 7-day `minimumReleaseAge` soak above on 2026-10-26T23:06Z.
+
 ## [2.1.22] - 2026-10-23
 ### Security
 - **`zod` 3.25.76 -> 4.6.7 (`^4.6.6`), clearing [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5) (high: memory exhaustion validating oversized constrained collections).** Zod is inlined into the shipped `build/index.js`, so this is a runtime fix. The migration keeps every tool's advertised `tools/list` contract (inputSchema, outputSchema, description, annotations) equivalent to 2.1.21: the new `src/utils/toolRegistration.ts` (`registerToolWithContracts`) re-applies Zod 3's `additionalProperties` advertisement to strip/passthrough objects, and `integerNumber()` replaces `z.number().int()` so integer fields keep `"type": "integer"` and the full integer domain rather than Zod 4's safe-integer restriction. Out-of-range and non-integer inputs are still rejected with `-32602`. The osxphotos Python sidecar is untouched. Approach ported from apple-mail-mcp [#326](https://github.com/sweetrb/apple-mail-mcp/pull/326)/[#327](https://github.com/sweetrb/apple-mail-mcp/pull/327) (@jjoanna2-debug).
