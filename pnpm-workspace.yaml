@@ -63,7 +63,14 @@ overrides:
   # switched it to the caret `^3.1.5`, which is exactly equivalent to the
   # explicit two-sided form used here -- floored at the newest fix, capped
   # below the next major ajv expects.
-  "fast-uri": ">=3.1.7 <4"
+  #
+  # Raised to >=3.1.9 <4 (2026-10-27) for Dependabot #31 (low,
+  # GHSA-333x-w4r6-6crp), #32 (medium, GHSA-wjr9-j795-jxcr), #33 (low,
+  # GHSA-xhq7-xmqj-769h), and #34 (medium, GHSA-w74x-v6f9-j3xg), all fixed in
+  # 3.1.9. Published version cleared the 7-day minimumReleaseAge soak above
+  # at 2026-10-26T23:06Z. Same ajv -> @modelcontextprotocol/sdk reachability
+  # as above, so this remains in the shipped build/index.js bundle.
+  "fast-uri": ">=3.1.9 <4"
   # GHSA-mwp4-54f8-5fhr (high), plus GHSA-4xrf-jv44-h6hh and
   # GHSA-22jq-vg5j-6vgg: fixed in 10.3.1. Reached as express-rate-limit ->
   # @modelcontextprotocol/sdk, which caps it at 10.2.0. Not present in the
