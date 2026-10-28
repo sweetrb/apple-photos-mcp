@@ -144,7 +144,10 @@ overrides:
   # minimumReleaseAge soak above on 2026-09-05T23:50:15Z; it has now cleared
   # naturally. Two-sided range, never an exact pin, for the reason recorded
   # on fast-uri above.
-  qs: ">=6.16.0 <7"
+  # 2026-10-28: GHSA-6pq8-jhm2-2vcw (medium, qs.stringify arrayFormat 'comma' DoS),
+  # vulnerable <= 6.16.0, fixed in 6.16.1 (published 2026-10-14T22:06Z, past the
+  # 7-day soak). Floor raised from 6.16.0.
+  qs: ">=6.16.1 <7"
   # GHSA-68fv-2mgg-jv7q: fixed in 1.2.2 (published 2026-09-30T14:08Z, past the
   # 7-day soak above). Development scope only -- reached via vitest -> vite ->
   # postcss and @vitest/coverage-v8 -> magicast, not via the SDK -- and absent
