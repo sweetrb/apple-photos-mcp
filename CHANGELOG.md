@@ -2,42 +2,68 @@
 
 ## [Unreleased]
 
-## [2.1.23] - 2026-10-27
+## [2.1.24] - 2026-10-28
+
 ### Security
+
+- **`qs` floor raised to 6.16.1** for GHSA-6pq8-jhm2-2vcw (medium: `qs.stringify` with
+  `arrayFormat: 'comma'` throws an uncaught TypeError on array elements carrying a
+  non-callable own `toString`). Reached through `@modelcontextprotocol/sdk` → express, the
+  HTTP transport this stdio server never enters, so exposure is near-zero. 6.16.1 was
+  published 2026-10-14, past the 7-day `minimumReleaseAge` soak. Clears the `pnpm audit` finding; Dependabot has not raised an alert for it here yet.
+
+## [2.1.23] - 2026-10-27
+
+### Security
+
 - **`fast-uri` override floor raised to `>=3.1.9 <4`**, clearing Dependabot [#31](https://github.com/sweetrb/apple-photos-mcp/security/dependabot/31) (low, [GHSA-333x-w4r6-6crp](https://github.com/advisories/GHSA-333x-w4r6-6crp)), [#32](https://github.com/sweetrb/apple-photos-mcp/security/dependabot/32) (medium, [GHSA-wjr9-j795-jxcr](https://github.com/advisories/GHSA-wjr9-j795-jxcr)), [#33](https://github.com/sweetrb/apple-photos-mcp/security/dependabot/33) (low, [GHSA-xhq7-xmqj-769h](https://github.com/advisories/GHSA-xhq7-xmqj-769h)), and [#34](https://github.com/sweetrb/apple-photos-mcp/security/dependabot/34) (medium, [GHSA-w74x-v6f9-j3xg](https://github.com/advisories/GHSA-w74x-v6f9-j3xg)), all fixed in `fast-uri` 3.1.9. Reached as `ajv` -> `@modelcontextprotocol/sdk`, and `ajv` is inlined into the shipped `build/index.js` bundle, so this is a runtime fix, not just supply-chain. The 3.1.9 release cleared the 7-day `minimumReleaseAge` soak above on 2026-10-26T23:06Z.
 
 ## [2.1.22] - 2026-10-23
+
 ### Security
+
 - **`zod` 3.25.76 -> 4.6.7 (`^4.6.6`), clearing [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5) (high: memory exhaustion validating oversized constrained collections).** Zod is inlined into the shipped `build/index.js`, so this is a runtime fix. The migration keeps every tool's advertised `tools/list` contract (inputSchema, outputSchema, description, annotations) equivalent to 2.1.21: the new `src/utils/toolRegistration.ts` (`registerToolWithContracts`) re-applies Zod 3's `additionalProperties` advertisement to strip/passthrough objects, and `integerNumber()` replaces `z.number().int()` so integer fields keep `"type": "integer"` and the full integer domain rather than Zod 4's safe-integer restriction. Out-of-range and non-integer inputs are still rejected with `-32602`. The osxphotos Python sidecar is untouched. Approach ported from apple-mail-mcp [#326](https://github.com/sweetrb/apple-mail-mcp/pull/326)/[#327](https://github.com/sweetrb/apple-mail-mcp/pull/327) (@jjoanna2-debug).
 - **`ip-address` override floor raised to `>=10.7.4 <11`**, clearing [GHSA-rxp7-6hxx-x8q5](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5) (moderate). Supply-chain only: reached via `@modelcontextprotocol/sdk` -> `express-rate-limit`, not in the shipped bundle.
 - **`vitest` / `@vitest/coverage-v8` raised to `^4.1.12`**, pulling `@vitest/mocker` 4.1.12 and clearing its two moderate advisories (manual-mock code injection, Windows backslash traversal). Development scope only.
 - **`vite` added as a direct devDependency `>=7.3.7 <8`** (resolves 7.3.7), clearing the vite/launch-editor advisories against `<=7.3.6` (one high, plus moderate/low). vite is reached only as a vitest peer dependency, which a pnpm 11 range override does not re-resolve, so a real devDependency edge is used, as in apple-notes-mcp. Development scope only; not in the shipped bundle.
 
 ## [2.1.21] - 2026-10-14
+
 ### Changed
+
 - Dependency bump via Dependabot; committed bundle rebuilt. (automated)
 
 ## [2.1.20] - 2026-10-07
+
 ### Changed
+
 - Bumped `osxphotos` from 0.77.1 to 0.77.2 and `photoscript` from 0.5.3 to 0.6.1 in `requirements.txt` (Dependabot, [#108](https://github.com/sweetrb/apple-photos-mcp/pull/108)). osxphotos 0.77.2 fixes shared-album reading on macOS 26+ and system-library detection on macOS 27; photoscript 0.6.1 only changes `photosLibraryWaitForPhotos` (no more `-128` timeout waiting on an empty library) — `script_loader.run_script` / `configure_run_script`, which the write tools call directly, are byte-identical to 0.5.3.
 
 ## [2.1.19] - 2026-10-07
+
 ### Security
-- **`@modelcontextprotocol/sdk` 1.30.1 -> 1.31.0, clearing [GHSA-6qxp-vccf-f47h](https://github.com/advisories/GHSA-6qxp-vccf-f47h) (OAuth client credential disclosure).** Not reachable here: the advisory concerns the SDK's OAuth *client* code, and this is a stdio *server* that never acts as an OAuth client. The rebuilt `build/index.js` contains none of it (no `oauth`, `OAuthClientProvider`, `client_secret` or client-transport strings), so the shipped bundle was not exposed. Bumped to keep the dependency tree clean, matching `apple-mail-mcp` 2.20.2 and `apple-numbers-mcp` 1.2.6.
+
+- **`@modelcontextprotocol/sdk` 1.30.1 -> 1.31.0, clearing [GHSA-6qxp-vccf-f47h](https://github.com/advisories/GHSA-6qxp-vccf-f47h) (OAuth client credential disclosure).** Not reachable here: the advisory concerns the SDK's OAuth _client_ code, and this is a stdio _server_ that never acts as an OAuth client. The rebuilt `build/index.js` contains none of it (no `oauth`, `OAuthClientProvider`, `client_secret` or client-transport strings), so the shipped bundle was not exposed. Bumped to keep the dependency tree clean, matching `apple-mail-mcp` 2.20.2 and `apple-numbers-mcp` 1.2.6.
 - **`source-map-js` 1.2.1 -> 1.2.2, clearing [GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q).** Development scope only (reached via vitest → vite → postcss and `@vitest/coverage-v8` → magicast) and not in the shipped bundle. Added a two-sided `>=1.2.2 <2` override in `pnpm-workspace.yaml`.
 
 ## [2.1.18] - 2026-10-02
+
 ### Changed
+
 - Bumped `osxphotos` from 0.76.1 to 0.77.1 in `requirements.txt` (Dependabot).
 
 ## [2.1.17] - 2026-10-01
+
 ### Security
+
 - Raised the `brace-expansion` pnpm override floors to `1.1.21` / `5.0.12`
   (fixes [GHSA-q2hr-2g5m-vwhr](https://github.com/advisories/GHSA-q2hr-2g5m-vwhr),
   medium). Development scope only — not in the shipped `build/index.js` bundle.
 
 ## [2.1.16] - 2026-09-30
+
 ### Changed
+
 - Dependency bump via Dependabot; committed bundle rebuilt. (automated)
 
 ## [2.1.15] - 2026-09-29
@@ -91,7 +117,7 @@
   landed — the refresh's store call re-populated the cache with the pre-write
   parse right after the write meant to invalidate it, making the write
   invisible to the next read. (2) the cache stamped freshness with the mtime
-  read *after* the parse finished rather than the one observed before it
+  read _after_ the parse finished rather than the one observed before it
   started, so a library mutation landing during a multi-minute SWR refresh got
   silently absorbed as fresh. Fixed by snapshotting the target mtime
   immediately before triggering a re-parse (both the blocking path and the
@@ -125,8 +151,8 @@
 - **Supply-chain soak raised from 1 day to 7 days** (`minimumReleaseAge: 10080` in
   `pnpm-workspace.yaml`). This is a development/CI-time policy — no shipped bytes change.
   It is not redundant with Dependabot's existing 7-day cooldown: the cooldown governs only
-  what Dependabot *proposes* (direct dependencies), while `minimumReleaseAge` governs
-  everything a resolution *installs*, including transitive packages Dependabot never sees.
+  what Dependabot _proposes_ (direct dependencies), while `minimumReleaseAge` governs
+  everything a resolution _installs_, including transitive packages Dependabot never sees.
   Verified against this repo's committed lockfile, which needs no churn to satisfy it.
   Prompted by [sweetrb/apple-mail-mcp#174](https://github.com/sweetrb/apple-mail-mcp/pull/174)
   (@anupamme), applied across all four Apple MCP repos so the value cannot drift.
@@ -135,7 +161,7 @@
 
 ### Documentation
 
-- Retagged the project-scope `.mcp.json` entrypoint excerpt from ```json to ```text. The block is a single `"args": [...]` key/value fragment, not a JSON document, so it never parsed — a reader copying it as JSON got a syntax error. Added guards that keep every documented example honest: every ```json fence across README.md, CLAUDE.md and docs/ must parse, every documented `APPLE_*_MCP_*` environment variable must exist under src/, and the README `## Tool Reference` must document exactly the tools the built server advertises — in both directions, so neither an undocumented new tool nor a leftover entry for a removed one can pass.
+- Retagged the project-scope `.mcp.json` entrypoint excerpt from `json to `text. The block is a single `"args": [...]` key/value fragment, not a JSON document, so it never parsed — a reader copying it as JSON got a syntax error. Added guards that keep every documented example honest: every ```json fence across README.md, CLAUDE.md and docs/ must parse, every documented `APPLE_*_MCP_*` environment variable must exist under src/, and the README `## Tool Reference` must document exactly the tools the built server advertises — in both directions, so neither an undocumented new tool nor a leftover entry for a removed one can pass.
 
 ## [2.1.10] - 2026-08-12
 
@@ -145,7 +171,7 @@
 
 ### Added
 
-- **The outputSchema contract test now pins the advertised dialect.** Two assertions against the real built server over stdio: every `inputSchema`/`outputSchema` must declare `https://json-schema.org/draft/2020-12/schema`, and no advertised schema may contain a draft-07-only construct (a `draft-07` mention anywhere, a `#/definitions/` `$ref`, a `definitions`/`additionalItems`/`dependencies` keyword, a boolean `exclusiveMinimum`/`exclusiveMaximum`, or a `$schema` on any node but the root). The existing checks could not see this class at all — they inspect schema *contents*, and a schema can be perfectly shaped while declaring a dialect that makes the client discard the tool before it is ever called. A new unit suite covers the converter itself, including the cases today's schemas do not exercise.
+- **The outputSchema contract test now pins the advertised dialect.** Two assertions against the real built server over stdio: every `inputSchema`/`outputSchema` must declare `https://json-schema.org/draft/2020-12/schema`, and no advertised schema may contain a draft-07-only construct (a `draft-07` mention anywhere, a `#/definitions/` `$ref`, a `definitions`/`additionalItems`/`dependencies` keyword, a boolean `exclusiveMinimum`/`exclusiveMaximum`, or a `$schema` on any node but the root). The existing checks could not see this class at all — they inspect schema _contents_, and a schema can be perfectly shaped while declaring a dialect that makes the client discard the tool before it is ever called. A new unit suite covers the converter itself, including the cases today's schemas do not exercise.
 
 ### Documentation
 
@@ -160,24 +186,30 @@
 ## [2.1.9] - 2026-08-06
 
 ### Fixed
-- **Every tool advertised an output schema that rejected undeclared keys, discarding otherwise-correct results.** The MCP **client** validates a result's `structuredContent` against the JSON Schema the server *advertised*, not against the server's own zod object — and a bare zod raw shape renders as `additionalProperties: false`. So any field a handler emits that its schema doesn't enumerate is a hard client-side `-32602 … data must NOT have additional properties`, throwing away a payload the handler computed correctly. The server never notices, because zod's own parse silently *strips* unknown keys instead of failing, which is exactly why the `registerTool`/`outputSchema` migration's "all fields optional, no `.strict()`" read as permissive: it covered optionality, not undeclared keys. All **21 tools** in this repo were advertising `additionalProperties: false`. Every tool now registers through a wrapper applying `.passthrough()`, advertising `additionalProperties: true` — the contract that migration intended. Found while fixing the same defect in the sibling apple-mail-mcp (sweetrb/apple-mail-mcp#135), where it was not latent: it broke `get-mail-stats` on every call for anyone with IMAP configured.
+
+- **Every tool advertised an output schema that rejected undeclared keys, discarding otherwise-correct results.** The MCP **client** validates a result's `structuredContent` against the JSON Schema the server _advertised_, not against the server's own zod object — and a bare zod raw shape renders as `additionalProperties: false`. So any field a handler emits that its schema doesn't enumerate is a hard client-side `-32602 … data must NOT have additional properties`, throwing away a payload the handler computed correctly. The server never notices, because zod's own parse silently _strips_ unknown keys instead of failing, which is exactly why the `registerTool`/`outputSchema` migration's "all fields optional, no `.strict()`" read as permissive: it covered optionality, not undeclared keys. All **21 tools** in this repo were advertising `additionalProperties: false`. Every tool now registers through a wrapper applying `.passthrough()`, advertising `additionalProperties: true` — the contract that migration intended. Found while fixing the same defect in the sibling apple-mail-mcp (sweetrb/apple-mail-mcp#135), where it was not latent: it broke `get-mail-stats` on every call for anyone with IMAP configured.
 
 ### Added
+
 - **The outputSchema contract test now asserts that every tool tolerates undeclared keys.** The existing checks — every tool has an `outputSchema`, none requires a field — could not see this class, because they inspect the advertised schema and round-trip only the diagnostic tools; a tool whose payload carries an undeclared key passes CI and fails in the user's client. The suite now fails any tool advertising `additionalProperties: false`, so this cannot silently return.
 
 ## [2.1.8] - 2026-08-05
+
 ### Changed
+
 - Dependency bump via Dependabot; committed bundle rebuilt. (automated)
 
 ### Security
+
 - **Bumped the pinned `ossf/scorecard-action` to `2d1146689b8cda280b9bc96326124645441f03bc` (v2.4.4).** Dependabot's weekly `github-actions` group PR landed this in apple-mail-mcp (#134) and apple-numbers-mcp (#56) but skipped this repo and apple-notes-mcp, so `conformance-check.sh` reported `DRIFT: .github/workflows/scorecard.yml differs`. The four servers are meant to carry a byte-identical workflow set, and a silent group-skip is the recurring way that breaks. `.github/` does not ship, so this owes no version bump.
 
 ## [2.1.7] - 2026-08-03
 
 ### Security
+
 - **Floored `hono` to `^4.12.34`, clearing GHSA-8j4g-w8fx-2239 (moderate).** This was deferred earlier the same day: the fix release was still inside the repo's 24-hour `minimumReleaseAge` soak — it missed by under three minutes — and no `minimumReleaseAgeExclude` carve-out was added, because the soak is the point. It matured at 2026-08-04T02:36:40Z and is floored now. `pnpm audit` reports **no known vulnerabilities**.
 
-- **Floored `fast-uri` on its fix for GHSA-7p8r-x3mc-p8w7 (high) and corrected an exact pin that had silently become a ceiling.** The override was written as the bare pin `fast-uri: 3.1.4` back when 3.1.4 *was* the security floor for an earlier advisory. When 3.1.5 shipped the fix for GHSA-7p8r-x3mc-p8w7, that pin inverted into a **ceiling**: it held the tree on the vulnerable version and made the advisory permanently unclearable, with no warning — an override that pins rather than floors cannot distinguish "this is the minimum safe version" from "this is the only allowed version". The entry is now the caret range `^3.1.5`, which stays inside the major `ajv` expects while letting patch fixes flow in. This one is genuinely in the product rather than the dev toolchain: `fast-uri` arrives via `ajv` → `@modelcontextprotocol/sdk`, and `ajv` is inlined into the committed `build/index.js`, so the published bundle carried the vulnerable parser verbatim. The rebuilt bundle now carries 3.1.5, which is why this release owes a version bump. Every other floor in `pnpm-workspace.yaml` was audited for the same shape; the `brace-expansion` entries are already two-sided ranges and are unaffected. Matches apple-mail-mcp#128.
+- **Floored `fast-uri` on its fix for GHSA-7p8r-x3mc-p8w7 (high) and corrected an exact pin that had silently become a ceiling.** The override was written as the bare pin `fast-uri: 3.1.4` back when 3.1.4 _was_ the security floor for an earlier advisory. When 3.1.5 shipped the fix for GHSA-7p8r-x3mc-p8w7, that pin inverted into a **ceiling**: it held the tree on the vulnerable version and made the advisory permanently unclearable, with no warning — an override that pins rather than floors cannot distinguish "this is the minimum safe version" from "this is the only allowed version". The entry is now the caret range `^3.1.5`, which stays inside the major `ajv` expects while letting patch fixes flow in. This one is genuinely in the product rather than the dev toolchain: `fast-uri` arrives via `ajv` → `@modelcontextprotocol/sdk`, and `ajv` is inlined into the committed `build/index.js`, so the published bundle carried the vulnerable parser verbatim. The rebuilt bundle now carries 3.1.5, which is why this release owes a version bump. Every other floor in `pnpm-workspace.yaml` was audited for the same shape; the `brace-expansion` entries are already two-sided ranges and are unaffected. Matches apple-mail-mcp#128.
 - **Floored `ip-address` on 10.3.1 for GHSA-mwp4-54f8-5fhr (high), which also carries GHSA-4xrf-jv44-h6hh and GHSA-22jq-vg5j-6vgg.** Reached as `express-rate-limit` → `@modelcontextprotocol/sdk`, which capped it at 10.2.0 — below the first fully patched release. Written as `^10.3.1` rather than a pin, for the reason above; it resolves 10.4.0. The dependency is runtime-scope, but the SDK's HTTP transport is not part of this server's bundle (no `ip-address` reference appears in `build/index.js`), so the exposure was supply-chain rather than a live code path in the published package.
 - **Floored `postcss` on 8.5.23 for GHSA-fxqj-rqcc-2cmp (moderate)** — the incomplete-fix follow-up to GHSA-6g55-p6wh-862q, where an attacker-controlled `sourceMappingURL` can read arbitrary `.map` files when `from` is unset. Development scope only (`vitest` → `vite` → `postcss`, absent from the shipped bundle), and `vite`'s own range is already `^8.5.6`, so the floor costs nothing; it resolves 8.5.25.
 - **Deferred: `hono` (GHSA-8j4g-w8fx-2239, moderate).** The fix is in 4.12.34, but that release was still inside this repo's declared 1440-minute `minimumReleaseAge` soak, so `pnpm install` refuses it with `ERR_PNPM_NO_MATURE_MATCHING_VERSION`. No `minimumReleaseAgeExclude` carve-out was added and no audit suppression was applied — the soak is a deliberate supply-chain control, and squeezing a release past it by minutes defeats the point of having one. `hono` reaches the tree as `@hono/node-server` → `@modelcontextprotocol/sdk` and is not in the shipped bundle, so nothing in the published package is exposed. The follow-up (add `hono: ^4.12.34`) is recorded as a comment beside the other floors in `pnpm-workspace.yaml`. `pnpm audit --audit-level=high` is clean; this advisory is the single remaining moderate.
@@ -185,93 +217,108 @@
 ## [2.1.6] - 2026-08-03
 
 ### Added
+
 - **`version-guard` now requires every version bump to be documented under a real `## [X.Y.Z]` CHANGELOG heading.** The guard already refused a bump to a version that was already on npm, but it never checked that the new version was described anywhere. Notes parked under `## [Unreleased]` are orphaned the moment the release ships: nothing in the release path renames that section — the `version` lifecycle script only syncs the plugin manifests — so the published version goes out undocumented while its release notes sit under a heading still claiming they are unreleased. apple-notes-mcp shipped 2.6.10 and 2.6.11 exactly that way before this check existed. A bump whose version has no matching heading now hard-fails the PR, with an error naming the heading to add. Keep an empty `## [Unreleased]` at the top regardless — `dependabot-rebuild.yml` hard-exits without that marker, and since it already inserts a real heading, bot PRs pass unchanged. The guard file lives in `.github/`, which does not ship, so this owes no version bump. Matches apple-mail-mcp#124, keeping the guard identical across the four servers. (#61)
 
 ### Fixed
+
 - **`version-guard` no longer demands a version bump for byte-neutral `src/` changes.** The shipped-bytes detector treated every non-test file under `src/` as shipped, but TypeScript there reaches users only after esbuild inlines it into `build/index.js` — so a comment-, formatting- or type-only edit that leaves the committed bundle byte-identical was hard-blocked, leaving only two bad options: publish a release of literally nothing, or do not write the comment. `src/**/*.ts` is now a first-cause detector that implies a bump only when `build/**` changed too. The exemption is sound rather than merely convenient: ci.yml's "Verify committed build/ matches source" step rebuilds and requires `git diff --quiet build/`, and it runs in the `test` job whose `test (22)`/`test (24)` contexts are required by branch protection — so at merge time an unchanged `build/` provably matches `src/`. Everything else under `src/` (the verbatim-shipped `*_reader.py` sidecars), `requirements.txt` and `build/**` stay unconditional detectors, and the rule is written fail-safe: only `.ts` counts as bundle-only, so any new file type under `src/` still requires a bump.
 - **Timeout errors no longer point at an environment variable that cannot help.** `APPLE_PHOTOS_MCP_TIMEOUT` sets only the **default** sidecar budget — ten tools pass an explicit `timeoutMs` that `runPhotosReader` uses in preference to it (`get-selected-photos` 2 min; `find-duplicates`, `create-album`, `add-to-album`, `set-photo-metadata`, `set-keywords`, `set-photo-date` 5 min; `remove-from-album`, `import-photos` 10 min; `export` 30 min). The single shared timeout string named the variable unconditionally, so a `find-duplicates` timeout on a big library told the user to raise a setting that is inert for that call: they raise it, nothing changes, and no doc admitted those budgets are fixed. The message now branches — the default path keeps "Raise `APPLE_PHOTOS_MCP_TIMEOUT` (ms)…", a fixed-budget call instead says its timeout is fixed at *N*ms and that the variable does not apply — and README, CLAUDE.md and `docs/LIMITATIONS.md` list which tools carry which budget.
 - **The "Python 3 not found on PATH" setup error now names the `doctor` tool**, matching every other setup-failure string in the server (`setupHint()`, the missing-photoscript error, the write-gate error, the Full-Disk-Access remediation) and the invariant stated in `src/utils/docsUrls.ts`. It is the one first-run failure that ended with a docs URL alone, steering the user toward a manual install guess instead of the tool that distinguishes a Python problem from an osxphotos or Full-Disk-Access one. `doctor`'s own copy of the string is deliberately left alone — a doctor pointer inside doctor is circular.
 
 ### Documentation
-- **Retired the pre-2.0 "read-only except `export`" model from every surface that still carried it.** Seven opt-in tools have mutated the Photos library since 2.1.0, but `export`'s own MCP `Safety:` line still called itself "the only side-effecting tool", and so did `src/utils/exportPath.ts`'s module docstring, CLAUDE.md's behavioral-contract bullet, SECURITY.md's posture bullet and CONTRIBUTING.md's sidecar guidelines. Each is now scoped to what remains true — `export` is the only tool that writes files *outside* the library — and points at the `APPLE_PHOTOS_MCP_ENABLE_WRITES` gate. Swept with them: README's "All five tools below" heading a section documenting seven; `docs/WRITE-BACKEND.md`'s Writes row (missing `set-photo-date` and `import-photos`) and its cost argument weighed against "five opt-in tools"; README's `doctor` entry listing four checks when `doctor` has run six since 2.0.0; `docs/FULL-DISK-ACCESS.md`'s "**no tool works** … every tool ultimately reads the SQLite database" (the write path needs macOS **Automation**, not FDA — a `-1743` failure is not an FDA problem) and its three-item "full setup diagnostic"; SECURITY.md's Supported Versions table still covering only `1.x.x`; CLAUDE.md's "Every tool accepts an optional `library` path" (ten of the twenty-one do not, and the same file said so 47 lines earlier); the `find-duplicates` remediation that routed quarantining through Photos.app by hand rather than `create-album` + `add-to-album`; and the Antigravity marketplace blurb still advertising the Hermes packaging removed in 2.1.5.
+
+- **Retired the pre-2.0 "read-only except `export`" model from every surface that still carried it.** Seven opt-in tools have mutated the Photos library since 2.1.0, but `export`'s own MCP `Safety:` line still called itself "the only side-effecting tool", and so did `src/utils/exportPath.ts`'s module docstring, CLAUDE.md's behavioral-contract bullet, SECURITY.md's posture bullet and CONTRIBUTING.md's sidecar guidelines. Each is now scoped to what remains true — `export` is the only tool that writes files _outside_ the library — and points at the `APPLE_PHOTOS_MCP_ENABLE_WRITES` gate. Swept with them: README's "All five tools below" heading a section documenting seven; `docs/WRITE-BACKEND.md`'s Writes row (missing `set-photo-date` and `import-photos`) and its cost argument weighed against "five opt-in tools"; README's `doctor` entry listing four checks when `doctor` has run six since 2.0.0; `docs/FULL-DISK-ACCESS.md`'s "**no tool works** … every tool ultimately reads the SQLite database" (the write path needs macOS **Automation**, not FDA — a `-1743` failure is not an FDA problem) and its three-item "full setup diagnostic"; SECURITY.md's Supported Versions table still covering only `1.x.x`; CLAUDE.md's "Every tool accepts an optional `library` path" (ten of the twenty-one do not, and the same file said so 47 lines earlier); the `find-duplicates` remediation that routed quarantining through Photos.app by hand rather than `create-album` + `add-to-album`; and the Antigravity marketplace blurb still advertising the Hermes packaging removed in 2.1.5.
 - **Documented three limits and one failure mode that only existed in the source.** `get-thumbnail`'s **8 MB** response cap (derivative selection pre-filters on it, but a `sips`-rendered fallback from a very high-resolution original can still exceed it); the schema maxima on `find-duplicates.limit` (10000), `list-keywords.limit` / `list-persons.limit` (100000), `set-photo-metadata`'s `title` (255) and `description` (2048), and `set-keywords`' per-keyword 255; and `remove-from-album`'s `apple-photos-mcp-tmp-<hex>` scratch album — a rebuild killed part-way (its fixed 10-minute budget expiring while copying a very large album) leaves the original album and every photo intact, but can strand that scratch album, one per interrupted attempt, since the name is collision-checked per call.
-- **`docs/WRITE-BACKEND.md` now lists `get-selected-photos`** as the one photoscript-backed *read*, so the Path→Backend table accounts for every AppleScript caller rather than implying the split is purely reads-vs-writes.
+- **`docs/WRITE-BACKEND.md` now lists `get-selected-photos`** as the one photoscript-backed _read_, so the Path→Backend table accounts for every AppleScript caller rather than implying the split is purely reads-vs-writes.
 - **README's link to `docs/WRITE-BACKEND.md` is now an absolute GitHub URL**, matching every other cross-file link in the file — it was the last relative one, and relative links do not resolve on npmjs.com.
 - **Recorded the export progress contract as a deliberate decision.** The terminal `done === total` progress notification is **best effort**: an MCP client deletes a request's progress handler when the response arrives and discards later notifications for that token, so a notification emitted immediately before the result is intermittently thrown away (measured: server sent four, client delivered one). Per-photo notifications are the progress signal; the tool result's `exportedCount` / `skippedCount` is the completion signal. The notification is still emitted on purpose — nothing depends on it, it usually arrives, and removing it would bake a workaround for a client-side lifecycle bug into this server's public behaviour. Noted at the emission site and in CLAUDE.md so it is not "cleaned up" later.
 
 ### Security
+
 - **Floored all three dev-only `brace-expansion` majors on their complete fixes for GHSA-mh99-v99m-4gvg / CVE-2026-14257 (high)** — `1.1.16` → `1.1.18`, `2.1.3` → `2.1.4`, and both `5.0.7` and `5.0.8` → `5.0.9`. Three separate majors are reachable through the dev toolchain (`eslint` → `minimatch@3` on v1, `minimatch@9` on v2, `minimatch@10` on v5), and they are not API-compatible — minimatch 3 requires the v1 CommonJS API, so a single floor spanning them fails with `expand is not a function`. Each major therefore carries its own **two-sided** floor; the bounds must be two-sided because a bare `<5.0.9` also matches `1.1.18` and `2.1.4` under semver and would drag the CommonJS path onto the v5 ESM API. The advisory's own first-patched versions (`1.1.17` / `2.1.3` / `5.0.8`) are **not sufficient**: they bound the accumulator in `combine` but never thread `maxLength` into `expandSequence`, so the sequence path (`{1..N}`, `{a..z..k}`) stays capped only by item count and a padded sequence still materialises ~100,000 intermediate strings before the outer bound truncates (measured 4,606 ms / 176 MB RSS on `1.1.17` vs 9 ms / 61 MB on `1.1.18`, identical final output). Two of the four paths resolved here (`1.1.16`, `5.0.7`) were below even the advisory's floor. Adopted only after every release cleared this repo's 24-hour `minimumReleaseAge` gate, with no `minimumReleaseAgeExclude` carve-out and no audit suppression — `pnpm audit` will keep reporting the advisory until GitHub's metadata (which still lists `5.0.8` as first-patched, and so marks the entire v1 line vulnerable under semver) catches up. Dev toolchain only: `brace-expansion` is not in the shipped bundle, so the published package is unaffected, the committed bundle is byte-identical, and no version bump is owed. Matches apple-mail-mcp#123 — thanks to @jjoanna2-debug for the original finding.
 
 ## [2.1.5] - 2026-07-29
 
 ### Fixed
+
 - **Export progress notifications could be silently dropped — most often the final `done === total` one.** The `export` tool sent them fire-and-forget (`void extra.sendNotification(...)`), so the sends raced the tool's own response. That race is not benign: an MCP client deletes the request's progress handler the moment the response arrives (`Protocol._onresponse`), and `Protocol._onprogress` **discards** a notification whose token no longer has a handler (reporting "progress notification for an unknown token"). A notification that lost the race was therefore lost outright, never delivered late — and the terminal notification, being emitted last, was the most exposed, so a client surfacing completion from it could intermittently never see an export finish. The tool now awaits its sends before returning, putting every notification on the wire ahead of the result. Each send still swallows its own failure, so this cannot fail an export; it only orders the writes.
 - **`pnpm version` no longer breaks with the `.hermes-plugin/` removal.** The `version` lifecycle script listed `.hermes-plugin` in its `git add`; `git add` exits 128 on a pathspec that matches nothing, which would have broken the documented release step (`pnpm version <patch|minor|major> --no-git-tag-version`) for every subsequent release. The stale path is dropped from the `git add` list.
 - **Dependabot auto-bump silently stopped staging its own changes.** `dependabot-rebuild.yml`'s bump step writes the patch version, syncs the plugin manifests and prepends a CHANGELOG entry, then staged them with `git add package.json CHANGELOG.md build .claude-plugin .agents codex .hermes-plugin .antigravity-plugin`. Once `.hermes-plugin/` was removed that pathspec matched nothing, and `git add` is all-or-nothing — it exited 128 and staged **none** of the others, with `2>/dev/null || true` hiding the failure. The following step re-adds only `build/`, so a Dependabot PR would have committed a rebuilt bundle with no version bump and no changelog entry, failing `require-version-bump` and blocking the automation that is meant to run without a human. Dropped the stale path, and dropped the error suppression so a future missing path fails loudly instead of silently skipping the bump.
 - **`persistent-sidecar` integration flake.** The `expected 3 to be 4` failure that intermittently blocked unrelated PRs was this dropped notification, not a slow one, and specifically the terminal one. Two earlier attempts were wrong: widening the assertion's poll from 10s to 30s could not help (a discarded message never arrives, and a 30s budget failed identically on `main`), and the ordering fix above — correct on its own merits — cannot stop the client tearing down its progress handler first. Measured directly: with the synthetic sidecar's inter-photo spacing removed so all four notifications arrive as one burst, the server sent all four and the client delivered **one**, rejecting the rest with "progress notification for an unknown token". The test now asserts the three per-photo notifications — what the server controls and the client reliably delivers — and no longer asserts the terminal one, with the mechanism and both failed attempts recorded inline so they are not retried.
 
 ### Removed
+
 - **`.hermes-plugin/` packaging docs** (`README.md`, `config.yaml`). Hermes Agent has no plugin/marketplace drop-in, so a directory of manifest-looking files was easy to misread as an installable package. The setup it documented is not lost — the `hermes mcp add` command, the `~/.hermes/config.yaml` `mcp_servers:` snippet, and the restart note now live inline in the README's "Other Hosts" section. Matches apple-mail-mcp#116, keeping multi-host packaging parity across the four Apple MCP servers. No effect on the published package: `.hermes-plugin/` was never in `package.json` `files[]`.
 
 ## [2.1.4] - 2026-07-22
 
 ### Security
-- Override the MCP SDK's transitive `@hono/node-server` and `fast-uri` dependencies to patched releases (`@hono/node-server` 2.0.10, `fast-uri` 3.1.4), clearing the Hono static-file path-traversal advisory and the two `fast-uri` host-confusion advisories that the SDK's own ranges still resolve to. Fleet-wide companion to sweetrb/apple-notes-mcp#104 (@oliverames).
 
+- Override the MCP SDK's transitive `@hono/node-server` and `fast-uri` dependencies to patched releases (`@hono/node-server` 2.0.10, `fast-uri` 3.1.4), clearing the Hono static-file path-traversal advisory and the two `fast-uri` host-confusion advisories that the SDK's own ranges still resolve to. Fleet-wide companion to sweetrb/apple-notes-mcp#104 (@oliverames).
 
 ## [2.1.3] - 2026-07-20
 
 ### Changed
+
 - Bump the Python sidecar's `osxphotos` pin from 0.75.9 to 0.76.1. This is a runtime dependency — the sidecar is what reads the Photos library — so the pin ships. Verified before release against a real 31,463-item library rather than the mocked unit tests: `health` reports osxphotos 0.76.1 and the correct photo count; `library-info` returns 30,892 photos / 571 movies / 47 albums / 44 keywords / 217 persons; and `query`, `list-albums`, `list-keywords` and `list-persons` all return correct records. `photoscript` stays pinned at 0.5.3 — the two are kept in step deliberately, since `photos_reader.py` uses its `script_loader.run_script` for bulk album-id calls.
 
 ## [2.1.2] - 2026-07-20
 
 ### Changed
+
 - CI/release hardening: `version-guard` now treats the committed `build/` bundle as shipped bytes (closing the lockfile-only and devDep silent-never-publish vectors) with an npm version-collision check; `publish.yml` gained a daily self-healing watchdog, manual dispatch, exact-version skip, CI-validated-commit checkout, and GitHub-Release self-heal; Dependabot bundle rebuilds now auto-bump a patch version; CI boots the committed bundle standalone on Node 20 every run; the bundle is now built with `--target=node20`, making the `engines.node >= 20` claim enforced at build time.
 - `requirements.txt` is now exact-pinned and under Dependabot pip management; CodeQL scans the Python sidecar.
 
 ### Documentation
+
 - **`docs/FULL-DISK-ACCESS.md`** — adds a "still failing after granting every host app?" section (#37 follow-up): on at least one confirmed setup, TCC attributed the FDA check directly to the `node` binary itself, not to any wrapper app — responsibility never climbed past `node` to see those grants. Documents the definitive diagnostic (`log stream --predicate 'subsystem == "com.apple.TCC"'`, reading the `Resp:` process from the denial) and the fix (grant FDA to the exact `node` path the log names), plus the ad-hoc-vs-Developer-ID-signature note on why the grant may or may not survive a Node upgrade.
 
 ## [2.1.1] - 2026-07-19
 
 ### Fixed
+
 - **`doctor` and per-tool errors now recognize osxphotos' `Error copying …/Photos.sqlite to /tmp/…` as a Full Disk Access denial** (#37). osxphotos copies the live library database to a temp dir before opening it; when the host process lacks FDA, macOS denies the read of the source and osxphotos surfaces a generic copy failure containing none of the usual permission wording. Previously `doctor` classified it as `full_disk_access: warn "did not look permission-related"`, actively steering users away from the real cause. The permission-error heuristic (now shared between `doctor` and `photosManager` in `src/utils/permissionErrors.ts`) matches this message, so `doctor` reports a Full Disk Access failure with remediation and per-tool errors append the FDA guidance.
 
 ### Documentation
-- **`docs/FULL-DISK-ACCESS.md`** — documents the `Error copying …/Photos.sqlite` failure form, and adds a "the host app may be a *nested* bundle" gotcha (#37): a Claude Code-spawned MCP server's file access is attributed to the per-version `~/Library/Application Support/Claude/claude-code/<version>/claude.app` bundle (which needs its own FDA grant and silently resets on Claude auto-update — the tell is a new lowercase "claude" row in the FDA list), not to `/Applications/Claude.app`.
+
+- **`docs/FULL-DISK-ACCESS.md`** — documents the `Error copying …/Photos.sqlite` failure form, and adds a "the host app may be a _nested_ bundle" gotcha (#37): a Claude Code-spawned MCP server's file access is attributed to the per-version `~/Library/Application Support/Claude/claude-code/<version>/claude.app` bundle (which needs its own FDA grant and silently resets on Claude auto-update — the tell is a new lowercase "claude" row in the FDA list), not to `/Applications/Claude.app`.
 
 ## [2.1.0] - 2026-07-10
 
 **Roadmap close-out: date fixing, imports, the Photos.app selection bridge, ML/social metadata, and GPS-radius search.** The two new write tools ride the existing `APPLE_PHOTOS_MCP_ENABLE_WRITES` gate — the server remains read-only by default, and still nothing can delete a photo.
 
 ### Added
-- **`set-photo-date` `{uuid, date? | shiftSeconds?, dryRun?}`** *(write, gated)* — fix a photo's date/time: an absolute ISO 8601 `date` (local timezone; tz-aware input converted) or a relative `shiftSeconds` (negative = earlier), exactly one required. **Dry run by default:** nothing is written unless `dryRun: false` is passed, and every response echoes `before`/`after`/`shiftSeconds` so an applied change can be reverted with `date = before`. Rewrites the **Photos library date only** — the same operation as Photos.app's *Adjust Date & Time*; the file's EXIF is never modified. The trailcam/scanner "timewarp" op.
-- **`import-photos` `{paths[], album?, skipDuplicateCheck?}`** *(write, gated)* — import 1–50 files into the library, optionally into an **existing** album (a missing album is an error, not auto-created). Add-only: source files stay on disk, nothing in the library is modified or deleted — but note an import **cannot be programmatically undone** (Photos' AppleScript has no photo-delete verb). Source paths must be absolute (or `~`-prefixed), exist, and resolve under the same allowlist roots as `export` (home, `/tmp`, `/private/tmp`, `/Volumes`) — validated in the TS layer *and* the sidecar. Duplicate checking is on by default (a found duplicate raises Photos.app's blocking dialog; `skipDuplicateCheck: true` re-imports silently). Returns `requestedCount` / `importedCount` / per-item `uuid`+`filename`.
-- **`get-selected-photos`** *(read-only, not gated)* — the GUI-selection bridge: returns the photos currently selected in the Photos.app window as query-shaped summaries plus `notFound` (selected items the library index hasn't checkpointed yet, with filenames). Errors clearly — and **never launches Photos itself** — when Photos isn't running or nothing is selected (the running check deliberately precedes photoscript's `PhotosLibrary()` constructor, which would otherwise launch Photos and could surface a stale restored selection). Requires macOS Automation permission.
+
+- **`set-photo-date` `{uuid, date? | shiftSeconds?, dryRun?}`** _(write, gated)_ — fix a photo's date/time: an absolute ISO 8601 `date` (local timezone; tz-aware input converted) or a relative `shiftSeconds` (negative = earlier), exactly one required. **Dry run by default:** nothing is written unless `dryRun: false` is passed, and every response echoes `before`/`after`/`shiftSeconds` so an applied change can be reverted with `date = before`. Rewrites the **Photos library date only** — the same operation as Photos.app's _Adjust Date & Time_; the file's EXIF is never modified. The trailcam/scanner "timewarp" op.
+- **`import-photos` `{paths[], album?, skipDuplicateCheck?}`** _(write, gated)_ — import 1–50 files into the library, optionally into an **existing** album (a missing album is an error, not auto-created). Add-only: source files stay on disk, nothing in the library is modified or deleted — but note an import **cannot be programmatically undone** (Photos' AppleScript has no photo-delete verb). Source paths must be absolute (or `~`-prefixed), exist, and resolve under the same allowlist roots as `export` (home, `/tmp`, `/private/tmp`, `/Volumes`) — validated in the TS layer _and_ the sidecar. Duplicate checking is on by default (a found duplicate raises Photos.app's blocking dialog; `skipDuplicateCheck: true` re-imports silently). Returns `requestedCount` / `importedCount` / per-item `uuid`+`filename`.
+- **`get-selected-photos`** _(read-only, not gated)_ — the GUI-selection bridge: returns the photos currently selected in the Photos.app window as query-shaped summaries plus `notFound` (selected items the library index hasn't checkpointed yet, with filenames). Errors clearly — and **never launches Photos itself** — when Photos isn't running or nothing is selected (the running check deliberately precedes photoscript's `PhotosLibrary()` constructor, which would otherwise launch Photos and could surface a stale restored selection). Requires macOS Automation permission.
 - **ML intelligence in photo details** — `get-photo`/`get-photos` now include `score` (Photos' overall aesthetic score, 0–1) and `detectedText` (the text Photos' own OCR indexed, macOS 13+); both null-graceful across macOS versions. Both read the search/score tables osxphotos already parses at library load — no extra per-photo compute.
 - **Shared-album social data in photo details** — `owner`, `comments` (user/text/date/isMine), and `likes` (user/date/isMine), populated only for iCloud shared-album assets; null/[] otherwise.
 - **Burst expansion** — `get-photo` gains `burstPhotos?: boolean`: when set, the response lists the OTHER frames of the photo's burst set (UUID, filename, date each; `[]` for non-burst photos).
 - **`query` post-filters** (compose with every other filter; applied before `count` and the `limit` slice):
-  - **`near: "lat,lon,radiusKm"`** — GPS-radius search via a haversine post-filter; photos without location data never match. Validated (ranges included) in the TS layer *and* the sidecar.
+  - **`near: "lat,lon,radiusKm"`** — GPS-radius search via a haversine post-filter; photos without location data never match. Validated (ranges included) in the TS layer _and_ the sidecar.
   - **`minScore: 0–1`** — only photos whose computed aesthetic score meets the threshold; unscored photos never match.
   - **`detectedText: "substring"`** — case-insensitive substring over the OCR-indexed text; documented as a per-photo search-info read, best combined with narrowing filters on big libraries.
 - **Tests:** hermetic fake-photoscript coverage for all three new commands (dry-run contract, shift math, revert echo, import path validation, album resolution, selection summaries/not-running/no-selection, gate refusals — the fake osxphotos now serves minimal read summaries and can simulate index lag); manager unit tests for the new argv translations and validations; CI-safe gated-error integration assertions; live-writes suite extended with a set-photo-date dry-run/apply/revert round-trip and a real import of a generated 100×100 random-pixel JPEG into a scratch album (the un-deletable imported photo is titled "MCP live-import test — safe to delete"; random pixels keep re-runs off Photos' duplicate dialog).
 
 ### Changed
+
 - **`health-check` no longer spawns a redundant dependency probe** (optimistic-first): the `health` sidecar command's success already proves osxphotos is importable, and its failure path already classifies missing deps with the setup hint — saving the ~0.5–1 s `import osxphotos` probe spawn on every healthy call. `doctor` intentionally keeps its explicit probes: they are the diagnostic content (independent, ungated checks that report interpreter/package versions even while a long operation holds the sidecar gate).
 - `query`'s tool description, README (Features, Tool Reference, Usage Patterns, Safety design), QUERY-GUIDE (post-filters section + examples), CLAUDE.md (date-fix dry-run-first workflow, selection/near/score/text quick-reference), LIMITATIONS.md (import-undo, EXIF-untouched, selection preconditions), and all three SKILL.md copies document the new tools and parameters; `doctor`'s writes check names all seven gated tools.
 
 ### Documentation
-- **`docs/WRITE-BACKEND.md`** — records why reads use osxphotos (direct Photos DB) while the opt-in write tools use photoscript/AppleScript, and why the split can't be collapsed: direct SQLite writes would corrupt/desync the library, osxphotos's own write ops *are* AppleScript underneath, and PhotoKit writes require an app bundle + entitlements (unsolved even in osxphotos). Linked from the README write-tools section and CLAUDE.md.
+
+- **`docs/WRITE-BACKEND.md`** — records why reads use osxphotos (direct Photos DB) while the opt-in write tools use photoscript/AppleScript, and why the split can't be collapsed: direct SQLite writes would corrupt/desync the library, osxphotos's own write ops _are_ AppleScript underneath, and PhotoKit writes require an app bundle + entitlements (unsolved even in osxphotos). Linked from the README write-tools section and CLAUDE.md.
 
 ## [2.0.0] - 2026-07-10
 
 **New: opt-in write tools — the server stays read-only by default, with behavior unchanged from 1.x unless you set `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`.**
 
-This is the first release that *can* modify the Photos library, which is why it's a major version: the read-only guarantee is now an opt-in default rather than an absolute. Nothing changes for existing users — without the gate variable, every write tool returns a clear "how to enable" error and the library cannot be touched.
+This is the first release that _can_ modify the Photos library, which is why it's a major version: the read-only guarantee is now an opt-in default rather than an absolute. Nothing changes for existing users — without the gate variable, every write tool returns a clear "how to enable" error and the library cannot be touched.
 
 ### Added
+
 - **Five write tools** (gated behind `APPLE_PHOTOS_MCP_ENABLE_WRITES=1`, settable via env or the `config.json` mechanism; a restart applies it):
   - **`create-album` `{name, folder?}`** — creates an album, optionally nested in a `/`-separated folder path (folders created as needed). Idempotent: an existing album of that name is returned with `created: false` instead of duplicating.
   - **`add-to-album` `{album, uuid[]}`** — files photos into an album by name or UUID (1–100 UUIDs). Idempotent; returns `added` / `alreadyPresent` / `notFound` per UUID.
@@ -283,12 +330,15 @@ This is the first release that *can* modify the Photos library, which is why it'
 - **Backend:** writes drive Photos.app via AppleScript through [photoscript](https://github.com/RhetTbull/photoscript) (now an explicit pinned dependency in `requirements.txt`; it was already installed as an osxphotos dependency). Writes always target the library currently open in Photos.app — the read tools' `library` parameter does not apply — and need macOS Automation permission (one-time prompt on first write).
 
 ### Changed
+
 - **BREAKING (semantics only):** the package can no longer be described as unconditionally read-only — read-only is now the (unchanged) default rather than a hard guarantee. No API, tool, or configuration behaves differently unless `APPLE_PHOTOS_MCP_ENABLE_WRITES=1` is set.
 - After any write, both metadata caches (the Node catalog cache and the sidecar's resident parsed library) are force-invalidated rather than trusting the `Photos.sqlite` mtime — Photos commits through SQLite WAL, so the mtime alone can lag a write and serve a stale snapshot.
 - README gains a prominent **Write tools (opt-in)** section (gate setup via env and config.json, safety design, the album-rebuild caveat); Tool Reference, SKILL.md (all three copies), CLAUDE.md, and LIMITATIONS.md updated to match.
 
 ## [1.5.0] - 2026-07-10
+
 ### Added
+
 - **`get-thumbnail` — see photos, not just metadata.** New tool returning one photo as an inline MCP **image content block** (base64 JPEG/PNG that vision-capable clients render directly) plus structured metadata (source path, dimensions, MIME type, byte size, `isDerivative`). It serves the smallest preview derivative Photos has **already generated** whose long edge meets `minSize` (default 360 px) — no export, no original-file transfer. When no derivative is big enough, a right-sized JPEG is rendered from the original via `sips` (never upscaled — raising `minSize` to read small text actually gets you more pixels); responses are capped at 8 MB. Movies get a thumbnail when Photos generated a poster-frame derivative; iCloud-only photos with no local image return a clear error suggesting `export`. Unlocks visual triage ("show me the best photo from Saturday"), duplicate eyeballing, and reading text in photos — every workflow that previously dead-ended at metadata or required export-to-disk.
 - **`query` filter expansion — ~20 new filters** (each verified against the pinned osxphotos 0.75.9):
   - **Import-date window:** `addedAfter` / `addedBefore` (ISO 8601, same bare-date semantics as `fromDate`/`toDate`) and `addedInLast` (`"7d"`, `"24h"` — trailing-window "recently imported" sweeps). These filter on `dateAdded`, not the taken date.
@@ -301,21 +351,27 @@ This is the first release that *can* modify the Photos library, which is why it'
 - **Test hardening:** ~20 new unit tests (expanded-filter argv translation, `hasLocation` tri-state, `video` aliasing, batch/thumbnail/duplicates client paths, `imageResponse` shape) and 6 new live integration tests (newest-first ordering, `addedInLast` plausibility, screenshot-flag round-trip, batch-with-bogus-UUID accounting, decodable-thumbnail magic-byte check, well-formed duplicate groups). All live-verified end-to-end over the MCP protocol against a real 31k-photo library.
 
 ### Changed
+
 - Tool responses can now carry MCP **image** content blocks (`imageResponse` helper) alongside the house text + `structuredContent` pattern; the thumbnail's base64 payload deliberately stays OUT of `structuredContent` so it isn't transmitted twice.
 - `query`'s tool description, README tables, QUERY-GUIDE, CLAUDE.md, and all three SKILL.md copies document the new filters, the `newestFirst` contract, the batch/thumbnail/duplicates workflows (prefer `get-thumbnail` before `export` when the user wants to LOOK at a photo), and the recently-imported sweep pattern.
 
 ## [1.4.0] - 2026-07-09
+
 ### Changed
+
 - **Persistent sidecar — the ~4-second fixed cost per tool call is now paid once, not per call.** Every call previously spawned a fresh Python process that imported osxphotos and re-parsed the entire Photos database (~3.8–4.0 s measured on a 31k-photo library — ~97% of a typical call, growing with library size). The sidecar now runs as a long-lived process (`photos_reader.py --serve`, line-delimited JSON over stdin/stdout, one request in flight behind the existing serial gate): the parsed `PhotosDB` stays resident per library path and is revalidated against `Photos.sqlite`'s mtime before **every** request, so a changed library re-parses immediately and results are never stale (same staleness witness as the 1.2.1 Node-side metadata cache, which stays and still absorbs repeat catalog reads). Measured live on a 31k-photo library: cold call 4.5 s → warm calls 6–160 ms (~28× on the first warm query). Robustness: per-request timeouts SIGKILL the serve process and surface the exact same timeout message as before; a crash or protocol error fails only the in-flight request and the next call respawns; an idle sidecar is killed after `APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS` (default 5 min, `0` = never) to bound resident memory; shutdown kills it deterministically; and if serve mode can't start at all (old script, broken env) the server transparently falls back to the previous spawn-per-call mode — same results, same error strings — logging the reason once. One-shot argv mode still works unchanged (CI, doctor probes, manual debugging, the fallback).
 - **`doctor` gains a `sidecar_mode` check** (now five checks): reports persistent mode with the serving pid, spawn count, and last (re)spawn time — or one-shot mode with the reason (ok when deliberately disabled via env, warn when it's an unplanned handshake fallback).
 
 ### Added
+
 - **Per-photo `export` progress.** In serve mode the sidecar emits a progress line per photo, and the server forwards them as MCP progress notifications (`progress`/`total` + a message naming the file being exported) whenever the client's request carries a `progressToken` — a 1000-photo iCloud-heavy export now shows a live counter instead of a silent up-to-30-minute call. Clients that send no token, and the rare one-shot fallback mode, behave exactly as before.
 - **`APPLE_PHOTOS_MCP_PERSISTENT_SIDECAR`** environment variable — set `0`/`false` to disable serve mode and restore the pre-1.4.0 spawn-per-call behavior (debugging escape hatch).
 - **`APPLE_PHOTOS_MCP_SIDECAR_IDLE_MS`** environment variable (default `300000`) — idle lifetime of the resident sidecar before it's killed to free memory; `0` keeps it alive indefinitely.
 
 ## [1.3.0] - 2026-07-09
+
 ### Changed
+
 - **The server stays responsive during long operations** (responsiveness/perf minor — same results, same error messages, same schemas). Every sidecar invocation previously ran through `execFileSync`, freezing the Node event loop for the entire run — up to 30 minutes during an iCloud-heavy `export` — so MCP pings went unanswered (hosts could declare the server dead and respawn it mid-export), a concurrent `health-check` hung until the operation finished, and the SIGTERM/SIGINT handlers couldn't run (defeating deterministic shutdown exactly when it mattered). Sidecar execution is now **asynchronous** (`child_process.execFile`, SIGKILL-on-timeout like the sibling servers) behind a **serial gate** (ported from apple-mail-mcp): exactly one `photos_reader.py` process runs at a time — preserving the old one-at-a-time semantics (concurrent-reader safety against the Photos SQLite, bounded resource use) — while the event loop stays free to answer protocol traffic.
 - **`health-check` answers immediately while another operation is in flight.** When the gate is busy (a long query or export), `health-check` returns a fast pure-TS liveness summary — server responsive, sidecar operation in flight, venv-marker state — instead of queueing a full library probe behind the operation; re-run it after the operation completes for the full result. When idle, behavior is unchanged. `doctor` similarly keeps its interpreter and osxphotos checks (light probes that never open the Photos DB, so they run even mid-export) and reports the library/Full-Disk-Access probe as `warn: skipped` while an operation runs.
 - **Concurrent same-catalog calls coalesce.** Two overlapping calls for the same cached catalog command (`library-info`, `list-albums`, `list-folders`, `list-keywords`, `list-persons`, same args/library/DB-mtime) now share one in-flight sidecar spawn instead of queueing a duplicate; the existing mtime-validated metadata cache is unchanged.
@@ -323,20 +379,26 @@ This is the first release that *can* modify the Photos library, which is why it'
 - **The venv bootstrap wait is async too.** The lock-loser's bounded wait for another process's setup no longer blocks the event loop (`Atomics.wait` replaced with an awaitable poll), and concurrent in-process bootstrap attempts are single-flighted.
 
 ## [1.2.1] - 2026-07-09
+
 ### Added
+
 - **`export` destination allowlist.** The destination is now canonicalized (leading `~` expanded, `..` normalized, symlinks resolved — including a not-yet-existing final directory) and must land under the **home directory**, **/tmp**, **/private/tmp**, or **/Volumes**; anything else is rejected with an error naming the allowed roots. The check is path-segment-aware (`/Volumesx` does not pass as `/Volumes`), and the canonical path is what's handed to the sidecar, so a symlink under an allowed root can't redirect the write outside it. Ports apple-mail-mcp's `ALLOWED_SAVE_ROOTS` pattern to photos' only side-effecting tool.
 - **`doctor` now checks the Python interpreter** (new first check, `python_interpreter`): reports the resolved path + version using the same venv-then-system resolution the sidecar uses, **warns** below the required 3.11 with `brew install python@3.12` advice (the most common first-run failure — stock macOS ships 3.9 — previously surfaced only as a bare "osxphotos not installed"), and **fails** when no Python resolves at all. Ports apple-numbers-mcp's check.
 - **In-process metadata cache for the catalog commands** (`library-info`, `list-albums`, `list-folders`, `list-keywords`, `list-persons`). Every sidecar call re-parses the whole Photos database (seconds of fixed cost on large libraries), and agents habitually re-list catalogs within a session — repeats are now served from a small bounded cache keyed on (command, args, library) and invalidated the moment the library's `Photos.sqlite` mtime changes, so results are never stale. `query`, `get-photo`, and `export` are never cached; when the DB file can't be stat'ed, caching quietly stays out of the way.
 
 ### Fixed
+
 - **Concurrent first-run venv bootstraps can no longer corrupt the venv.** Hosts that spawn one server instance per conversation could race two `python -m venv` + `pip install` runs into the same `./venv` — worse, the faster run's completion marker could bless a venv the slower run was still mutating. The bootstrap (both the server's auto-setup and `scripts/setup.sh`) is now guarded by an atomic cross-process `mkdir` lock: the winner runs the install, losers wait (bounded by `APPLE_PHOTOS_MCP_SETUP_TIMEOUT`) for the winner's completion marker, a lock abandoned by a dead process is reclaimed by age, and the `.deps-ok` marker is written atomically (tmp file + rename) as the very last step of setup — so an observable marker always describes a fully installed venv.
 - **`get-photo` validates its `uuid` input** (max 256 chars, hexadecimal-with-dashes) so junk input fails fast at the schema with a clear message instead of costing a full sidecar spawn + library parse — matching the length cap `query`/`export` UUIDs already had.
 
 ### Changed
+
 - **Doc URLs and the Full-Disk-Access remediation are now single-sourced** in a new `src/utils/docsUrls.ts` (the house standard mail and notes already follow), replacing five hardcoded `github.com/sweetrb/apple-photos-mcp` URLs and two near-verbatim duplicated FDA remediation blocks (photosManager + doctor) that were one edit away from telling users different things.
 
 ## [1.2.0] - 2026-07-09
+
 ### Fixed
+
 - **Hidden photos are now actually excluded from `query` by default** (privacy fix). The docs promised "hidden photos are excluded by default" everywhere, but osxphotos only filters hidden photos when a flag is explicitly set — so a plain query (or an export driven by one) silently included photos the user had hidden in Photos.app. The sidecar now defaults to `not_hidden` unless `hidden: true` is passed; `hidden: true` still returns only hidden photos.
 - **Sidecar errors are no longer swallowed on non-zero exit.** The Python sidecar reports every handled failure as `{"error": ...}` JSON on stdout before exiting 1, but the TS layer only read stderr in the failure path — so users saw a bare `Command failed: <python> <args>` instead of the real message. The structured error now surfaces, restoring the Full-Disk-Access remediation on permission failures, `doctor`'s fail-vs-warn FDA classification, and the missing-dependency auto-bootstrap retry.
 - **`export` accounts for every requested UUID.** Unknown UUIDs (and photos in Recently Deleted) were silently dropped — `exported` + `skipped` could sum to less than the request with no trace. Each unmatched UUID is now reported in `skipped` with reason "UUID not found (deleted or in trash)"; an all-unmatched request returns a normal result with everything skipped instead of a bare error.
@@ -349,57 +411,74 @@ This is the first release that *can* modify the Photos library, which is why it'
 - **The sidecar's own "osxphotos not installed" fallback message is now actionable** for no-clone installs: `pip3 install osxphotos` guidance (Python >= 3.11 note), the `doctor` tool, and an absolute Troubleshooting URL — replacing `Run: pnpm run setup`, which is meaningless outside a repo checkout.
 
 ### Added
+
 - **`APPLE_PHOTOS_MCP_TIMEOUT`** environment variable (ms, default `60000`) — overrides the previously hardcoded 60-second sidecar timeout that made every read tool permanently fail on very large libraries. `export` keeps its own 30-minute window. Documented in the README Configuration table.
 
 ## [1.1.5] - 2026-07-09
+
 ### Fixed
+
 - **Error messages are now actionable for no-clone (npx / marketplace) installs.** The "osxphotos not installed" hint previously said `Run: npm run setup` — a command that only exists inside a repo checkout and is meaningless to a user running the published package via `npx` or a plugin install. It now gives real remediation: `pip3 install osxphotos` (noting the Python ≥ 3.11 requirement — stock macOS ships 3.9; `brew install python@3.12`), `scripts/setup.sh` for repo checkouts, the `doctor` tool, and an absolute link to the README's Troubleshooting section. The "Python 3 not found" error got the same treatment, and `doctor` no longer appends a doubled `Run: npm run setup` suffix on top of the hint.
 - **Full-Disk-Access remediation now names the HOST app and uses an absolute URL.** Both the `doctor` FDA check and the per-tool permission-error guidance now say to grant FDA to the host app that launches the server (Claude Desktop / Terminal / iTerm / VS Code — not `node`), to fully quit and relaunch it, and link to `https://github.com/sweetrb/apple-photos-mcp/blob/main/docs/FULL-DISK-ACCESS.md` instead of the repo-relative `docs/FULL-DISK-ACCESS.md` (which a no-clone user has no copy of).
 
 ### Docs
+
 - **README install command fixed to the npm registry:** `npm install -g apple-photos-mcp` (was `npm install -g github:sweetrb/apple-photos-mcp`, which builds from source at install time and requires pnpm — that form is now mentioned only under From Source, labeled as such).
 - **Deterministic Claude Code one-liner added to Quick Start:** `claude mcp add apple-photos -s user -- npx -y apple-photos-mcp`.
-- **Plugin-marketplace Quick Start now sets expectations:** the plugin is a git clone under `~/.claude/plugins/marketplaces/apple-photos-mcp/`; the first tool call auto-bootstraps the Python venv *inside that clone* (~a minute; requires Python ≥ 3.11 on PATH); Full Disk Access must be granted to the host app.
+- **Plugin-marketplace Quick Start now sets expectations:** the plugin is a git clone under `~/.claude/plugins/marketplaces/apple-photos-mcp/`; the first tool call auto-bootstraps the Python venv _inside that clone_ (~a minute; requires Python ≥ 3.11 on PATH); Full Disk Access must be granted to the host app.
 - **Troubleshooting "osxphotos not installed" rewritten:** the first bullet is now the actual most-common cause — `python3` older than 3.11 (stock macOS = 3.9) — with `brew install python@3.12` + retry (the venv rebuilds automatically); the heading now matches the emitted error string.
 - **`docs/` now ships in the npm tarball** (added to package.json `files`) and all README cross-file relative links (docs guides, plugin configs, LICENSE, screenshot) were converted to absolute GitHub URLs, so they resolve on npmjs.com and in a tarball install, not just on GitHub.
 - **skills/apple-photos SKILL.md updated:** first-run guidance now says setup is automatic and to run `doctor` FIRST when osxphotos is reported missing (diagnosing why auto-setup failed, usually old Python); notes the venv lives in the plugin clone, not "the project"; the error table gains a Full-Disk-Access row with host-app + full-restart remediation and the absolute guide URL.
 
 ## [1.1.4] - 2026-07-06
+
 ### Fixed
+
 - **A bare `git clone` now runs the server with only Node present** ([#15]). Tracking `build/` (the previous release) put the compiled entrypoint in git, but `build/index.js` still `import`ed its dependencies (`@modelcontextprotocol/sdk`, `zod`) from `node_modules/`, which a plain clone / marketplace install lacks — so the server died on `ERR_MODULE_NOT_FOUND` before it could complete the MCP handshake. The build now **esbuild-bundles `src/index.ts` into a single self-contained `build/index.js`** (`tsc --noEmit` still type-checks; esbuild does the bundling), so the marketplace/git clone starts on Node alone with no install step. This mirrors the fix @oliverames landed for apple-notes-mcp (#69) and apple-mail-mcp (#79). The Python sidecar path logic was hardened alongside: `getProjectRoot()` now walks up to the directory that owns `package.json` + `src/utils/photos_reader.py` instead of assuming a fixed `build/utils/ → ../..` depth, so the collapsed single-file bundle still resolves `photos_reader.py`, the venv, `requirements.txt`, and `scripts/setup.sh` correctly.
 
 ### Changed
+
 - **`.gitignore` now tracks only the bundled entrypoint** (`build/*` then `!build/index.js`) — per-module `tsc` output (e.g. from `pnpm run dev`) stays ignored. Added `esbuild` as a devDependency; dropped the now-unused `tsc-alias` devDependency and the `types` package.json field.
 - **`build/` is tracked in git** (from the previous release, #17/#18), matching apple-mail-mcp and apple-numbers-mcp. The `.claude-plugin/plugin.json` launches `node ${CLAUDE_PLUGIN_ROOT}/build/index.js` directly, so a marketplace/git-installed plugin needs the compiled output committed. `tsconfig.json` excludes `**/*.test.ts` from compilation (as mail/numbers do) so `build/` contains only shippable runtime code, not compiled tests.
 
 [#15]: https://github.com/sweetrb/apple-photos-mcp/issues/15
 
 ## [1.1.3] - 2026-06-30
+
 ### Changed
+
 - **Toolchain migrated to pnpm** (dev + CI + publish). CI now runs on the Node `[22, 24]` matrix with `pnpm/action-setup` + `pnpm install --frozen-lockfile`; `publish.yml` releases via `pnpm publish --provenance --no-git-checks` through OIDC trusted publishing (no `NPM_TOKEN`). Runtime `engines.node` stays `>=20` — pnpm is dev/CI-only.
 - **`query` short-circuits the per-photo projection at `limit`.** The Python sidecar already sliced the result list before projecting, but the path is now documented as the intended fast path so large libraries don't pay the full `_photo_summary` projection cost for a small page. Behavior is unchanged when no limit is set.
 
 ### Added
+
 - **Input bounds on tool schemas.** `query` and `export` now cap string lengths (UUIDs, album/keyword/person names, title/description, library/dest paths) and array sizes, and the `limit` fields on `query`/`list-keywords`/`list-persons` gain a sane upper bound — rejecting pathological inputs at the schema boundary.
 - **Deterministic shutdown handler.** The server now exits cleanly on `SIGTERM`/`SIGINT` and on stdin EOF/close (client disconnect), complementing the existing `uncaughtException`/`unhandledRejection` net so it no longer lingers as an orphan after the MCP host goes away.
 
 ### Docs
+
 - **README developer/build commands switched from `npm` to `pnpm`** in the Quick Start, From-Source, Development, and Troubleshooting sections (end-user `npm install -g` global-install hints and npm badges left as-is). The sidecar's "osxphotos not installed" hint now reads `pnpm run setup` to match.
 
 ## [1.1.2] - 2026-06-25
+
 ### Fixed
+
 - Added a process-level uncaughtException/unhandledRejection safety net so a stray error or a broken stdout pipe (EPIPE) on client disconnect can no longer crash the long-lived server; EPIPE now exits cleanly.
 
-
 ## [1.1.1] - 2026-06-24
+
 ### Security
+
 - **The `doctor` dependency probe no longer builds a shell command.** `checkDependencies` previously interpolated the resolved interpreter path into a shell string passed to `execSync`; it now uses `execFileSync(python, ["-c", …])` (argv array, no shell), matching the reader path. This eliminates a CodeQL `js/shell-command-injection-from-environment` finding (defense-in-depth — the path is install-derived, not user-supplied). The system-Python probe keeps a `execSync` over hardcoded `python3`/`python` literals, now documented as non-injectable.
 
 ## [1.1.0] - 2026-06-23
+
 ### Added
+
 - **All tools now declare an MCP `outputSchema`.** Every tool migrated from `server.tool(...)` to `server.registerTool(...)` so its structured-output shape is advertised in the tool metadata and validated by the SDK. Schemas are intentionally permissive (all fields optional, no `.strict()`, loose element types for arrays) so they can describe the output contract without ever rejecting a valid result. No tool names, inputs, descriptions, or handler behavior changed.
 
 ### Changed
+
 - **Rewrote the Hermes Agent packaging to match NousResearch's real spec.** `.hermes-plugin/` previously shipped Claude-format JSON (`plugin.json` / `marketplace.json` / `mcp.json`) that Hermes never reads; it now provides a `config.yaml` (a `~/.hermes/config.yaml` `mcp_servers:` snippet) plus a README with the `hermes mcp add` command. The README "Other Hosts" section is corrected to match (Hermes has no plugin/marketplace drop-in; Antigravity uses its native `mcp_config.json`). Claude Code, Codex, and Antigravity packaging are unchanged.
 
 ## [1.0.0] - 2026-06-23
@@ -407,21 +486,25 @@ This is the first release that *can* modify the Photos library, which is why it'
 First stable release. The public tool API (query / get-photo / library-info / list-* / export — all read-only except `export`) is now committed under semver 1.0. This release consolidates the recent multi-host packaging + marketplace work and adds production hardening.
 
 ### Added
+
 - **Structured MCP tool descriptions on all 10 tools** in the `Use when: / Returns: / Do not use when:` shape (with a `Safety:` clause on `export`), so an agent can pick the right tool from metadata alone — matching the other Apple MCP servers.
 - **CONTRIBUTING.md and SECURITY.md.**
 
 ### Changed
+
 - **Switched to the manual-bump release model** (`publish.yml`, replacing the auto-bump `auto-release.yml`): the version is now bumped in the release commit, so `main`'s HEAD is always a normal CI-checked commit. This fixes the repo's perpetual non-green status (the old model's bot-pushed `chore(release)` commit never ran CI) and restores a per-release CHANGELOG.
 - **Bumped `@modelcontextprotocol/sdk` to ^1.29.0**, clearing all `npm audit` advisories (transitive, from the SDK's unused HTTP transport) — `npm audit --omit=dev` is now clean.
 - **Pinned the Python dependency range** (`osxphotos>=0.69.0,<0.76`) so an incompatible future minor can't silently change the output contract.
 
 ### Fixed
+
 - **Permission errors are now actionable.** When osxphotos hits a Full-Disk-Access / "unable to open database" failure, every tool appends guidance (grant Full Disk Access; run the `doctor` tool; see `docs/FULL-DISK-ACCESS.md`) instead of surfacing the raw low-level error.
 - **Python version is gated.** `scripts/setup.sh` now prefers a Python ≥ 3.11 interpreter and fails fast with guidance if only an older one (e.g. macOS's stock 3.9) is found. README updated to **Python 3.11+** (osxphotos needs ≥ 3.10; the date filters need 3.11).
 - **Release reliability:** the `npm install -g npm@latest` step in `publish.yml` now retries, so a transient registry `ECONNRESET` no longer aborts a release.
 - **Codex marketplace shipped the Apple Notes icon for Apple Photos.** Replaced `codex/assets/icon.png` (and added an `icon.svg` source) with a Photos-specific icon — a teal card with a mountains-and-sun glyph, part of a consistent Apple MCP icon family. (Same root cause as the Mail #56 / Numbers #7 reports.)
 
 ### Documentation
+
 - README: added npm-downloads, supported-Node, platform-macOS, and MCP badges next to the existing version/CI/License badges.
 - Documented the `doctor` tool in the Apple Photos skill tool table (it was registered but missing from the skill); kept the canonical and Codex skill copies in sync.
 
@@ -430,6 +513,7 @@ First stable release. The public tool API (query / get-photo / library-info / li
 - **Multi-host plugin packaging (Codex, Hermes, Antigravity).** In addition to the existing Claude Code plugin, the repo now ships plugin manifests for three more hosts: a full **Codex** package (`codex/` with `.codex-plugin/plugin.json`, `.mcp.json`, bundled Apple Photos skill, and marketplace assets) plus `.agents/plugins/marketplace.json`; **Hermes** packaging (`.hermes-plugin/`); and **Antigravity** packaging (`.antigravity-plugin/`, with the bundled skill). Every host registers the same `apple-photos` MCP server (launched via `npx -y apple-photos-mcp`) and ships the same skill, so behavior matches the Claude Code plugin. `scripts/sync-plugin-version.mjs` now keeps all of these manifests in step with `package.json` on `npm version`. This brings apple-photos-mcp to the same multi-host packaging parity as the other Apple MCP servers (mail, notes, numbers).
 
 ### Documentation
+
 - Standardized the `package.json` `description` and GitHub one-liner to the shared house style ("… via Claude and other AI assistants") for consistency across the Apple MCP servers.
 - Refreshed the README tagline to reflect the full query/search/export/inspect capabilities, matching the GitHub repo one-liner and `package.json` description.
 - Added `docs/NODE-RUNTIME-AND-TCC-PERMISSIONS.md`: why macOS re-prompts for Full Disk Access / Automation when the server runs under an ad-hoc-signed (e.g. Homebrew) Node, and the fix — run it under the official Developer-ID-signed Node so the grant survives Node updates. README and CLAUDE.md now point at it.
