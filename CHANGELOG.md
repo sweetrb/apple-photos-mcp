@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [2.1.25] - 2026-10-29
+
+### Security
+
+- **`body-parser` override floor added at `>=2.4.0 <3`** for GHSA-27r3-jxmh-p828 (high), fixed in 2.4.0 (published 2026-10-22, past the 7-day `minimumReleaseAge` soak on 2026-10-29T11:40Z). Reached through `@modelcontextprotocol/sdk` → express, the HTTP transport this stdio server never enters, so exposure is near-zero.
+- **`@hono/node-server` exact pin `2.0.10` replaced by the two-sided floor `>=2.1.3 <3`** for GHSA-rmxm-3fg6-px4f (moderate: `serveStatic` double-decode), fixed in 2.1.3. An exact pin is a ceiling, which held the tree on the vulnerable version. Same SDK-only reachability, not in the shipped bundle.
+
 ## [2.1.24] - 2026-10-28
 
 ### Security
