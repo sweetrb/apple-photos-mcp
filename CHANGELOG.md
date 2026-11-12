@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [2.1.27] - 2026-11-12
+### Changed
+- Bumped the pinned `osxphotos` sidecar dependency from 0.77.2 to 0.78.0 (supersedes Dependabot #125). Verified against a real 33k-item library: `health`, `library-info` and `query` return clean JSON on stdout with an empty stderr.
+
 ## [2.1.26] - 2026-11-04
 ### Changed
 - Dependency bump via Dependabot; committed bundle rebuilt. (automated)
