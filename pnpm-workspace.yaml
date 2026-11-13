@@ -41,7 +41,14 @@ overrides:
   # version. Two-sided range, never an exact pin, for the reason recorded on
   # fast-uri below. Reached via @modelcontextprotocol/sdk; not in the shipped
   # bundle (HTTP transports are tree-shaken out of this stdio server).
-  "@hono/node-server": ">=2.1.3 <3"
+  #
+  # Raised to >=2.1.6 <3 (2026-11-13) for GHSA-jpvv-r467-5p4w (medium, a
+  # backslash in the request path is parsed as a path separator, bypassing
+  # path-based access control at a reverse proxy) and GHSA-qv5m-9pm6-hqp3
+  # (medium, an unhandled ECONNRESET during an asynchronous WebSocket upgrade
+  # crashes the process), both fixed in 2.1.6 (published 2026-11-02, cleared the
+  # 7-day minimumReleaseAge soak 2026-11-09). Same supply-chain-only reachability.
+  "@hono/node-server": ">=2.1.6 <3"
   # GHSA-27r3-jxmh-p828 (high): fixed in 2.4.0 (published 2026-10-22T11:39Z, soak
   # cleared 2026-10-29T11:40Z). Reached as @modelcontextprotocol/sdk -> express,
   # the HTTP transport this stdio server never enters, so exposure is near-zero.
@@ -144,7 +151,18 @@ overrides:
   # so the exposure remains supply-chain only. 4.13.6/4.13.7 exist but were
   # published 2026-09-04 and are still inside the 7-day soak above; 4.13.5 is
   # the correct floor today and the caret picks up the rest as they mature.
-  hono: ^4.13.5
+  #
+  # Raised to >=4.13.16 <5 (2026-11-13) for five advisories, all fixed in
+  # 4.13.16: GHSA-46wx-v44x-9hh2 (csrf() ignores hyperlink-auditing text/ping
+  # requests), GHSA-4h7h-rv7c-7m2v (validator('form') skips multipart bodies
+  # with extra parameters), GHSA-4m76-xfj5-7975 (mount() forwards a path that
+  # bypasses middleware scoped inside the mount prefix), GHSA-h7mg-cq63-vhpq
+  # (RegExpRouter skips wildcard middleware for some route sets) -- all
+  # moderate -- and GHSA-3gg2-335m-rxc6 (low, css helper HTML injection).
+  # 4.13.16 was published 2026-11-01 and cleared the 7-day soak 2026-11-08; no
+  # minimumReleaseAgeExclude. Same supply-chain-only reachability as above.
+  # Written two-sided, never an exact pin, for the reason recorded on fast-uri.
+  hono: ">=4.13.16 <5"
   # GHSA-5p4m-2wfm-xmqj (high): quadratic CPU consumption resolving !!omap,
   # fixed in 4.3.1 — the CVE-2026-59870 fix was never backported to the 3.x line.
   # Reached as eslint -> js-yaml, so development scope, and absent from the
